@@ -1,0 +1,19 @@
+# almamesh — .github/workflows/security-audit.yml   (was ~59 lines -> ~14)
+# almamesh's ONE clean template win. It is the portfolio outlier (Bun + in-tree
+# vendored deps), so test.yml / deploy.yml / nightly-e2e.yml stay bespoke — but the
+# python-only audit maps exactly. The vendored path sources (no registry release)
+# are dropped from the export via --no-emit-package; their 3rd-party deps remain.
+name: Security Audit
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+jobs:
+  audit:
+    uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
+    with:
+      run-python-audit: true
+      python-working-directory: backend
+      pip-audit-export-args: >-
+        --frozen --all-extras --no-emit-project --no-hashes
+        --no-emit-package edge-proc --no-emit-package shared-libs-python

@@ -1,0 +1,68 @@
+# Composite action: pnpm (version from packageManager), Node (with pnpm cache),
+# then (optionally) install.
+#
+# This is the ONE place the portfolio installs the JS toolchain. The frontend-gate
+# and cloudflare-pages-deploy reusable workflows compose it, AND the bespoke
+# frontend/e2e jobs in edge-reco / aml-filter compose it — so the pnpm/Node pins and
+# the install idiom live here and nowhere else.
+#
+# WHY a composite and not only the frontend-gate reusable workflow: edge-reco and
+# aml-filter interleave `actions/cache` steps (self-hosted model weights, Playwright
+# browsers) and multiple Playwright e2e lanes INSIDE their frontend/e2e jobs. Those
+# caches are `uses:` steps that a reusable workflow cannot accept as input. A
+# composite folds the shared 3-step setup into ONE `uses:` while the job keeps its
+# own cache / weights / e2e steps around it — no caching regression.
+#
+# The caller MUST have already run actions/checkout. Usage:
+#   - uses: actions/checkout@v7
+#   - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+#     with:
+#       package-json-file: frontend/package.json
+#       node-version-file: frontend/.nvmrc
+#       cache-dependency-path: frontend/pnpm-lock.yaml
+#       working-directory: frontend
+name: "Setup pnpm + Node"
+description: "pnpm + Node (pnpm cache) + optional install. Checkout is the caller's responsibility."
+
+inputs:
+  package-json-file:
+    description: "package.json that pins the pnpm version (packageManager field)."
+    default: "package.json"
+  node-version:
+    description: "Node major (ignored if node-version-file is set)."
+    default: "24"
+  node-version-file:
+    description: "Optional path to a .node-version / .nvmrc (takes precedence over node-version)."
+    default: ""
+  cache-dependency-path:
+    description: "Lockfile path used as the pnpm cache key."
+    default: "pnpm-lock.yaml"
+  install-args:
+    description: "Args appended to `pnpm install`."
+    default: "--frozen-lockfile"
+  working-directory:
+    description: "Dir to run `pnpm install` from."
+    default: "."
+  install:
+    description: >-
+      "true" = run `pnpm install` after setup. "false" = set up pnpm + Node only, for
+      jobs that read the lockfile without an install (e.g. `pnpm audit`).
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+      with:
+        package_json_file: ${{ inputs.package-json-file }}
+    - uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        node-version-file: ${{ inputs.node-version-file }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+    - name: Install
+      if: ${{ inputs.install == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm install ${{ inputs.install-args }}

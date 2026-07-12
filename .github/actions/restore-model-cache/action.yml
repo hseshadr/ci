@@ -1,0 +1,55 @@
+# Composite action: cache self-hosted model weights and fetch them on a cache miss.
+#
+# The ONE place the portfolio restores model weights. edge-reco (ONNX weights via a
+# download script) and aml-filter (weights from a GitHub release) both cache a
+# weights dir and fetch on miss — this composite is that pattern, so neither repo
+# hand-rolls the `actions/cache` + fetch dance. Skipping the fetch on a cache hit is
+# what avoids re-downloading tens of MB every push and re-risking Hugging Face's 429
+# on shared runner IPs.
+#
+# The caller MUST have already run actions/checkout. Usage (edge-reco frontend job):
+#   - uses: hseshadr/ci/.github/actions/restore-model-cache@ci-v1
+#     with:
+#       cache-path: frontend/app/public/models
+#       cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
+#       fetch-command: node scripts/download-model.mjs
+#       working-directory: frontend/app
+name: "Restore model-weights cache"
+description: "Cache self-hosted model weights; run the fetch command only on a cache miss."
+
+inputs:
+  cache-path:
+    description: "Dir the weights live in (this is what gets cached)."
+    required: true
+  cache-key:
+    description: >-
+      Cache key. Bake in a hash of the fetch script / manifest so a change re-fetches,
+      e.g. 'model-weights-${{ runner.os }}-${{ hashFiles('scripts/download-model.mjs') }}'.
+    required: true
+  fetch-command:
+    description: "Shell command that downloads the weights into cache-path."
+    required: true
+  working-directory:
+    description: "Dir to run fetch-command from."
+    default: "."
+  always-fetch:
+    description: >-
+      "true" = run fetch-command even on a cache hit (for idempotent scripts that
+      verify/repair). Default "false" = fetch only on a miss.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Restore model-weights cache
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.cache-path }}
+        key: ${{ inputs.cache-key }}
+
+    - name: Fetch model weights
+      if: ${{ steps.cache.outputs.cache-hit != 'true' || inputs.always-fetch == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: ${{ inputs.fetch-command }}

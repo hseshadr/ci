@@ -1,0 +1,11 @@
+# edge-proc — .github/workflows/security-audit.yml
+name: Security audit
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+jobs:
+  audit:
+    uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
+    with:
+      run-python-audit: true

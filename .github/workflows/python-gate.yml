@@ -1,0 +1,90 @@
+# Reusable Python quality gate — the house §3 contract: "CI runs `poe gate` itself".
+#
+# One self-contained job: checkout -> setup-python-uv composite (uv + Python + sync)
+# -> `uv run poe <gate-task>` -> (optional) upload coverage.
+#
+# The gate composition (ruff lint -> ruff format --check -> mypy --strict ->
+# xenon A/A/A -> pytest with the >=90% coverage floor) lives ONCE in each repo's
+# pyproject [tool.poe.tasks]. There is deliberately NO coverage-threshold input:
+# the gate OWNS the floor (via pytest --cov-fail-under), and CI must not be able to
+# pass a looser one — that would silently diverge CI from the local `poe gate`.
+#
+# Toolchain setup is NOT inlined here — it composes the setup-python-uv composite,
+# the same one the bespoke almamesh jobs use. One source for the uv pin + Python idiom.
+#
+# Caller (one job):
+#   jobs:
+#     gate:
+#       uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+#       with:
+#         working-directory: backend
+#         sync-args: "--group dev"
+name: Python gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dir holding pyproject.toml. '.' for a single-package repo; 'backend' for a split repo."
+        type: string
+        default: "."
+      python-version:
+        description: "Python version to install via uv."
+        type: string
+        default: "3.13"
+      sync-args:
+        description: >-
+          Extra args appended to `uv sync` (e.g. '--frozen --all-extras',
+          '--group dev', '--locked --extra dev'). Empty = bare `uv sync`.
+        type: string
+        default: ""
+      gate-task:
+        description: "poe task run as the gate."
+        type: string
+        default: "gate"
+      upload-coverage:
+        description: "Upload the coverage XML to Codecov after the gate."
+        type: boolean
+        default: false
+      coverage-file:
+        description: "Coverage XML path, relative to working-directory."
+        type: string
+        default: "coverage.xml"
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+    secrets:
+      # Optional. Private repos need a token for Codecov uploads; without it the
+      # upload soft-fails (fail_ci_if_error is false) and never reds the gate.
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python + uv (+ sync)
+        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
+        with:
+          python-version: ${{ inputs.python-version }}
+          sync-args: ${{ inputs.sync-args }}
+          working-directory: ${{ inputs.working-directory }}
+
+      # §3: run the exact gate command, not a re-listing of its steps — that is
+      # what keeps CI and the local `poe gate` mirrored in both directions.
+      - name: Gate (uv run poe ${{ inputs.gate-task }})
+        working-directory: ${{ inputs.working-directory }}
+        run: uv run poe ${{ inputs.gate-task }}
+
+      - name: Upload coverage to Codecov
+        if: ${{ inputs.upload-coverage }}
+        uses: codecov/codecov-action@v7
+        with:
+          files: ${{ inputs.working-directory }}/${{ inputs.coverage-file }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

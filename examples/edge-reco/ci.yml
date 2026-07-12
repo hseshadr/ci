@@ -1,0 +1,67 @@
+# edge-reco — .github/workflows/ci.yml   (the mixed case: Python backend + pnpm frontend)
+#
+# gitleaks + backend        -> reusable workflows (clean).
+# frontend + e2e            -> STAY bespoke jobs (a model-weights cache is a `uses:`
+#                              step a reusable workflow can't own) BUT they re-use
+#                              ZERO setup/caching boilerplate: setup-pnpm,
+#                              restore-model-cache and setup-playwright are all
+#                              composed from hseshadr/ci. Only the two `pnpm run`
+#                              gate commands are repo-specific.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  gitleaks:
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1
+
+  quality:
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+    with:
+      working-directory: backend
+      sync-args: "--group dev"
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: frontend/package.json
+          node-version-file: frontend/.node-version
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          working-directory: frontend
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@ci-v1
+        with:
+          cache-path: frontend/app/public/models
+          cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
+          fetch-command: node scripts/download-model.mjs
+          working-directory: frontend/app
+      - name: Gate — quality half
+        working-directory: frontend
+        run: pnpm run gate:quality
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: frontend/package.json
+          node-version-file: frontend/.node-version
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          working-directory: frontend
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@ci-v1
+        with:
+          cache-path: frontend/app/public/models
+          cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
+          fetch-command: node scripts/download-model.mjs
+          working-directory: frontend/app
+      - uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+        with:
+          working-directory: frontend
+          cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+      - name: Gate — e2e half
+        working-directory: frontend
+        run: pnpm run gate:e2e

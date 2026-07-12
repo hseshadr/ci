@@ -1,0 +1,56 @@
+# Composite action: cache the Playwright browser binaries, then install them.
+#
+# The ONE place the portfolio installs Playwright. It recurs in edge-reco's `e2e`
+# job, aml-filter's frontend e2e lanes, and the frontend-gate reusable workflow
+# (privacy-core) — all of which otherwise re-download ~150 MB of Chromium on every
+# run. The `~/.cache/ms-playwright` binary dir is cacheable; the apt OS libraries
+# are not, so on a cache HIT we still run `install-deps` (fast) for the OS half.
+#
+# The caller MUST have already run actions/checkout AND setup-pnpm (playwright is a
+# devDependency, so `pnpm exec playwright` needs node_modules present). Usage:
+#   - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+#     with: { working-directory: frontend }
+#   - uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+#     with:
+#       working-directory: frontend
+#       cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+name: "Setup Playwright (cached)"
+description: "Cache + install Playwright browsers. Assumes checkout + setup-pnpm already ran."
+
+inputs:
+  cache-key:
+    description: >-
+      Cache key for the browser binaries. Bake the lockfile hash in so a Playwright
+      version bump busts it, e.g.
+      'playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}'.
+    required: true
+  browsers:
+    description: "Space-separated browsers to install (e.g. 'chromium', 'chromium firefox')."
+    default: "chromium"
+  working-directory:
+    description: "Dir to run `pnpm exec playwright` from (where node_modules lives)."
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Playwright browser cache
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ inputs.cache-key }}
+
+    # Cache MISS: install the browser binaries AND their OS libraries.
+    - name: Install browsers + OS deps
+      if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm exec playwright install --with-deps ${{ inputs.browsers }}
+
+    # Cache HIT: binaries are restored, but apt OS libraries are not cached — add them.
+    - name: Install OS deps only
+      if: ${{ steps.cache.outputs.cache-hit == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm exec playwright install-deps ${{ inputs.browsers }}

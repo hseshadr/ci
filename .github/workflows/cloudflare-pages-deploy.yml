@@ -1,0 +1,187 @@
+# Reusable Cloudflare Pages deploy — the house auto-deploy contract:
+#   workflow_run(CI succeeds on main)
+#     -> preflight  (SKIP CLEAN if the deploy secrets are absent — no red X)
+#     -> guard      (FAIL FAST on a manual run without secrets — never half-deploy)
+#     -> setup-pnpm -> [pre-build] -> build -> pages-deploy-dist.
+#
+# Setup composes the setup-pnpm composite and the deploy composes the
+# pages-deploy-dist composite — the same deploy half aml-filter / almamesh use after
+# their bespoke signing builds. One source for pnpm setup AND the wrangler invocation.
+#
+# SCOPE — read before adopting. This owns a build expressible as ONE `build-command`
+# string plus an optional single `pre-build-run` shell block. It intentionally does
+# NOT try to own multi-step signing pipelines:
+#   * FITS: edge-reco (build:pages). Its model-weights fetch goes in `pre-build-run`;
+#     the only thing lost vs bespoke is the deploy-time weights CACHE — acceptable
+#     because deploys are infrequent (the CI job keeps its cache).
+#   * DOES NOT FIT: aml-filter (clones edge-proc, decodes an Ed25519 key, builds +
+#     signs + fail-closed-verifies a real sanctions bundle) and almamesh (Bun +
+#     Pyodide + prod-key restore + IndexNow ping). Their builds are irreducibly
+#     multi-step, secret-consuming, and tool-installing — a reusable workflow can't
+#     accept injected steps. Keep those two deploys bespoke, but have them compose the
+#     pages-deploy-dist composite for the final wrangler step. See the README limits.
+#
+# The CALLER owns the trigger and passes secrets:
+#   on:
+#     workflow_run: { workflows: ["CI"], types: [completed], branches: [main] }
+#     workflow_dispatch:
+#   jobs:
+#     deploy:
+#       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@ci-v1
+#       with:
+#         project-name: edge-reco
+#         dist-dir: frontend/app/dist
+#         install-working-directory: frontend
+#         build-command: "pnpm -C frontend -F frontend run build:pages"
+#         pre-build-run: "cd frontend/app && node scripts/download-model.mjs"
+#         package-json-file: frontend/package.json
+#         node-version-file: frontend/.node-version
+#         cache-dependency-path: frontend/pnpm-lock.yaml
+#       secrets: inherit
+name: Cloudflare Pages deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project-name:
+        description: "Cloudflare Pages project name."
+        type: string
+        required: true
+      dist-dir:
+        description: "Built static dir to deploy (workspace-root relative)."
+        type: string
+        required: true
+      build-command:
+        description: "Single shell command (run from workspace root) that produces dist-dir."
+        type: string
+        required: true
+      install-working-directory:
+        description: "Dir to run `pnpm install` from."
+        type: string
+        default: "."
+      install-args:
+        type: string
+        default: "--frozen-lockfile"
+      pre-build-run:
+        description: "Optional shell run before the build (e.g. fetch self-hosted model weights). Empty = skipped."
+        type: string
+        default: ""
+      package-json-file:
+        description: "package.json that pins the pnpm version (packageManager field)."
+        type: string
+        default: "package.json"
+      node-version:
+        type: string
+        default: "24"
+      node-version-file:
+        type: string
+        default: ""
+      cache-dependency-path:
+        type: string
+        default: "pnpm-lock.yaml"
+      branch:
+        description: "Pages deploy branch."
+        type: string
+        default: "main"
+      wrangler-version:
+        type: string
+        default: "4.110.0"
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+permissions:
+  contents: read
+
+# Never let two deploys interleave their uploads to the same project.
+concurrency:
+  group: deploy-${{ inputs.project-name }}
+  cancel-in-progress: false
+
+jobs:
+  # SKIP CLEAN when secrets are absent: an auto-run on main won't red-X every push;
+  # a manual dispatch always proceeds (and then fails loudly at the guard step).
+  preflight:
+    name: Gate auto-deploy
+    runs-on: ${{ inputs.runs-on }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Detect whether deploy secrets are configured
+        id: check
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCOUNT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy secrets not configured — skipping auto-deploy."
+          fi
+
+  deploy:
+    name: Build + deploy to Cloudflare Pages
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.configured == 'true' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Guard — refuse to run until the deploy secrets are configured
+        # Runs BEFORE checkout — run from the always-present workspace root.
+        working-directory: ${{ github.workspace }}
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          for v in CF_TOKEN CF_ACCOUNT; do
+            if [ -z "${!v}" ]; then
+              echo "::error::secret behind $v is not configured"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # Deploy the exact commit that passed CI (auto-run); HEAD for manual.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Setup pnpm + Node (+ install)
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: ${{ inputs.package-json-file }}
+          node-version: ${{ inputs.node-version }}
+          node-version-file: ${{ inputs.node-version-file }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          install-args: ${{ inputs.install-args }}
+          working-directory: ${{ inputs.install-working-directory }}
+
+      - name: Pre-build (caller-supplied)
+        if: ${{ inputs.pre-build-run != '' }}
+        run: ${{ inputs.pre-build-run }}
+
+      - name: Build
+        run: ${{ inputs.build-command }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1
+        with:
+          project-name: ${{ inputs.project-name }}
+          dist-dir: ${{ inputs.dist-dir }}
+          branch: ${{ inputs.branch }}
+          wrangler-version: ${{ inputs.wrangler-version }}
+          cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

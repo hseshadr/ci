@@ -1,0 +1,15 @@
+# aml-filter — .github/workflows/security-audit.yml   (was ~60 lines -> ~16)
+name: Security audit
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+jobs:
+  audit:
+    uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
+    with:
+      run-pnpm-audit: true
+      frontend-working-directory: frontend
+      pnpm-audit-level: low
+  gitleaks:
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1

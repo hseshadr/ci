@@ -1,0 +1,35 @@
+# aml-filter — .github/workflows/ci.yml   (frontend-only; STAYS bespoke)
+# The single frontend job interleaves a model-weights cache (from a GitHub release),
+# a Playwright cache, and 3 e2e lanes — all stateful `uses:` steps a reusable
+# workflow can't own. It still re-uses every bit of setup/caching from hseshadr/ci;
+# only the `pnpm run gate` line is repo-specific.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: frontend/package.json
+          node-version-file: frontend/.nvmrc
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          working-directory: frontend
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@ci-v1
+        with:
+          cache-path: frontend/public/models
+          cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/scripts/fetch-weights.mjs') }}
+          fetch-command: node scripts/fetch-weights.mjs
+          working-directory: frontend
+      - uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+        with:
+          working-directory: frontend
+          cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+      - name: Gate (biome -> tsc -> vitest -> build -> 3 e2e lanes)
+        working-directory: frontend
+        run: pnpm run gate

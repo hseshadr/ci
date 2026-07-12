@@ -1,0 +1,23 @@
+# edge-reco — .github/workflows/deploy.yml   (was ~139 lines -> ~18)
+# Fits the reusable Pages deploy: the model-weights fetch goes in pre-build-run; the
+# only thing lost vs bespoke is the deploy-time weights cache (fine — deploys are rare).
+name: Deploy edge-reco.com
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@ci-v1
+    with:
+      project-name: edge-reco
+      dist-dir: frontend/app/dist
+      install-working-directory: frontend
+      pre-build-run: "cd frontend/app && node scripts/download-model.mjs"
+      build-command: "pnpm -C frontend -F frontend run build:pages"
+      package-json-file: frontend/package.json
+      node-version-file: frontend/.node-version
+      cache-dependency-path: frontend/pnpm-lock.yaml
+    secrets: inherit

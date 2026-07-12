@@ -1,0 +1,18 @@
+# privacy-core — .github/workflows/ci.yml
+# Single-package TS repo at root — the cleanest fit for frontend-gate.yml (no model
+# weights, no injected caching). gate = biome -> tsc -> vitest -> test:e2e -> build,
+# so it needs a Playwright browser (installed + cached by the template).
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  gate:
+    uses: hseshadr/ci/.github/workflows/frontend-gate.yml@ci-v1
+    with:
+      install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
+      install-playwright: true
+  gitleaks:
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1

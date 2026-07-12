@@ -1,0 +1,49 @@
+# aml-filter — .github/workflows/deploy.yml   (STAYS bespoke — but shares the deploy half)
+# The BUILD is irreducible: clone edge-proc, decode an Ed25519 key, build + sign +
+# fail-closed-verify a real sanctions bundle. A reusable workflow can't own those
+# injected steps. But the DEPLOY half is not special — it composes pages-deploy-dist,
+# the exact same wrangler step edge-reco and almamesh use. Zero deploy duplication.
+name: Deploy aml-filter.com
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-aml-filter
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: frontend/package.json
+          node-version-file: frontend/.nvmrc
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          working-directory: frontend
+
+      # --- irreducible, repo-specific signing pipeline (illustrative) ---
+      - name: Build + sign the sanctions bundle
+        working-directory: frontend
+        env:
+          SIGNING_KEY_B64: ${{ secrets.SANCTIONS_SIGNING_KEY_B64 }}
+        run: |
+          printf '%s' "$SIGNING_KEY_B64" | base64 -d > /tmp/signing.key
+          pnpm run build:bundle
+          pnpm run sign:bundle --key /tmp/signing.key
+          pnpm run verify:bundle   # fail-closed: aborts the deploy if verification fails
+          shred -u /tmp/signing.key
+
+      # --- shared deploy half: identical wrangler step used by every Pages repo ---
+      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1
+        with:
+          project-name: aml-filter
+          dist-dir: frontend/dist
+          cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

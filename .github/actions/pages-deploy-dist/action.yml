@@ -1,0 +1,51 @@
+# Composite action: `wrangler pages deploy` of a prebuilt dist dir.
+#
+# The ONE place the portfolio deploys to Cloudflare Pages. The build differs across
+# repos (edge-reco pnpm build; aml-filter builds + signs a sanctions bundle; almamesh
+# builds Bun + Pyodide) but the DEPLOY half is identical, so it lives here once. The
+# cloudflare-pages-deploy reusable workflow composes it for the simple case; the
+# bespoke aml-filter / almamesh deploys compose it directly after their signing build.
+#
+# A composite cannot read the `secrets` context, so the caller passes the two
+# Cloudflare secrets as inputs (from its own `secrets.*`). Usage:
+#   - uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1
+#     with:
+#       project-name: aml-filter
+#       dist-dir: frontend/dist
+#       cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+#       cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+name: "Deploy dist to Cloudflare Pages"
+description: "wrangler pages deploy of a prebuilt dist dir. The shared deploy half of every Pages repo."
+
+inputs:
+  project-name:
+    description: "Cloudflare Pages project name."
+    required: true
+  dist-dir:
+    description: "Prebuilt static dir to deploy (workspace-root relative)."
+    required: true
+  cloudflare-api-token:
+    description: "Cloudflare API token (pass ${{ secrets.CLOUDFLARE_API_TOKEN }})."
+    required: true
+  cloudflare-account-id:
+    description: "Cloudflare account id (pass ${{ secrets.CLOUDFLARE_ACCOUNT_ID }})."
+    required: true
+  branch:
+    description: "Pages deploy branch."
+    default: "main"
+  wrangler-version:
+    description: "Exact wrangler version to run via npx (pinned for determinism)."
+    default: "4.110.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy to Cloudflare Pages
+      shell: bash
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare-api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare-account-id }}
+      run: >-
+        npx wrangler@${{ inputs.wrangler-version }} pages deploy "${{ inputs.dist-dir }}"
+        --project-name="${{ inputs.project-name }}"
+        --branch="${{ inputs.branch }}"

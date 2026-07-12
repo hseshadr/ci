@@ -1,0 +1,16 @@
+# edge-proc — .github/workflows/ci.yml   (replaces the current ~49-line ci.yml)
+# Pure Python library. Calls the shared templates like every other consumer — the
+# dedicated hseshadr/ci host means there is NO filename clash and NO local-ref
+# special case (the old "rename to security.yml" gotcha is gone).
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  gate:
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+    with:
+      sync-args: "--frozen --all-extras"
+  gitleaks:
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1

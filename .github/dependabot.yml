@@ -1,0 +1,12 @@
+# Keep THIS repo's action pins current in one place. Dependabot's github-actions
+# ecosystem walks the `uses:` refs in both the reusable workflows AND the composite
+# action.yml files — so a single bump here (e.g. astral-sh/setup-uv v8.3.2 -> next,
+# or actions/checkout v7 -> v8) propagates to every consumer via the @ci-v1 tag.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"

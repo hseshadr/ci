@@ -1,0 +1,18 @@
+# shared-libs-python — .github/workflows/ci.yml
+# Uploads coverage to Codecov. For a PRIVATE repo, `secrets: inherit` forwards the
+# optional CODECOV_TOKEN so the upload authenticates (missing token soft-fails, so
+# CI never goes red on the upload). publish.yml (PyPI/npm release) stays repo-local.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  gate:
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+    with:
+      upload-coverage: true
+    secrets: inherit
+  gitleaks:
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1

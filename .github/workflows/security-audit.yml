@@ -1,0 +1,111 @@
+# Reusable dependency-CVE audit (house standard §4) — its OWN workflow, never a CI
+# step, so a known-unfixable upstream advisory can't mask code regressions in the
+# main gate. NO suppressions anywhere: every finding is fixed by a version floor,
+# not an --ignore flag. A red scheduled run is a red repo — check `gh run list`.
+#
+# The CALLER owns the triggers (schedule / push / workflow_dispatch) — a reusable
+# workflow only carries `on: workflow_call`, so each repo keeps its own cadence with
+# zero conflict. Toggle the two halves with run-python-audit / run-pnpm-audit; a
+# repo may enable one, the other, or both.
+#
+# Setup composes the SAME setup-python-uv / setup-pnpm composites as the gates, with
+# their sync/install steps switched off (audits read the lockfile, they don't build a
+# venv or install node_modules). Covers all 5 current audit users: edge-proc /
+# shared-libs / almamesh (python), privacy-core / aml-filter (pnpm), edge-reco (both).
+#
+# Caller (python lib, weekly):
+#   on:
+#     schedule: [{ cron: "0 6 * * 1" }]
+#     workflow_dispatch:
+#   jobs:
+#     audit:
+#       uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
+#       with: { run-python-audit: true }
+name: Security audit (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run-python-audit:
+        description: "Run the pip-audit (backend) job."
+        type: boolean
+        default: false
+      run-pnpm-audit:
+        description: "Run the pnpm audit (frontend) job."
+        type: boolean
+        default: false
+      python-working-directory:
+        description: "Dir holding pyproject.toml + uv.lock."
+        type: string
+        default: "."
+      pip-audit-export-args:
+        description: >-
+          Args to `uv export` before pip-audit. Append
+          '--no-emit-package <name>' for each vendored/local path source that has
+          no registry release to audit (its 3rd-party deps stay in the export).
+        type: string
+        default: "--frozen --all-extras --no-emit-project --no-hashes"
+      frontend-working-directory:
+        description: "Dir holding pnpm-lock.yaml ('.' for a root single-package repo)."
+        type: string
+        default: "frontend"
+      pnpm-audit-level:
+        description: "Fail threshold for pnpm audit: low | moderate | high | critical."
+        type: string
+        default: "low"
+      node-version:
+        type: string
+        default: "24"
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    if: ${{ inputs.run-python-audit }}
+    name: pip-audit (backend, locked deps)
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # run-sync: false — we `uv export` the lock, not build a venv.
+      - name: Setup Python + uv
+        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
+        with:
+          working-directory: ${{ inputs.python-working-directory }}
+          run-sync: "false"
+
+      # §4 portable invocation: export the frozen lock to a requirements file and
+      # audit THAT (pip-audit's default venv mode is fragile; the export pins the
+      # exact transitive set from uv.lock).
+      - name: Export locked dependencies
+        working-directory: ${{ inputs.python-working-directory }}
+        run: uv export ${{ inputs.pip-audit-export-args }} -o requirements-audit.txt
+
+      - name: Audit for known CVEs (no suppressions)
+        working-directory: ${{ inputs.python-working-directory }}
+        run: uvx pip-audit -r requirements-audit.txt --disable-pip --no-deps
+
+  pnpm-audit:
+    if: ${{ inputs.run-pnpm-audit }}
+    name: pnpm audit (frontend)
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
+      # directly; no node_modules needed.
+      - name: Setup pnpm + Node
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: ${{ inputs.frontend-working-directory }}/package.json
+          node-version: ${{ inputs.node-version }}
+          cache-dependency-path: ${{ inputs.frontend-working-directory }}/pnpm-lock.yaml
+          install: "false"
+
+      - name: Audit for known CVEs (no suppressions)
+        working-directory: ${{ inputs.frontend-working-directory }}
+        run: pnpm audit --audit-level ${{ inputs.pnpm-audit-level }}

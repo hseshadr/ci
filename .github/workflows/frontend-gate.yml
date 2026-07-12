@@ -1,0 +1,100 @@
+# Reusable frontend gate — pnpm + Node setup, install, optional cached Playwright,
+# then run the repo's canonical `gate` script (biome -> tsc -> vitest -> build [-> e2e]).
+#
+# Setup is NOT inlined — it composes the setup-pnpm and setup-playwright composites,
+# the same ones edge-reco / aml-filter use in their bespoke jobs. One source for the
+# pnpm/Node pins, install idiom, and Playwright caching.
+#
+# SCOPE — read before adopting. A reusable workflow is a whole job on its own runner
+# and CANNOT accept injected `uses:` steps. The self-hosted model-weights cache
+# (edge-reco, aml-filter) is an `actions/cache` step that MUST run inside the gate
+# job. Routing edge-reco / aml-filter through this template would drop that cache:
+#   * FITS: privacy-core, and any future SIMPLE pnpm package (no injected caching).
+#   * DOES NOT FIT: edge-reco, aml-filter — keep their bespoke frontend/e2e jobs and
+#     compose the setup-pnpm + setup-playwright + restore-model-cache composites
+#     inside them. This is the honest divergence, not a force-fit.
+#
+# Caller (privacy-core):
+#   jobs:
+#     gate:
+#       uses: hseshadr/ci/.github/workflows/frontend-gate.yml@ci-v1
+#       with:
+#         install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
+#         install-playwright: true
+name: Frontend gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dir holding package.json + pnpm-lock.yaml."
+        type: string
+        default: "."
+      package-json-file:
+        description: "package.json that pins the pnpm version (packageManager field)."
+        type: string
+        default: "package.json"
+      node-version:
+        description: "Node major (ignored if node-version-file is set)."
+        type: string
+        default: "24"
+      node-version-file:
+        description: "Optional path to a .node-version / .nvmrc (takes precedence)."
+        type: string
+        default: ""
+      cache-dependency-path:
+        type: string
+        default: "pnpm-lock.yaml"
+      install-args:
+        type: string
+        default: "--frozen-lockfile"
+      gate-command:
+        description: "The canonical gate script (run from working-directory)."
+        type: string
+        default: "pnpm gate"
+      install-playwright:
+        description: "Install the Playwright browser(s) (cached) before the gate."
+        type: boolean
+        default: false
+      playwright-browsers:
+        description: "Browsers to install when install-playwright is true."
+        type: string
+        default: "chromium"
+      playwright-working-directory:
+        description: "Dir to run playwright from (defaults to working-directory)."
+        type: string
+        default: ""
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup pnpm + Node (+ install)
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        with:
+          package-json-file: ${{ inputs.package-json-file }}
+          node-version: ${{ inputs.node-version }}
+          node-version-file: ${{ inputs.node-version-file }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          install-args: ${{ inputs.install-args }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Setup Playwright (cached)
+        if: ${{ inputs.install-playwright }}
+        uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+        with:
+          browsers: ${{ inputs.playwright-browsers }}
+          working-directory: ${{ inputs.playwright-working-directory || inputs.working-directory }}
+          cache-key: playwright-${{ runner.os }}-${{ inputs.playwright-browsers }}-${{ hashFiles(inputs.cache-dependency-path) }}
+
+      - name: Gate
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.gate-command }}
