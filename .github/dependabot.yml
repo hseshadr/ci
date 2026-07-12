@@ -1,7 +1,8 @@
-# Keep THIS repo's action pins current in one place. Dependabot's github-actions
-# ecosystem walks the `uses:` refs in both the reusable workflows AND the composite
-# action.yml files — so a single bump here (e.g. astral-sh/setup-uv v8.3.2 -> next,
-# or actions/checkout v7 -> v8) propagates to every consumer via the @ci-v1 tag.
+# Keep THIS repo's full-SHA action pins current in one place. Dependabot's
+# github-actions ecosystem walks `uses:` refs in .github/workflows, updating both
+# each SHA and its trailing `# v...` comment. The security-policy test keeps nested
+# composites and copy-ready examples on immutable refs as they are updated.
+# A merged bump propagates to consumers through the first-party @ci-v1 tag.
 version: 2
 updates:
   - package-ecosystem: "github-actions"

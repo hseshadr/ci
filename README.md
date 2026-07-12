@@ -24,13 +24,16 @@ flipped. See [Northstar self-assessment](#northstar-self-assessment) for the hon
 
 ---
 
-## Adopt it in 3 lines
+## Adopt it with one caller
 
 A repo's entire CI can become this (`.github/workflows/ci.yml`):
 
 ```yaml
 name: CI
 on: { push: { branches: [main] }, pull_request: }
+permissions:
+  contents: read
+  pull-requests: read
 jobs:
   gate:
     uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
@@ -73,7 +76,7 @@ jobs:
   # …then a whole separate security-audit.yml repeating the uv setup for pip-audit…
 ```
 
-**After** — the 8-line `ci.yml` above plus a 10-line `security-audit.yml`. Across the
+**After** — the small `ci.yml` above plus a 10-line `security-audit.yml`. Across the
 whole portfolio the templatable workflows shrink from **~598 lines to ~135** (about a
 77% cut), and the action-version drift the survey found (edge-reco on `checkout@v7`
 while the others were on `@v5`) collapses to one pinned set here.
@@ -84,7 +87,8 @@ while the others were on `@v5`) collapses to one pinned set here.
 
 ```
 .github/
-  workflows/                      # reusable workflows — a whole job you `uses:`
+  workflows/                      # reusable workflows plus this repo's own gate
+    ci.yml                        #   validates this repo's CI security policy
     python-gate.yml               #   checkout → setup → uv run poe gate → (opt) codecov
     frontend-gate.yml             #   checkout → pnpm setup → (opt) Playwright → pnpm gate
     secret-scan.yml               #   gitleaks over full history
@@ -95,9 +99,11 @@ while the others were on `@v5`) collapses to one pinned set here.
     setup-pnpm/                   #   pnpm + Node (pnpm cache) + (opt) install
     setup-playwright/             #   cache + install Playwright browsers
     restore-model-cache/          #   cache self-hosted model weights + fetch on miss
-    pages-deploy-dist/            #   the shared `wrangler pages deploy` step
+    pages-deploy-dist/            #   baseline headers + shared wrangler deploy
   dependabot.yml                  # bumps THIS repo's action pins → propagates via @ci-v1
 examples/                         # copy-paste caller workflows, one folder per repo
+tests/
+  security-policy.sh              # YAML + pins + permissions + Pages-header contract
 CHANGELOG.md
 ```
 
@@ -134,11 +140,17 @@ lives in each repo's `pytest --cov-fail-under`, so CI can never pass a looser ba
 | `setup-pnpm` | `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path`, `install-args` `--frozen-lockfile`, `working-directory` `.`, `install` `true` | `pnpm/action-setup` → `setup-node` (pnpm cache) → optional `pnpm install` |
 | `setup-playwright` | `cache-key`*, `browsers` `chromium`, `working-directory` `.` | cache `~/.cache/ms-playwright` → install browsers (miss) or OS deps only (hit) |
 | `restore-model-cache` | `cache-path`*, `cache-key`*, `fetch-command`*, `working-directory` `.`, `always-fetch` `false` | cache the weights dir → run `fetch-command` only on a cache miss |
-| `pages-deploy-dist` | `project-name`*, `dist-dir`*, `cloudflare-api-token`*, `cloudflare-account-id`*, `branch` `main`, `wrangler-version` `4.110.0` | `npx wrangler pages deploy` |
+| `pages-deploy-dist` | `project-name`*, `dist-dir`*, `cloudflare-api-token`*, `cloudflare-account-id`*, `branch` `main`, `wrangler-version` `4.110.0` | add a conservative `_headers` baseline when absent → `npx wrangler pages deploy` |
 
 Every composite assumes the caller **already ran `actions/checkout`** (a composite can't
 assume a working tree). Composites can't read the `secrets` context, so
 `pages-deploy-dist` takes the two Cloudflare secrets as inputs.
+
+The Pages baseline sets anti-framing, MIME-sniffing, referrer, browser-feature,
+HSTS, and narrow CSP controls. If a build already contains `_headers`, the action
+preserves it byte-for-byte so an application can own a stricter or intentionally
+different policy. Cloudflare applies `_headers` to static asset responses; Pages
+Functions must set equivalent headers in their own response code.
 
 **Composition, not duplication.** The reusable workflows don't re-implement setup — they
 *compose the same composites the bespoke jobs use*. `python-gate` composes
@@ -155,21 +167,26 @@ breaking input change cuts `ci-v2`; consumers migrate deliberately. Add a Depend
 `github-actions` entry in each consumer so the `uses: hseshadr/ci/...@ci-v1` refs are
 tracked like any other dependency.
 
-### Standardized action pins (the one set, chosen newest-consistent)
+### Immutable third-party action pins
 
-Drift closed by adopting the **newest** major each action publishes (edge-reco was
-already here; the others re-pin *up*):
+Every executable third-party `uses:` reference is pinned to the full 40-character
+commit behind the selected release. The trailing release comment is intentional:
+Dependabot updates both the SHA and its readable `# v…` label.
 
-| Action | Pin | Why |
+| Action | Release comment | Pin policy |
 |---|---|---|
-| `actions/checkout` | `@v7` | latest major (floating) |
-| `actions/setup-node` | `@v6` | latest major (floating) |
-| `actions/cache` | `@v6` | latest major (floating) |
-| `actions/upload-artifact` | `@v7` | latest major (floating) — used by bespoke e2e jobs |
-| `pnpm/action-setup` | `@v6` | latest major (floating) |
-| `astral-sh/setup-uv` | `@v8.3.2` | **no `v8` floating tag exists** → pin exact patch; Dependabot walks it |
-| `codecov/codecov-action` | `@v7` | latest major (floating) |
-| `gitleaks/gitleaks-action` | `@v3` | latest major (floating) |
+| `actions/checkout` | `# v7` | full commit SHA |
+| `actions/setup-node` | `# v6` | full commit SHA |
+| `actions/cache` | `# v6` | full commit SHA |
+| `pnpm/action-setup` | `# v6` | full commit SHA |
+| `astral-sh/setup-uv` | `# v8.3.2` | full commit SHA |
+| `codecov/codecov-action` | `# v7` | full commit SHA |
+| `gitleaks/gitleaks-action` | `# v3` | full commit SHA |
+
+The `hseshadr/ci/...@ci-v1` references are first-party release channels, not
+third-party actions. They remain on the moving major tag so compatible fixes from
+this repository reach all consumers; immutable `ci-vX.Y.Z` tags remain available
+for callers that need a frozen shared-workflow release.
 
 ### Required setup (read this first)
 

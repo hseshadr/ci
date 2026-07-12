@@ -12,6 +12,9 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
+  pull-requests: read
 jobs:
   gitleaks:
     uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1
@@ -25,7 +28,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
         with:
           package-json-file: frontend/package.json
@@ -45,7 +48,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
         with:
           package-json-file: frontend/package.json

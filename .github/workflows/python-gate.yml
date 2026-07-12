@@ -66,7 +66,7 @@ jobs:
   gate:
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Setup Python + uv (+ sync)
         uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ inputs.upload-coverage }}
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ${{ inputs.working-directory }}/${{ inputs.coverage-file }}
           token: ${{ secrets.CODECOV_TOKEN }}

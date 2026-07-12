@@ -15,7 +15,7 @@
 #       cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 #       cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 name: "Deploy dist to Cloudflare Pages"
-description: "wrangler pages deploy of a prebuilt dist dir. The shared deploy half of every Pages repo."
+description: "Apply baseline security headers, then deploy a prebuilt dist dir with wrangler."
 
 inputs:
   project-name:
@@ -40,12 +40,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Apply baseline security headers
+      shell: bash
+      env:
+        DIST_DIR: ${{ inputs.dist-dir }}
+      run: '"${GITHUB_ACTION_PATH}/apply-security-headers.sh" "$DIST_DIR"'
+
     - name: Deploy to Cloudflare Pages
       shell: bash
       env:
+        BRANCH: ${{ inputs.branch }}
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare-api-token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare-account-id }}
+        DIST_DIR: ${{ inputs.dist-dir }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        WRANGLER_VERSION: ${{ inputs.wrangler-version }}
       run: >-
-        npx wrangler@${{ inputs.wrangler-version }} pages deploy "${{ inputs.dist-dir }}"
-        --project-name="${{ inputs.project-name }}"
-        --branch="${{ inputs.branch }}"
+        npx "wrangler@${WRANGLER_VERSION}" pages deploy "$DIST_DIR"
+        --project-name="$PROJECT_NAME"
+        --branch="$BRANCH"

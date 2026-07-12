@@ -39,9 +39,9 @@ inputs:
 runs:
   using: composite
   steps:
-    # setup-uv publishes no floating major tag (only v8.x.y) — pin the concrete
-    # patch; Dependabot's github-actions ecosystem walks it forward.
-    - uses: astral-sh/setup-uv@v8.3.2
+    # setup-uv publishes no floating major tag (only v8.x.y). The full commit SHA
+    # and readable release comment keep execution immutable and updates reviewable.
+    - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       with:
         enable-cache: true
     - name: Pin Python

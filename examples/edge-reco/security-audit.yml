@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0 9 * * 1"
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   audit:
     uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
