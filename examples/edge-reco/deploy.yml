@@ -8,6 +8,8 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   deploy:
     uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@ci-v1

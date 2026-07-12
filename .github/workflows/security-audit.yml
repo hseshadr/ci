@@ -69,11 +69,13 @@ jobs:
     name: pip-audit (backend, locked deps)
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       # run-sync: false — we `uv export` the lock, not build a venv.
       - name: Setup Python + uv
-        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           working-directory: ${{ inputs.python-working-directory }}
           run-sync: "false"
@@ -83,7 +85,35 @@ jobs:
       # exact transitive set from uv.lock).
       - name: Export locked dependencies
         working-directory: ${{ inputs.python-working-directory }}
-        run: uv export ${{ inputs.pip-audit-export-args }} -o requirements-audit.txt
+        env:
+          PIP_AUDIT_EXPORT_ARGS: ${{ inputs.pip-audit-export-args }}
+        run: |
+          read -r -a requested_args <<< "$PIP_AUDIT_EXPORT_ARGS"
+          export_args=()
+          index=0
+          while ((index < ${#requested_args[@]})); do
+            argument="${requested_args[$index]}"
+            case "$argument" in
+              --frozen | --locked | --all-extras | --no-emit-project | --no-hashes)
+                export_args+=("$argument")
+                ;;
+              --no-emit-package)
+                index=$((index + 1))
+                package="${requested_args[$index]:-}"
+                if [[ ! "$package" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                  echo "::error::Invalid pip-audit export argument value: $package"
+                  exit 1
+                fi
+                export_args+=("$argument" "$package")
+                ;;
+              *)
+                echo "::error::Invalid pip-audit export argument: $argument"
+                exit 1
+                ;;
+            esac
+            index=$((index + 1))
+          done
+          uv export "${export_args[@]}" -o requirements-audit.txt
 
       - name: Audit for known CVEs (no suppressions)
         working-directory: ${{ inputs.python-working-directory }}
@@ -94,12 +124,14 @@ jobs:
     name: pnpm audit (frontend)
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
       # directly; no node_modules needed.
       - name: Setup pnpm + Node
-        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           package-json-file: ${{ inputs.frontend-working-directory }}/package.json
           node-version: ${{ inputs.node-version }}
@@ -108,4 +140,14 @@ jobs:
 
       - name: Audit for known CVEs (no suppressions)
         working-directory: ${{ inputs.frontend-working-directory }}
-        run: pnpm audit --audit-level ${{ inputs.pnpm-audit-level }}
+        env:
+          PNPM_AUDIT_LEVEL: ${{ inputs.pnpm-audit-level }}
+        run: |
+          case "$PNPM_AUDIT_LEVEL" in
+            low | moderate | high | critical) ;;
+            *)
+              echo "::error::Invalid pnpm audit level: $PNPM_AUDIT_LEVEL"
+              exit 1
+              ;;
+          esac
+          pnpm audit --audit-level "$PNPM_AUDIT_LEVEL"

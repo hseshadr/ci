@@ -49,7 +49,9 @@ on:
         type: string
         default: "--frozen-lockfile"
       gate-command:
-        description: "The canonical gate script (run from working-directory)."
+        description: >-
+          Trusted, repository-controlled literal command run from working-directory.
+          Never derive it from expressions, event data, dispatch fields, or untrusted text.
         type: string
         default: "pnpm gate"
       install-playwright:
@@ -75,10 +77,12 @@ jobs:
   gate:
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -89,7 +93,7 @@ jobs:
 
       - name: Setup Playwright (cached)
         if: ${{ inputs.install-playwright }}
-        uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           browsers: ${{ inputs.playwright-browsers }}
           working-directory: ${{ inputs.playwright-working-directory || inputs.working-directory }}
@@ -97,4 +101,6 @@ jobs:
 
       - name: Gate
         working-directory: ${{ inputs.working-directory }}
-        run: ${{ inputs.gate-command }}
+        env:
+          TRUSTED_COMMAND: ${{ inputs.gate-command }}
+        run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"

@@ -17,20 +17,24 @@ standardized." One place to bump `actions/checkout`, one place to fix the gitlea
 pattern, one place that defines what "run the gate" means. No drift.
 
 **Status.** Templates written and statically validated (every file parses; `actionlint`
-clean). **Not yet live-proven by a consumer run** — the six repos still call their old
-inline workflows; migrating them is a separate wave, and cross-repo calls stay broken
-until the one repo setting in [Required setup](#required-setup-read-this-first) is
-flipped. See [Northstar self-assessment](#northstar-self-assessment) for the honest scorecard.
+and full-repository `zizmor` are clean). **Not yet live-proven by a consumer run** —
+the six repos still call their old inline workflows; migrating them is a separate wave,
+and cross-repo calls stay broken until the one repo setting in
+[Required setup](#required-setup-read-this-first) is flipped. See
+[Northstar self-assessment](#northstar-self-assessment) for the honest scorecard.
 
 ---
 
-## Adopt it in 3 lines
+## Adopt it with one caller
 
 A repo's entire CI can become this (`.github/workflows/ci.yml`):
 
 ```yaml
 name: CI
 on: { push: { branches: [main] }, pull_request: }
+permissions:
+  contents: read
+  pull-requests: read
 jobs:
   gate:
     uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
@@ -73,7 +77,7 @@ jobs:
   # …then a whole separate security-audit.yml repeating the uv setup for pip-audit…
 ```
 
-**After** — the 8-line `ci.yml` above plus a 10-line `security-audit.yml`. Across the
+**After** — the small `ci.yml` above plus a 10-line `security-audit.yml`. Across the
 whole portfolio the templatable workflows shrink from **~598 lines to ~135** (about a
 77% cut), and the action-version drift the survey found (edge-reco on `checkout@v7`
 while the others were on `@v5`) collapses to one pinned set here.
@@ -84,7 +88,8 @@ while the others were on `@v5`) collapses to one pinned set here.
 
 ```
 .github/
-  workflows/                      # reusable workflows — a whole job you `uses:`
+  workflows/                      # reusable workflows plus this repo's own gate
+    ci.yml                        #   validates this repo's CI security policy
     python-gate.yml               #   checkout → setup → uv run poe gate → (opt) codecov
     frontend-gate.yml             #   checkout → pnpm setup → (opt) Playwright → pnpm gate
     secret-scan.yml               #   gitleaks over full history
@@ -95,9 +100,11 @@ while the others were on `@v5`) collapses to one pinned set here.
     setup-pnpm/                   #   pnpm + Node (pnpm cache) + (opt) install
     setup-playwright/             #   cache + install Playwright browsers
     restore-model-cache/          #   cache self-hosted model weights + fetch on miss
-    pages-deploy-dist/            #   the shared `wrangler pages deploy` step
+    pages-deploy-dist/            #   baseline headers + shared wrangler deploy
   dependabot.yml                  # bumps THIS repo's action pins → propagates via @ci-v1
 examples/                         # copy-paste caller workflows, one folder per repo
+tests/
+  security-policy.sh              # YAML + pins + permissions + Pages-header contract
 CHANGELOG.md
 ```
 
@@ -119,7 +126,7 @@ composite (details below).
 | `python-gate.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `""`, `gate-task` `gate`, `upload-coverage` `false`, `coverage-file` `coverage.xml` | `CODECOV_TOKEN` (optional) | checkout → **setup-python-uv** → `uv run poe <gate-task>` → optional Codecov upload |
 | `frontend-gate.yml` | `working-directory` `.`, `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path` `pnpm-lock.yaml`, `install-args` `--frozen-lockfile`, `gate-command` `pnpm gate`, `install-playwright` `false`, `playwright-browsers` `chromium` | — | checkout → **setup-pnpm** → optional **setup-playwright** → `gate-command` |
 | `secret-scan.yml` | `runs-on` | uses `GITHUB_TOKEN` | checkout `fetch-depth:0` → `gitleaks-action` over full history |
-| `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (export lock → `pip-audit`) and/or `pnpm-audit` job — each gated by its bool |
+| `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
 
 \* required. Every other input has a documented default — no version or path is a magic
@@ -130,15 +137,21 @@ lives in each repo's `pytest --cov-fail-under`, so CI can never pass a looser ba
 
 | Action | Key inputs | What it runs |
 |---|---|---|
-| `setup-python-uv` | `python-version` `3.13`, `sync-args` `""`, `working-directory` `.`, `run-sync` `true` | install uv (cached) → `uv python install` → optional `uv sync` |
-| `setup-pnpm` | `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path`, `install-args` `--frozen-lockfile`, `working-directory` `.`, `install` `true` | `pnpm/action-setup` → `setup-node` (pnpm cache) → optional `pnpm install` |
-| `setup-playwright` | `cache-key`*, `browsers` `chromium`, `working-directory` `.` | cache `~/.cache/ms-playwright` → install browsers (miss) or OS deps only (hit) |
+| `setup-python-uv` | validated `python-version` `3.13`, allowlisted `sync-args` `""`, `working-directory` `.`, `run-sync` `true` | install uv (cached) → `uv python install` → optional `uv sync` |
+| `setup-pnpm` | `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path`, allowlisted `install-args` `--frozen-lockfile`, `working-directory` `.`, `install` `true` | `pnpm/action-setup` → `setup-node` (pnpm cache) → optional `pnpm install` |
+| `setup-playwright` | `cache-key`*, allowlisted `browsers` `chromium`, `working-directory` `.` | cache `~/.cache/ms-playwright` → install browsers (miss) or OS deps only (hit) |
 | `restore-model-cache` | `cache-path`*, `cache-key`*, `fetch-command`*, `working-directory` `.`, `always-fetch` `false` | cache the weights dir → run `fetch-command` only on a cache miss |
-| `pages-deploy-dist` | `project-name`*, `dist-dir`*, `cloudflare-api-token`*, `cloudflare-account-id`*, `branch` `main`, `wrangler-version` `4.110.0` | `npx wrangler pages deploy` |
+| `pages-deploy-dist` | `project-name`*, `dist-dir`*, `cloudflare-api-token`*, `cloudflare-account-id`*, `branch` `main`, `wrangler-version` `4.110.0` | add a conservative `_headers` baseline when absent → `npx wrangler pages deploy` |
 
 Every composite assumes the caller **already ran `actions/checkout`** (a composite can't
 assume a working tree). Composites can't read the `secrets` context, so
 `pages-deploy-dist` takes the two Cloudflare secrets as inputs.
+
+The Pages baseline sets anti-framing, MIME-sniffing, referrer, browser-feature,
+HSTS, and narrow CSP controls. If a build already contains `_headers`, the action
+preserves it byte-for-byte so an application can own a stricter or intentionally
+different policy. Cloudflare applies `_headers` to static asset responses; Pages
+Functions must set equivalent headers in their own response code.
 
 **Composition, not duplication.** The reusable workflows don't re-implement setup — they
 *compose the same composites the bespoke jobs use*. `python-gate` composes
@@ -155,21 +168,45 @@ breaking input change cuts `ci-v2`; consumers migrate deliberately. Add a Depend
 `github-actions` entry in each consumer so the `uses: hseshadr/ci/...@ci-v1` refs are
 tracked like any other dependency.
 
-### Standardized action pins (the one set, chosen newest-consistent)
+### Immutable third-party action pins
 
-Drift closed by adopting the **newest** major each action publishes (edge-reco was
-already here; the others re-pin *up*):
+Every executable third-party `uses:` reference is pinned to the full 40-character
+commit behind the selected release. The trailing release comment is intentional:
+Dependabot updates both the SHA and its readable `# v…` label.
 
-| Action | Pin | Why |
+| Action | Release comment | Pin policy |
 |---|---|---|
-| `actions/checkout` | `@v7` | latest major (floating) |
-| `actions/setup-node` | `@v6` | latest major (floating) |
-| `actions/cache` | `@v6` | latest major (floating) |
-| `actions/upload-artifact` | `@v7` | latest major (floating) — used by bespoke e2e jobs |
-| `pnpm/action-setup` | `@v6` | latest major (floating) |
-| `astral-sh/setup-uv` | `@v8.3.2` | **no `v8` floating tag exists** → pin exact patch; Dependabot walks it |
-| `codecov/codecov-action` | `@v7` | latest major (floating) |
-| `gitleaks/gitleaks-action` | `@v3` | latest major (floating) |
+| `actions/checkout` | `# v7` | full commit SHA |
+| `actions/setup-node` | `# v6` | full commit SHA |
+| `actions/cache` | `# v6` | full commit SHA |
+| `pnpm/action-setup` | `# v6` | full commit SHA |
+| `astral-sh/setup-uv` | `# v8.3.2` | full commit SHA |
+| `codecov/codecov-action` | `# v7` | full commit SHA |
+| `gitleaks/gitleaks-action` | `# v3` | full commit SHA |
+
+The `hseshadr/ci/...@ci-v1` references are first-party release channels, not
+third-party actions. They remain on the moving major tag so compatible fixes from
+this repository reach all consumers; immutable `ci-vX.Y.Z` tags remain available
+for callers that need a frozen shared-workflow release. Each executable self-reference
+has a narrow `zizmor` ignore explaining why it cannot be a relative action path: reusable
+workflows execute against the caller's checkout, where `./.github/actions/...` would
+resolve to the consumer repository instead of this one.
+
+### Input trust boundary
+
+Data-shaped inputs are parsed as quoted argument arrays and constrained to documented
+values: Playwright browsers, pnpm install flags, Python versions, uv sync/export flags,
+Poe task names, and audit severity. They are never expanded directly into shell code.
+
+Three inputs are intentionally command-shaped: model `fetch-command`, Pages
+`build-command` / `pre-build-run`, and frontend `gate-command`. They accept only literal
+commands committed in a trusted caller workflow. Never derive them from event payloads,
+repository variables, workflow-dispatch text, or other untrusted data. The implementation
+passes them through environment variables before invoking an isolated Bash process, which
+prevents GitHub template expansion from turning input text into the surrounding script.
+
+Every checkout sets `persist-credentials: false`; every workflow declares explicit token
+permissions; Dependabot waits seven days before adopting new action releases.
 
 ### Required setup (read this first)
 

@@ -3,6 +3,19 @@
 All notable changes to the shared CI/CD templates. Consumers pin the moving major tag
 `ci-v1`; each release below is also cut as an immutable `ci-vX.Y.Z` tag at its commit.
 
+## Unreleased
+
+- Pin every third-party action to a full commit SHA with Dependabot version comments.
+- Restrict reusable workflows and consumer examples to explicit least-privilege token
+  permissions.
+- Add a conservative Cloudflare Pages security-header baseline while preserving any
+  application-owned `_headers` file.
+- Add a security-policy regression test covering YAML, action pins, permissions, and
+  Pages header behavior, enforced by this repository's CI workflow.
+- Eliminate all actionable `zizmor` findings: move command inputs through environment
+  variables, validate data arguments, disable checkout credential persistence, add a
+  Dependabot cooldown, and document narrow first-party `ci-v1` ignores.
+
 ## ci-v1.0.0 — 2026-07-12
 
 Initial release. Five reusable workflows + five composite actions that de-duplicate
