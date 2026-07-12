@@ -35,7 +35,13 @@ validate_action_pins() {
     if [[ ! "$line" =~ \#[[:space:]]+v[0-9] ]]; then
       fail "$file:$line_number pinned action lacks a Dependabot version comment"
     fi
-  done < <(rg -n --no-heading '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+' .github examples -g '*.yml' -g '*.yaml')
+  done < <(
+    while IFS= read -r file; do
+      awk '/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+/ {
+        printf "%s:%d:%s\n", FILENAME, NR, $0
+      }' "$file"
+    done < <(find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  )
 }
 
 validate_permissions() {
@@ -63,7 +69,7 @@ validate_self_ci() {
     fail "$workflow is missing"
     return
   }
-  rg -q 'tests/security-policy\.sh' "$workflow" ||
+  grep -q 'tests/security-policy\.sh' "$workflow" ||
     fail "$workflow does not run the security-policy regression test"
 }
 
@@ -76,7 +82,7 @@ validate_pages_headers() {
     fail "$script is missing or not executable"
     return
   }
-  rg -q 'apply-security-headers\.sh' "$action" ||
+  grep -q 'apply-security-headers\.sh' "$action" ||
     fail "$action does not apply the security-headers baseline"
   if ! ruby -e '
     require "yaml"
@@ -99,7 +105,7 @@ validate_pages_headers() {
     'Strict-Transport-Security:' \
     'X-Content-Type-Options:' \
     'X-Frame-Options:'; do
-    rg -q "^[[:space:]]+$header" "$temp_dir/_headers" ||
+    grep -Eq "^[[:space:]]+$header" "$temp_dir/_headers" ||
       fail "generated Pages baseline is missing $header"
   done
 
