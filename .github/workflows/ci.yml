@@ -20,5 +20,11 @@ jobs:
           persist-credentials: false
       - name: Validate CI security policy
         run: |
-          bash -n tests/security-policy.sh .github/actions/pages-deploy-dist/apply-security-headers.sh
+          bash -n .github/actions/*/*.sh tests/security-policy.sh
+          shellcheck .github/actions/*/*.sh tests/security-policy.sh
           tests/security-policy.sh
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: false
+      - name: Audit all workflows and actions
+        run: uvx "zizmor@1.26.1" .

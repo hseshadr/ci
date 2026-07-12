@@ -67,9 +67,11 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Python + uv (+ sync)
-        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           python-version: ${{ inputs.python-version }}
           sync-args: ${{ inputs.sync-args }}
@@ -79,7 +81,14 @@ jobs:
       # what keeps CI and the local `poe gate` mirrored in both directions.
       - name: Gate (uv run poe ${{ inputs.gate-task }})
         working-directory: ${{ inputs.working-directory }}
-        run: uv run poe ${{ inputs.gate-task }}
+        env:
+          POE_GATE_TASK: ${{ inputs.gate-task }}
+        run: |
+          if [[ ! "$POE_GATE_TASK" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+            echo "::error::Invalid poe gate task: $POE_GATE_TASK"
+            exit 1
+          fi
+          uv run poe "$POE_GATE_TASK"
 
       - name: Upload coverage to Codecov
         if: ${{ inputs.upload-coverage }}

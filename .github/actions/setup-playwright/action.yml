@@ -46,11 +46,15 @@ runs:
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: pnpm exec playwright install --with-deps ${{ inputs.browsers }}
+      env:
+        PLAYWRIGHT_BROWSERS: ${{ inputs.browsers }}
+      run: '"${GITHUB_ACTION_PATH}/run-playwright.sh" install "$PLAYWRIGHT_BROWSERS"'
 
     # Cache HIT: binaries are restored, but apt OS libraries are not cached — add them.
     - name: Install OS deps only
       if: ${{ steps.cache.outputs.cache-hit == 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: pnpm exec playwright install-deps ${{ inputs.browsers }}
+      env:
+        PLAYWRIGHT_BROWSERS: ${{ inputs.browsers }}
+      run: '"${GITHUB_ACTION_PATH}/run-playwright.sh" install-deps "$PLAYWRIGHT_BROWSERS"'

@@ -38,7 +38,9 @@ inputs:
     description: "Lockfile path used as the pnpm cache key."
     default: "pnpm-lock.yaml"
   install-args:
-    description: "Args appended to `pnpm install`."
+    description: >-
+      Space-separated allowlisted args: --frozen-lockfile and
+      --config.dangerously-allow-all-builds=true.
     default: "--frozen-lockfile"
   working-directory:
     description: "Dir to run `pnpm install` from."
@@ -65,4 +67,6 @@ runs:
       if: ${{ inputs.install == 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: pnpm install ${{ inputs.install-args }}
+      env:
+        PNPM_INSTALL_ARGS: ${{ inputs.install-args }}
+      run: '"${GITHUB_ACTION_PATH}/run-install.sh" install "$PNPM_INSTALL_ARGS"'

@@ -12,6 +12,9 @@ All notable changes to the shared CI/CD templates. Consumers pin the moving majo
   application-owned `_headers` file.
 - Add a security-policy regression test covering YAML, action pins, permissions, and
   Pages header behavior, enforced by this repository's CI workflow.
+- Eliminate all actionable `zizmor` findings: move command inputs through environment
+  variables, validate data arguments, disable checkout credential persistence, add a
+  Dependabot cooldown, and document narrow first-party `ci-v1` ignores.
 
 ## ci-v1.0.0 — 2026-07-12
 

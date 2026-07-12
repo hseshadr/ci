@@ -27,7 +27,9 @@ inputs:
       e.g. 'model-weights-${{ runner.os }}-${{ hashFiles('scripts/download-model.mjs') }}'.
     required: true
   fetch-command:
-    description: "Shell command that downloads the weights into cache-path."
+    description: >-
+      Trusted, repository-controlled literal command that downloads the weights.
+      Never derive it from expressions, event data, dispatch fields, or untrusted text.
     required: true
   working-directory:
     description: "Dir to run fetch-command from."
@@ -52,4 +54,6 @@ runs:
       if: ${{ steps.cache.outputs.cache-hit != 'true' || inputs.always-fetch == 'true' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: ${{ inputs.fetch-command }}
+      env:
+        TRUSTED_FETCH_COMMAND: ${{ inputs.fetch-command }}
+      run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_FETCH_COMMAND"

@@ -52,7 +52,9 @@ on:
         type: string
         required: true
       build-command:
-        description: "Single shell command (run from workspace root) that produces dist-dir."
+        description: >-
+          Trusted, repository-controlled literal command that produces dist-dir.
+          Never derive it from expressions, event data, dispatch fields, or untrusted text.
         type: string
         required: true
       install-working-directory:
@@ -63,7 +65,10 @@ on:
         type: string
         default: "--frozen-lockfile"
       pre-build-run:
-        description: "Optional shell run before the build (e.g. fetch self-hosted model weights). Empty = skipped."
+        description: >-
+          Optional trusted, repository-controlled literal command before the build.
+          Never derive it from expressions, event data, dispatch fields, or untrusted text.
+          Empty = skipped.
         type: string
         default: ""
       package-json-file:
@@ -156,11 +161,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           # Deploy the exact commit that passed CI (auto-run); HEAD for manual.
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -171,13 +177,17 @@ jobs:
 
       - name: Pre-build (caller-supplied)
         if: ${{ inputs.pre-build-run != '' }}
-        run: ${{ inputs.pre-build-run }}
+        env:
+          TRUSTED_COMMAND: ${{ inputs.pre-build-run }}
+        run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Build
-        run: ${{ inputs.build-command }}
+        env:
+          TRUSTED_COMMAND: ${{ inputs.build-command }}
+        run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}
