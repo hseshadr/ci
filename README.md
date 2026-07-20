@@ -20,8 +20,8 @@ pattern, one place that defines what "run the gate" means. No drift.
 and full-repository `zizmor` are clean). **Not yet live-proven by a consumer run** —
 the six repos still call their old inline workflows; migrating them is a separate wave,
 and cross-repo calls stay broken until the one repo setting in
-[Required setup](#required-setup-read-this-first) is flipped. See
-[Northstar self-assessment](#northstar-self-assessment) for the honest scorecard.
+[Required setup](#required-setup-read-this-first) is flipped. See the
+[self-assessment](#self-assessment) for the honest scorecard.
 
 ---
 
@@ -263,9 +263,9 @@ Honest boundaries, not force-fits:
 - **Singletons** (`shared-libs` publish, `aml-filter` publish-watchlist, almamesh nightly)
   exist in exactly one repo — nothing to de-duplicate.
 
-## Northstar self-assessment
+## Self-assessment
 
-Graded against the `super-northstar` rubric, honestly:
+An honest self-assessment against a publish-readiness checklist:
 
 - **Teen-readable front door + layered depth** — ✅ plain-language TL;DR (what / why /
   status) before any jargon; a separate "Under the hood" section carries the depth.
