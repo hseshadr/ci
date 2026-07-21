@@ -2,7 +2,7 @@
 # Fits the reusable Pages deploy: the model-weights fetch goes in pre-build-run; the
 # only thing lost vs bespoke is the deploy-time weights cache (fine — deploys are rare).
 name: Deploy edge-reco.com
-on:
+on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design; the triggering run is pinned to this repo + branch main + conclusion success, and no PR code is ever checked out
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -12,7 +12,10 @@ permissions:
   contents: read
 jobs:
   deploy:
-    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+    # workflow_run fires on COMPLETION, not on success — without this guard a red CI
+    # run still deploys. Mirrors examples/aml-filter/deploy.yml.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
     with:
       project-name: edge-reco
       dist-dir: frontend/app/dist
@@ -22,4 +25,8 @@ jobs:
       package-json-file: frontend/package.json
       node-version-file: frontend/.node-version
       cache-dependency-path: frontend/pnpm-lock.yaml
-    secrets: inherit
+    # Name the two secrets this deploy actually needs. `secrets: inherit` would hand the
+    # called workflow EVERY secret in the repo, including ones it has no business seeing.
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

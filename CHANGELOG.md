@@ -6,6 +6,46 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
+## Unreleased
+
+On `main`, ahead of `ci-v2.0.1`. No reusable-workflow *inputs* or composite-action
+behavior changed, so consumers pinned to `ci-v2.0.1` are unaffected until a new tag is
+cut. Two of these do change what a publish or deploy run *does*, and both are noted.
+
+- **Finish the `ci-v2.0.1` re-pin.** `ci-v2.0.1` fixed the nested refs inside the
+  reusable workflows, and a follow-up fixed the two OIDC publish examples — but 35
+  executable `uses:` refs across 19 files still named `36bf999` (`ci-v2.0.0`). Sixteen of
+  those were `examples/` pointing at *reusable workflows* whose `ci-v2.0.0` copies still
+  contain nested `@ci-v1` moving tags, so anyone copying an example inherited the very
+  hole `ci-v2.0.1` closed. All 35 now pin `9e8cf2e…` (`ci-v2.0.1`).
+- **Assert pin provenance, not pin shape** (`validate_first_party_release_lineage`).
+  Every `hseshadr/ci` SHA must exist here, be an ancestor of the newest `ci-vX.Y.Z` tag,
+  and *be* that tag. A shape check cannot express "this valid SHA points at a bad
+  release" — which is exactly why the above survived a green suite.
+- **Verify publishes against the registry** (behavior change). `python-publish.yml` and
+  `ts-publish.yml` now poll PyPI / npm for the exact `name@version` they just shipped
+  (6 attempts, ~60s) and fail if it is not served. `shared-libs-python` had six green
+  publish runs sitting on a package that does not resolve on PyPI; a green upload step
+  and a published package were never the same fact.
+- **Pin the deploy trigger to this repository** (behavior change).
+  `cloudflare-pages-deploy.yml` gated auto-deploy on
+  `workflow_run.head_branch == 'main'`, which a fork can satisfy by naming its branch
+  `main`; the job then checks out `workflow_run.head_sha` with `CLOUDFLARE_*` in scope.
+  Now also requires `head_repository.full_name == github.repository`.
+- **Audit `examples/` for the first time.** `zizmor` and `actionlint` only collect from
+  `.github/workflows/`, so a repo-root scan covered 0 of the 15 example files.
+  `tests/lint-examples.sh` stages them into a real layout and audits them; both tools run
+  in CI. First pass found: `secrets: inherit` in two examples (now named secrets),
+  a missing `conclusion == 'success'` guard in `examples/edge-reco/deploy.yml` (it
+  deployed on red CI), and the `workflow_run` trigger design (documented, justified).
+- **Run `actionlint` at all.** The README claimed an actionlint-clean tree while no job
+  ran it. It now runs over the workflows and the examples, and `validate_self_ci` asserts
+  its presence so the claim cannot drift again.
+- **Reject `github.event.*` in `run:` blocks.** `validate_shell_boundaries` modelled only
+  `${{ inputs. }}`, leaving the textbook script-injection vector unguarded.
+- **Fail soft.** One malformed YAML file used to abort the suite at check 4 of 11,
+  silently skipping checks 5–11. Every check now runs and all failures are reported.
+
 ## ci-v2.0.1 — 2026-07-20
 
 Commit `9e8cf2e170441a6250b9b3c1a7af8128539a388f`.

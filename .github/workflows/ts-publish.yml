@@ -137,7 +137,7 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -178,3 +178,34 @@ jobs:
             publish_args+=(--provenance)
           fi
           npm publish "${publish_args[@]}"
+
+      # A green `npm publish` is not the same fact as "the registry serves it".
+      # Its PyPI twin let six green publish runs stack up on a package that 404'd,
+      # because nothing ever asked the registry. Ask the registry.
+      - name: Verify the release is actually on npm
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          NPM_REGISTRY_URL: ${{ inputs.registry-url }}
+        run: |
+          name="$(npm pkg get name | tr -d '"')"
+          version="$(npm pkg get version | tr -d '"')"
+          if [[ -z "$name" || -z "$version" || "$name" == "undefined" || "$version" == "undefined" ]]; then
+            echo "::error::Could not read name/version from package.json — cannot verify the publish."
+            exit 1
+          fi
+
+          echo "Verifying ${name}@${version} is served by ${NPM_REGISTRY_URL}..."
+
+          # Retry for propagation delay, but a timeout is a FAILURE, never a pass.
+          # Bounded: 6 attempts, 10s apart (~60s).
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "${name}@${version}" version --registry "$NPM_REGISTRY_URL" >/dev/null 2>&1; then
+              echo "Verified: ${name}@${version} is live on ${NPM_REGISTRY_URL}."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/6: not served yet; retrying in 10s..."
+            sleep 10
+          done
+
+          echo "::error::PUBLISH VERIFICATION FAILED — the publish step reported success, but ${NPM_REGISTRY_URL} does not serve ${name}@${version} after ~60s. A green publish is not proof of a release. Most likely cause: an incomplete npm trusted-publisher bootstrap — npm has no 'pending publisher', so the package must already exist before a trusted publisher can be attached, and the first publish of a brand-new name must be token/OTP-based. Confirm the trusted publisher is registered for this repo + workflow filename."
+          exit 1

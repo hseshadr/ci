@@ -17,10 +17,10 @@ permissions:
   pull-requests: read
 jobs:
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
 
   quality:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
     with:
       working-directory: backend
       sync-args: "--group dev"
@@ -31,13 +31,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.node-version
           cache-dependency-path: frontend/pnpm-lock.yaml
           working-directory: frontend
-      - uses: hseshadr/ci/.github/actions/restore-model-cache@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           cache-path: frontend/app/public/models
           cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
@@ -53,19 +53,19 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.node-version
           cache-dependency-path: frontend/pnpm-lock.yaml
           working-directory: frontend
-      - uses: hseshadr/ci/.github/actions/restore-model-cache@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           cache-path: frontend/app/public/models
           cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
           fetch-command: node scripts/download-model.mjs
           working-directory: frontend/app
-      - uses: hseshadr/ci/.github/actions/setup-playwright@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/setup-playwright@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           working-directory: frontend
           cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}

@@ -18,13 +18,35 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          # Full history + tags: validate_first_party_release_lineage resolves every
+          # hseshadr/ci pin against the newest ci-vX.Y.Z tag, which a shallow clone
+          # cannot see.
+          fetch-depth: 0
       - name: Validate CI security policy
         run: |
-          bash -n .github/actions/*/*.sh tests/security-policy.sh
-          shellcheck .github/actions/*/*.sh tests/security-policy.sh
+          bash -n .github/actions/*/*.sh tests/*.sh
+          shellcheck .github/actions/*/*.sh tests/*.sh
           tests/security-policy.sh
+      - name: Install actionlint
+        env:
+          # v1.7.7
+          ACTIONLINT_VERSION: "1.7.7"
+        run: |
+          curl -fsSL --max-time 60 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            -o /tmp/actionlint.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+          actionlint --version
+      - name: Lint our own workflows (actionlint)
+        run: actionlint
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: false
       - name: Audit all workflows and actions
         run: uvx "zizmor@1.26.1" .
+      # zizmor and actionlint only collect from .github/workflows/, so neither of
+      # the steps above sees a single file in examples/ — the surface consumers
+      # actually copy. This stages them into a real workflow layout and audits them.
+      - name: Audit the examples consumers copy
+        run: tests/lint-examples.sh

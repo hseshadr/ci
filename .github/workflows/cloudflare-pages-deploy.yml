@@ -120,10 +120,15 @@ jobs:
   preflight:
     name: Gate auto-deploy
     runs-on: ${{ inputs.runs-on }}
+    # head_branch alone is NOT a trust boundary: a fork can name its branch `main`,
+    # and a fork-PR run reports that name here. Since the deploy job checks out
+    # workflow_run.head_sha with CLOUDFLARE_* in scope, that would build fork-authored
+    # code with our deploy credentials. Pin the triggering run to THIS repository.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     outputs:
       configured: ${{ steps.check.outputs.configured }}
     steps:
@@ -172,7 +177,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -193,7 +198,7 @@ jobs:
         run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}

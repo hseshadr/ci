@@ -4,7 +4,7 @@
 # injected steps. But the DEPLOY half is not special — it composes pages-deploy-dist,
 # the exact same wrangler step edge-reco and almamesh use. Zero deploy duplication.
 name: Deploy aml-filter.com
-on:
+on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design; the triggering run is pinned to this repo + branch main + conclusion success, and no PR code is ever checked out
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
@@ -43,7 +43,7 @@ jobs:
           shred -u /tmp/signing.key
 
       # --- shared deploy half: identical wrangler step used by every Pages repo ---
-      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           project-name: aml-filter
           dist-dir: frontend/dist

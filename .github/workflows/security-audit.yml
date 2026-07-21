@@ -81,7 +81,7 @@ jobs:
 
       # run-sync: false — we `uv export` the lock, not build a venv.
       - name: Setup Python + uv
-        uses: hseshadr/ci/.github/actions/setup-python-uv@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/setup-python-uv@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           working-directory: ${{ inputs.python-working-directory }}
           run-sync: "false"
@@ -137,7 +137,7 @@ jobs:
       # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
       # directly; no node_modules needed.
       - name: Setup pnpm + Node
-        uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/setup-pnpm@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           package-json-file: ${{ inputs.frontend-working-directory }}/package.json
           node-version: ${{ inputs.node-version }}

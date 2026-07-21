@@ -27,11 +27,26 @@ expect_success() {
   fi
 }
 
+# Fail soft. This suite used to run under a bare `set -e`, so the first check
+# that hit a malformed YAML file died inside a command substitution and took the
+# whole script with it — the remaining checks never ran and the run still looked
+# like a single tidy failure. Invoking every validator through `||` both records
+# the abort AND suppresses errexit inside the function body, so one broken input
+# costs you that check and nothing else.
+run_check() {
+  local check="$1"
+  "$check" || fail "$check aborted before completing"
+}
+
+yaml_sources() {
+  find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort
+}
+
 validate_yaml() {
   while IFS= read -r file; do
     ruby -e 'require "yaml"; YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)' "$file" ||
       fail "$file is not valid YAML"
-  done < <(find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  done < <(yaml_sources)
 }
 
 validate_action_pins() {
@@ -61,7 +76,7 @@ validate_action_pins() {
       awk '/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+/ {
         printf "%s:%d:%s\n", FILENAME, NR, $0
       }' "$file"
-    done < <(find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+    done < <(yaml_sources)
   )
 }
 
@@ -83,38 +98,29 @@ validate_permissions() {
   done < <(find .github/workflows examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 }
 
+# Any attacker-influenced expression pasted into a `run:` block is executed by
+# the shell before the script ever sees it, so quoting inside the script cannot
+# save you. `inputs.*` was the only vector modelled here, which left the textbook
+# one wide open: `github.event.*` carries issue titles, PR bodies, commit
+# messages and branch names — all attacker-authored on a public repo. Route the
+# value through `env:` and reference "$VAR" instead.
 validate_shell_boundaries() {
-  local unsafe_files
+  local findings
   local yaml_files=()
 
   while IFS= read -r file; do
     yaml_files+=("$file")
-  done < <(find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  done < <(yaml_sources)
 
-  # The Ruby program intentionally searches for the literal GitHub expression marker.
-  # shellcheck disable=SC2016
-  unsafe_files="$(ruby -e '
-    require "yaml"
+  findings="$(ruby "$repo_root/tests/lib/scan-run-interpolation.rb" "${yaml_files[@]}")" || {
+    fail "run-block interpolation scan failed to execute"
+    return
+  }
 
-    def walk(value, &block)
-      yield value if value.is_a?(Hash)
-      children = value.is_a?(Hash) ? value.values : value
-      children.each { |child| walk(child, &block) } if children.is_a?(Array)
-    end
-
-    ARGV.each do |file|
-      document = YAML.safe_load(File.read(file), aliases: true)
-      unsafe = false
-      walk(document) do |node|
-        unsafe ||= node["run"].is_a?(String) && node["run"].include?("${{ inputs.")
-      end
-      puts file if unsafe
-    end
-  ' "${yaml_files[@]}")"
-
-  while IFS= read -r file; do
-    [[ -z "$file" ]] || fail "$file interpolates workflow inputs directly into shell code"
-  done <<< "$unsafe_files"
+  while IFS=$'\t' read -r file vector; do
+    [[ -z "$file" ]] ||
+      fail "$file interpolates $vector directly into shell code"
+  done <<< "$findings"
 }
 
 validate_checkout_credentials() {
@@ -123,7 +129,7 @@ validate_checkout_credentials() {
 
   while IFS= read -r file; do
     yaml_files+=("$file")
-  done < <(find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  done < <(yaml_sources)
 
   unsafe_files="$(ruby -e '
     require "yaml"
@@ -135,7 +141,11 @@ validate_checkout_credentials() {
     end
 
     ARGV.each do |file|
-      document = YAML.safe_load(File.read(file), aliases: true)
+      begin
+        document = YAML.safe_load(File.read(file), aliases: true)
+      rescue StandardError
+        next
+      end
       unsafe = false
       walk(document) do |node|
         next unless node["uses"].to_s.start_with?("actions/checkout@")
@@ -143,7 +153,10 @@ validate_checkout_credentials() {
       end
       puts file if unsafe
     end
-  ' "${yaml_files[@]}")"
+  ' "${yaml_files[@]}")" || {
+    fail "checkout-credentials scan failed to execute"
+    return
+  }
 
   while IFS= read -r file; do
     [[ -z "$file" ]] || fail "$file has a checkout that persists GitHub credentials"
@@ -173,6 +186,61 @@ validate_first_party_pins() {
   done < <(grep -RInE --include='*.yml' \
     '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/[^[:space:]]*@(ci-)?v[0-9]' \
     .github examples)
+}
+
+# A pin-SHAPE check can only prove a ref names *a* commit. It cannot prove the
+# commit is one we ever released, and that blindness is what let the last hole
+# survive a green suite: ci-v2.0.0 (36bf999) is a perfectly-formed 40-hex SHA and
+# a genuine ancestor of every later tag — and it carries nested @ci-v1 moving
+# tags. Every example in this repo pointed at it, so a consumer who copied our
+# own documented path inherited the mutable-ref hole the pin was supposed to close.
+#
+# So assert provenance, not shape:
+#   lineage  — the SHA must exist here and be an ancestor of the newest release
+#              tag (catches a fork's SHA, a dropped branch, a typo'd hex string)
+#   currency — the SHA must BE the newest release tag (catches a valid, ancestral,
+#              but superseded release — the ci-v2.0.0 case specifically)
+# Currency is the one that would have caught it; lineage is what makes a bogus
+# SHA legible instead of just "not current".
+validate_first_party_release_lineage() {
+  local newest newest_sha refs sha files
+
+  command -v git >/dev/null 2>&1 || {
+    fail "git is unavailable, so first-party ref provenance cannot be verified"
+    return
+  }
+  git rev-parse --git-dir >/dev/null 2>&1 || {
+    fail "not a git checkout, so first-party ref provenance cannot be verified"
+    return
+  }
+
+  newest="$(git tag -l 'ci-v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
+  [[ -n "$newest" ]] || {
+    fail "no ci-vX.Y.Z release tag is reachable (fetch tags: actions/checkout needs fetch-depth: 0)"
+    return
+  }
+  newest_sha="$(git rev-parse "$newest^{commit}")"
+
+  refs="$(grep -rhoE --include='*.yml' \
+    'hseshadr/ci/[^[:space:]]*@[0-9a-f]{40}' .github examples | sed 's/.*@//' | sort -u)"
+
+  while IFS= read -r sha; do
+    [[ -n "$sha" ]] || continue
+
+    files="$(grep -rlF --include='*.yml' "$sha" .github examples | paste -sd' ' -)"
+
+    if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+      fail "first-party ref names a commit unknown to this repository: $sha ($files)"
+      continue
+    fi
+    if ! git merge-base --is-ancestor "$sha" "$newest_sha" 2>/dev/null; then
+      fail "first-party ref $sha is not an ancestor of $newest — it was never part of a release ($files)"
+      continue
+    fi
+    if [[ "$sha" != "$newest_sha" ]]; then
+      fail "first-party ref $sha is a superseded release, not $newest ($newest_sha) — re-pin ($files)"
+    fi
+  done <<< "$refs"
 }
 
 validate_trusted_command_contracts() {
@@ -225,10 +293,18 @@ validate_self_ci() {
   }
   grep -q 'tests/security-policy\.sh' "$workflow" ||
     fail "$workflow does not run the security-policy regression test"
-  grep -q 'shellcheck .github/actions/\*/\*.sh tests/security-policy.sh' "$workflow" ||
+  grep -q 'shellcheck .github/actions/\*/\*.sh tests/\*.sh' "$workflow" ||
     fail "$workflow does not run ShellCheck over every shell script"
   grep -q 'uvx "zizmor@1\.26\.1" \.' "$workflow" ||
     fail "$workflow does not run the pinned full zizmor audit"
+
+  # The README advertised an actionlint-clean tree while no job ran actionlint
+  # anywhere. Assert the tool is actually wired in, so the claim cannot drift
+  # back into decoration.
+  grep -q 'actionlint' "$workflow" ||
+    fail "$workflow does not run actionlint, which the README claims is clean"
+  grep -q 'tests/lint-examples.sh' "$workflow" ||
+    fail "$workflow does not lint/audit examples/, which zizmor cannot reach on its own"
 }
 
 validate_pages_headers() {
@@ -254,9 +330,15 @@ validate_pages_headers() {
     fail "$action interpolates inputs directly into shell code"
   fi
 
+  # Guarded expansion: run_check invokes this via `||`, and the RETURN trap fires
+  # again as that wrapper returns — by which point temp_dir is out of scope and a
+  # bare "$temp_dir" would abort the suite on `set -u`.
   temp_dir="$(mktemp -d)"
-  trap 'rm -rf "$temp_dir"' RETURN
-  "$script" "$temp_dir"
+  trap 'rm -rf "${temp_dir:-}"' RETURN
+  "$script" "$temp_dir" || {
+    fail "$script failed to generate a Pages headers baseline"
+    return
+  }
 
   for header in \
     'Content-Security-Policy:' \
@@ -276,17 +358,18 @@ validate_pages_headers() {
   [[ "$before" == "$after" ]] || fail "Pages baseline overwrites an app-owned _headers file"
 }
 
-validate_yaml
-validate_action_pins
-validate_permissions
-validate_shell_boundaries
-validate_checkout_credentials
-validate_dependabot_cooldown
-validate_first_party_pins
-validate_trusted_command_contracts
-validate_argument_guards
-validate_self_ci
-validate_pages_headers
+run_check validate_yaml
+run_check validate_action_pins
+run_check validate_permissions
+run_check validate_shell_boundaries
+run_check validate_checkout_credentials
+run_check validate_dependabot_cooldown
+run_check validate_first_party_pins
+run_check validate_first_party_release_lineage
+run_check validate_trusted_command_contracts
+run_check validate_argument_guards
+run_check validate_self_ci
+run_check validate_pages_headers
 
 if ((failures > 0)); then
   printf '\n%d security policy check(s) failed.\n' "$failures" >&2

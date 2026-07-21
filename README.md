@@ -16,9 +16,12 @@ only the one thing that is genuinely its own — its build command.
 standardized." One place to bump `actions/checkout`, one place to fix the gitleaks
 pattern, one place that defines what "run the gate" means. No drift.
 
-**Status.** Templates written and statically validated (every file parses; `actionlint`
-and full-repository `zizmor` are clean), and the cross-repo
-[access flip](#required-setup-read-this-first) is now done, so callers resolve.
+**Status.** Templates written and statically validated — all 29 YAML files parse, and
+`actionlint` plus `zizmor` run in CI over the workflows *and* over `examples/` (the
+examples need staging into a `.github/workflows/` layout first, which
+`tests/lint-examples.sh` does; a plain repo-root scan reaches none of them). Both are
+clean. The cross-repo [access flip](#required-setup-read-this-first) is now done, so
+callers resolve.
 
 **Adopted in code by four repos — the publish path only.** `shared-libs-python` and
 `edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
@@ -32,6 +35,11 @@ callers only fire on a `v*` tag, and no tag has been pushed since they landed:
 old token + GitHub-Release flow, before `hseshadr/ci` was referenced at all). The gate,
 secret-scan, security-audit, frontend, and deploy templates have **no adopters** — those
 four repos still run their own inline `ci.yml` and `security-audit.yml`.
+
+Those six green runs are also why both publish workflows now **verify the release against
+the registry** after uploading: the package they were releasing does not resolve on PyPI.
+A green upload step and a published package are different facts, and until now nothing
+here checked the second one. See [Publish verification](#publish-verification).
 
 Net: nothing in this repo has yet executed inside a consumer run. Static validation is
 real; live proof is not there yet. See the [self-assessment](#self-assessment) for the
@@ -112,8 +120,8 @@ while the others were on `@v5`) collapses to one pinned set here.
     secret-scan.yml               #   gitleaks over full history
     security-audit.yml            #   pip-audit and/or pnpm audit (each bool-gated)
     cloudflare-pages-deploy.yml   #   preflight → build → wrangler pages deploy
-    python-publish.yml            #   gate → uv build → PyPI via OIDC (no token)
-    ts-publish.yml                #   gate → build → npm publish via OIDC (no token)
+    python-publish.yml            #   gate → uv build → PyPI via OIDC → verify on PyPI
+    ts-publish.yml                #   gate → build → npm via OIDC → verify on npm
   actions/                        # composite actions — a bundle of steps you `uses:` INSIDE a job
     setup-python-uv/              #   install uv (cached) + pin Python + (opt) uv sync
     setup-pnpm/                   #   pnpm + Node (pnpm cache) + (opt) install
@@ -123,7 +131,11 @@ while the others were on `@v5`) collapses to one pinned set here.
   dependabot.yml                  # bumps THIS repo's action pins; consumers re-pin the new SHA
 examples/                         # copy-paste caller workflows, one folder per repo
 tests/
-  security-policy.sh              # YAML + pins + permissions + Pages-header contract
+  security-policy.sh              # YAML + pins + pin PROVENANCE + permissions + injection
+  lint-examples.sh                # stages examples/ into a real workflow layout, then
+                                  #   actionlint + zizmor them (neither tool reaches them otherwise)
+  lib/
+    scan-run-interpolation.rb     #   finds attacker-controllable ${{ }} inside run: blocks
 CHANGELOG.md
 ```
 
@@ -249,6 +261,32 @@ resolve to the consumer repository instead of this one — so a SHA is the only 
 form available, and `validate_first_party_pins` in `tests/security-policy.sh` enforces
 it with no carve-out.
 
+**A pin-shape check is not enough, which we learned the expensive way.** Every ref can be
+a valid 40-hex SHA and the tree can still be wrong: for a while every file in `examples/`
+pointed at `ci-v2.0.0` (`36bf999`), a real commit and a real ancestor — whose reusable
+workflows still contained nested `@ci-v1` moving tags. The shape check passed, so a
+consumer following this repo's own documented path inherited the exact hole the pin was
+supposed to close. `validate_first_party_release_lineage` now asserts *provenance*
+instead: every `hseshadr/ci` SHA must exist in this repository, be an ancestor of the
+newest `ci-vX.Y.Z` tag, and **be** that tag. A superseded-but-valid release now fails the
+build.
+
+### Publish verification
+
+Both publish workflows ask the registry whether the release actually landed, instead of
+trusting the upload step's exit code. After `pypa/gh-action-pypi-publish` (or
+`npm publish`), the job derives the exact `name` + `version` it just shipped — from the
+sdist filename for PyPI, from `npm pkg get` for npm — and polls
+`https://pypi.org/pypi/<name>/<version>/json` or `npm view <name>@<version>`. Six
+attempts, ten seconds apart, roughly a minute. Propagation delay gets retries; a timeout
+is a **failure**, never a pass.
+
+This exists because a green upload and a published package turned out to be different
+facts. `shared-libs-python` collected six green `Publish (PyPI, OIDC)` runs — one named
+`Release v0.2.0` — on top of a package that does not resolve on PyPI. The trusted-publisher
+bootstrap had never been completed, and no check in the pipeline was capable of noticing.
+The failure message says so directly and names that bootstrap as the first thing to check.
+
 ### Input trust boundary
 
 Data-shaped inputs are parsed as quoted argument arrays and constrained to documented
@@ -334,9 +372,13 @@ An honest self-assessment against a publish-readiness checklist:
 - **Arch maps 1:1 to tree** — ✅ the "What's in here" tree matches `.github/` exactly.
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
-- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.1`, cut
-  at HEAD, and every release lists the SHA consumers actually pin.
-- **Every YAML valid** — ✅ all 23 files parse; `actionlint` clean on workflows + examples.
+- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.1`, and
+  every release lists the SHA consumers actually pin. `main` sits ahead of that tag with
+  guard/documentation work that changes no workflow behaviour; every first-party ref here
+  pins `ci-v2.0.1`, and `validate_first_party_release_lineage` fails the build if one
+  drifts off it.
+- **Every YAML valid** — ✅ all 29 files parse. `actionlint` runs in CI over both our own
+  workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean.
 - **Live-validated end-to-end** — ⛔ **not yet.** The [Required
   setup](#required-setup-read-this-first) access flip is done, and four repos now call the
   publish workflows — but nothing has *run*. Those callers fire only on a `v*` tag and none

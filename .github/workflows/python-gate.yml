@@ -77,7 +77,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python + uv (+ sync)
-        uses: hseshadr/ci/.github/actions/setup-python-uv@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+        uses: hseshadr/ci/.github/actions/setup-python-uv@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
         with:
           python-version: ${{ inputs.python-version }}
           sync-args: ${{ inputs.sync-args }}

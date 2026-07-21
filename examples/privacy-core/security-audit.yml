@@ -8,7 +8,7 @@ permissions:
   contents: read
 jobs:
   audit:
-    uses: hseshadr/ci/.github/workflows/security-audit.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
+    uses: hseshadr/ci/.github/workflows/security-audit.yml@9e8cf2e170441a6250b9b3c1a7af8128539a388f # ci-v2.0.1
     with:
       run-pnpm-audit: true
       frontend-working-directory: "."
