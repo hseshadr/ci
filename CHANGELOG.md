@@ -8,7 +8,7 @@ included.
 
 ## ci-v2.0.1 — 2026-07-20
 
-Commit `740c72b3435c0156f1389f935b75f212def37f96`.
+Commit `9e8cf2e170441a6250b9b3c1a7af8128539a388f`.
 
 - **Close a transitive pinning hole in the OIDC publish workflows.** A consumer that
   pinned `python-publish.yml` / `ts-publish.yml` to a SHA still had the *nested*
