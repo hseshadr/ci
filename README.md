@@ -25,9 +25,8 @@ callers resolve.
 
 **Adopted in code by four repos — the publish path only.** `shared-libs-python` and
 `edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
-calls both. `privacy-core` pins the `ci-v2.0.2` commit SHA; the other three still pin
-`ci-v2.0.1` and have a re-pin outstanding. `edge-reco` and `aml-filter` have not adopted
-anything yet.
+calls both. All four pin the `ci-v2.0.2` commit SHA. `edge-reco` and `aml-filter` have
+not adopted anything yet.
 
 **The publish path is UNVERIFIED end-to-end — no release has run through it.** Those
 callers only fire on a `v*` tag, and no tag has been pushed since they landed:
