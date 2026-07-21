@@ -59,10 +59,10 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.2
     with: { sync-args: "--frozen --all-extras" }
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<40-char-sha> # ci-v2.0.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<40-char-sha> # ci-v2.0.2
 ```
 
 That is the *whole file*. `gate` runs the repo's `poe gate` (lint, format-check, types,
@@ -216,7 +216,7 @@ Consumers pin a **full 40-character commit SHA**, with the release name in a tra
 comment so Dependabot can bump it:
 
 ```yaml
-uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
+uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.2
 ```
 
 Moving tags are **not** a supported pin, not even for first-party refs.

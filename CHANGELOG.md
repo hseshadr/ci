@@ -6,11 +6,11 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
-## Unreleased
+## ci-v2.0.2 — 2026-07-21
 
-On `main`, ahead of `ci-v2.0.1`. No reusable-workflow *inputs* or composite-action
-behavior changed, so consumers pinned to `ci-v2.0.1` are unaffected until a new tag is
-cut. Two of these do change what a publish or deploy run *does*, and both are noted.
+No reusable-workflow *inputs* or composite-action signatures changed, so re-pinning from
+`ci-v2.0.1` is a drop-in — nothing in a caller has to move. Two entries below do change
+what a publish or deploy run *does*, and both are marked.
 
 - **Finish the `ci-v2.0.1` re-pin.** `ci-v2.0.1` fixed the nested refs inside the
   reusable workflows, and a follow-up fixed the two OIDC publish examples — but 35
