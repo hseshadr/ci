@@ -5,6 +5,12 @@ All notable changes to the shared CI/CD templates. Consumers pin the moving majo
 
 ## Unreleased
 
+- Add two OIDC Trusted Publishing reusable workflows — `python-publish.yml` (PyPI, via
+  `pypa/gh-action-pypi-publish`) and `ts-publish.yml` (npm, via `npm publish`) — that
+  release from a `v*` tag with **no stored write token**: the build and the `id-token`
+  OIDC identity run in one job. `ts-publish` keeps `provenance` off by default (npm
+  provenance needs a public repo). Callers pin them at `@ci-v2`; example callers added
+  for shared-libs-python (PyPI) and privacy-core (npm).
 - Pin every third-party action to a full commit SHA with Dependabot version comments.
 - Restrict reusable workflows and consumer examples to explicit least-privilege token
   permissions.
