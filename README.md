@@ -375,9 +375,10 @@ An honest self-assessment against a publish-readiness checklist:
 - **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.2`, and
   every release lists the SHA consumers actually pin. Every first-party ref here pins
   `ci-v2.0.2`, and `validate_first_party_release_lineage` fails the build if one drifts
-  off it. `main` sits exactly one commit ahead of the tag, and that is structural rather
-  than drift: the currency guard requires every ref to name the newest tag's commit, so
-  the re-pin cannot be *in* the commit it names. The tag is cut first, the re-pin follows.
+  off it. `main` sits ahead of the tag, and at least the first commit of that gap is
+  structural rather than drift: the currency guard requires every ref to name the newest
+  tag's commit, so the re-pin cannot be *in* the commit it names. The tag is cut first,
+  the re-pin follows.
 - **Every YAML valid** — ✅ all 29 files parse. `actionlint` runs in CI over both our own
   workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean.
 - **Live-validated end-to-end** — ⛔ **not yet.** The [Required
