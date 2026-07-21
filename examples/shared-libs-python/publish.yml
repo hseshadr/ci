@@ -1,0 +1,25 @@
+# shared-libs-python — .github/workflows/publish.yml
+# PyPI release via OIDC Trusted Publishing. A tag push is the whole trigger; there is
+# NO PyPI token in this repo. One-time bootstrap: register the GitHub Actions trusted
+# publisher on PyPI (account Publishing tab -> a "pending" publisher + the project name,
+# since shared-libs-python is not yet on PyPI). After the first OIDC publish creates the
+# project, every `git tag vX.Y.Z && git push --tags` releases automatically.
+#
+# The same pattern is the Python-publish example for edge-proc and avow (assay):
+# copy this file, keep working-directory "." (or point it at the package dir).
+name: Publish (PyPI, OIDC)
+on:
+  push:
+    tags: ["v*"]
+# Top-level read-only; the OIDC write scope is granted on the publish job only.
+permissions:
+  contents: read
+jobs:
+  publish:
+    permissions:
+      id-token: write # OIDC — PyPI verifies this against the registered trusted publisher.
+      contents: read
+    uses: hseshadr/ci/.github/workflows/python-publish.yml@ci-v2
+    with:
+      working-directory: "."
+      sync-args: "--frozen --all-extras"

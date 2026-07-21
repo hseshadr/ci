@@ -1,0 +1,37 @@
+# privacy-core — .github/workflows/publish.yml
+# npm release of @gainratio/privacy-core via OIDC Trusted Publishing. A tag push is the
+# whole trigger; there is NO npm write token in this repo.
+#
+# Two npm truths this example encodes:
+#   1. FIRST publish of the brand-new @gainratio/privacy-core name CANNOT use OIDC (npm
+#      has no "pending publisher" — the package must exist to attach a trusted publisher).
+#      Do one token/OTP `npm publish` by hand, THEN register the trusted publisher in the
+#      package settings ({hseshadr, privacy-core, publish.yml}). Every tag push after that
+#      runs THROUGH here, token-free.
+#   2. provenance stays FALSE until the repo is PUBLIC — `--provenance` writes a public
+#      transparency-log entry and fails on a private repo. Flip it true in the same wave
+#      privacy-core goes public. Also confirm package.json `repository.url` matches the
+#      GitHub repo before the first OIDC release (npm OIDC requires an exact match).
+#
+# run-gate is false here: the full gate (biome -> tsc -> vitest -> e2e -> build, which
+# needs a Playwright browser) already ran on the merge to main via ci.yml. This tag flow
+# rebuilds from the gated ref and ships — it does not re-run the browser e2e suite, which
+# ts-publish deliberately does not provision.
+name: Publish (npm, OIDC)
+on:
+  push:
+    tags: ["v*"]
+# Top-level read-only; the OIDC write scope is granted on the publish job only.
+permissions:
+  contents: read
+jobs:
+  publish:
+    permissions:
+      id-token: write # OIDC — npm verifies this against the registered trusted publisher.
+      contents: read
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@ci-v2
+    with:
+      working-directory: "."
+      install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
+      run-gate: false
+      provenance: false # flip true only when the repo is public

@@ -1,0 +1,127 @@
+# Reusable PyPI publish — release a Python package with OIDC Trusted Publishing.
+#
+# WHY OIDC: after a ONE-TIME trusted-publisher registration on PyPI (project →
+# Manage → Publishing, or an account-level "pending publisher" for a not-yet-created
+# project), every release is `git tag vX.Y.Z && git push --tags` and CI does the rest.
+# NO `twine` password, NO PyPI API token stored anywhere. `pypa/gh-action-pypi-publish`
+# mints a short-lived OIDC token from GitHub and PyPI verifies it against the registered
+# publisher — the workflow filename + repo + owner ARE the credential.
+#
+# One self-contained job so the built dist and the OIDC identity live together:
+#   checkout -> setup-python-uv composite (uv + Python + sync) -> reuse the repo gate
+#   (`uv run poe <gate-task>`, skippable) -> `uv build` (sdist + wheel) ->
+#   gh-action-pypi-publish (OIDC, attestations on). This mirrors python-gate.yml's
+#   "run the exact gate command" contract before it ever ships an artifact.
+#
+# The CALLER owns the `on: push: tags: ['v*']` trigger (same split as secret-scan /
+# security-audit) and must grant `id-token: write` at its job level.
+#
+# Caller (.github/workflows/publish.yml):
+#   name: Publish (PyPI, OIDC)
+#   on: { push: { tags: ['v*'] } }
+#   permissions: { contents: read }
+#   jobs:
+#     publish:
+#       permissions: { id-token: write, contents: read }
+#       uses: hseshadr/ci/.github/workflows/python-publish.yml@ci-v2
+#       with: { working-directory: "." }
+name: Python publish (reusable, OIDC)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dir holding pyproject.toml. '.' for a single-package repo."
+        type: string
+        default: "."
+      python-version:
+        description: "Python version to install via uv."
+        type: string
+        default: "3.13"
+      sync-args:
+        description: >-
+          Extra args appended to `uv sync` before the gate (e.g. '--frozen --all-extras',
+          '--group dev'). Empty = bare `uv sync`. Same allowlist as python-gate.
+        type: string
+        default: ""
+      gate-task:
+        description: "poe task run as the gate before building. Ignored when run-gate is false."
+        type: string
+        default: "gate"
+      run-gate:
+        description: "Run the repo gate before building. Leave true unless a prior CI job already gated this ref."
+        type: boolean
+        default: true
+      packages-dir:
+        description: "Directory (relative to working-directory) `uv build` writes the sdist + wheel into."
+        type: string
+        default: "dist"
+      attestations:
+        description: "Emit PEP 740 attestations (SLSA provenance) with the publish."
+        type: boolean
+        default: true
+      environment:
+        description: "Optional GitHub environment to run the publish under (deploy-protection gate)."
+        type: string
+        default: ""
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+    # No `secrets:` block — publishing is token-free (OIDC). That is the whole point.
+
+# Top-level stays read-only (least privilege + the repo security-policy forbids a
+# top-level write). The OIDC `id-token: write` is granted at the job level only.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runs-on }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write # OIDC: mint the short-lived token PyPI verifies. This is the credential.
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python + uv (+ sync)
+        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        with:
+          python-version: ${{ inputs.python-version }}
+          sync-args: ${{ inputs.sync-args }}
+          working-directory: ${{ inputs.working-directory }}
+
+      # Reuse the exact gate the repo runs locally — a package never ships without
+      # passing its own quality bar. Skippable when an upstream CI job already gated.
+      - name: Gate (uv run poe ${{ inputs.gate-task }})
+        if: ${{ inputs.run-gate }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          POE_GATE_TASK: ${{ inputs.gate-task }}
+        run: |
+          if [[ ! "$POE_GATE_TASK" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+            echo "::error::Invalid poe gate task: $POE_GATE_TASK"
+            exit 1
+          fi
+          uv run poe "$POE_GATE_TASK"
+
+      - name: Build sdist + wheel
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PACKAGES_DIR: ${{ inputs.packages-dir }}
+        run: |
+          if [[ ! "$PACKAGES_DIR" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid packages-dir: $PACKAGES_DIR"
+            exit 1
+          fi
+          uv build --out-dir "$PACKAGES_DIR"
+
+      # No `password:` input -> the action publishes via OIDC Trusted Publishing.
+      - name: Publish to PyPI (OIDC Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          packages-dir: ${{ inputs.working-directory }}/${{ inputs.packages-dir }}
+          attestations: ${{ inputs.attestations }}
+          print-hash: true

@@ -1,0 +1,173 @@
+# Reusable npm publish — release a TS/JS package with OIDC Trusted Publishing.
+#
+# WHY OIDC: npm Trusted Publishing (GA 2025-07-31) lets a tagged GitHub Actions run
+# publish with NO `NODE_AUTH_TOKEN` write token. After a ONE-TIME registration in the
+# package's npm settings ({org/user, repo, this workflow's filename}), every release is
+# a `v*` tag push. npm mints a short-lived OIDC token from GitHub and verifies it
+# against the registered publisher.
+#
+# HARD npm truths baked into this design (from docs.npmjs.com/trusted-publishers):
+#   * There is NO npm "pending publisher". The package MUST already exist to attach a
+#     trusted publisher, so the FIRST publish of a brand-new name (e.g. @gainratio/avow)
+#     is unavoidably token/OTP-based; every publish AFTER that is OIDC through here.
+#   * `--provenance` writes to a PUBLIC transparency log, so it REQUIRES a PUBLIC source
+#     repo. `provenance` defaults FALSE — flip it true only in the wave the repo goes
+#     public, or the publish fails. (See the provenance input.)
+#   * `package.json` `repository.url` MUST exactly match the GitHub repo or OIDC publish
+#     fails (ENEEDAUTH). Verify per package before the first OIDC release.
+#   * npm >= 11.5.1 is required for OIDC; Node 24 currently ships an older npm, so this
+#     workflow upgrades npm before publishing.
+#
+# One self-contained job: checkout -> setup-node (registry-url for OIDC, no cache) ->
+# setup-pnpm composite (reuse; pnpm build+gate toolchain) -> reuse the repo gate ->
+# build -> `npm publish` (OIDC). Gate/build run on pnpm; only the publish uses npm.
+#
+# The CALLER owns the `on: push: tags: ['v*']` trigger and must grant `id-token: write`.
+#
+# Caller (.github/workflows/publish.yml):
+#   name: Publish (npm, OIDC)
+#   on: { push: { tags: ['v*'] } }
+#   permissions: { contents: read }
+#   jobs:
+#     publish:
+#       permissions: { id-token: write, contents: read }
+#       uses: hseshadr/ci/.github/workflows/ts-publish.yml@ci-v2
+#       with: { working-directory: ts }
+name: TS publish (reusable, OIDC)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dir holding package.json + pnpm-lock.yaml (e.g. 'ts')."
+        type: string
+        default: "."
+      package-json-file:
+        description: "package.json that pins the pnpm version (packageManager field)."
+        type: string
+        default: "package.json"
+      node-version:
+        description: "Node major (ignored if node-version-file is set)."
+        type: string
+        default: "24"
+      node-version-file:
+        description: "Optional path to a .node-version / .nvmrc (takes precedence)."
+        type: string
+        default: ""
+      cache-dependency-path:
+        type: string
+        default: "pnpm-lock.yaml"
+      install-args:
+        type: string
+        default: "--frozen-lockfile"
+      gate-command:
+        description: >-
+          Trusted, repository-controlled literal command run from working-directory
+          before building. Never derive it from expressions, event data, or untrusted text.
+        type: string
+        default: "pnpm gate"
+      build-command:
+        description: >-
+          Trusted, repository-controlled literal command that builds the publishable
+          artifact. Same trust boundary as gate-command.
+        type: string
+        default: "pnpm build"
+      run-gate:
+        description: "Run the repo gate before building. Leave true unless a prior CI job already gated this ref."
+        type: boolean
+        default: true
+      provenance:
+        description: >-
+          Emit npm provenance (`--provenance`). REQUIRES a PUBLIC repo — keep false until
+          the source repo is public, or the publish fails.
+        type: boolean
+        default: false
+      registry-url:
+        description: "npm registry the OIDC publish targets."
+        type: string
+        default: "https://registry.npmjs.org"
+      environment:
+        description: "Optional GitHub environment to run the publish under (deploy-protection gate)."
+        type: string
+        default: ""
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
+    secrets:
+      # Optional. ONLY needed to install PRIVATE dependencies during gate/build. The
+      # publish itself is token-free (OIDC) — never pass a publish/write token here.
+      NPM_READ_TOKEN:
+        required: false
+
+# Top-level stays read-only; OIDC `id-token: write` is granted at the job level only.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runs-on }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write # OIDC: mint the short-lived token npm verifies. This is the credential.
+      contents: read
+    # Read token (if supplied) authenticates PRIVATE-dep installs. Absent -> empty ->
+    # public installs work and the publish falls through to OIDC.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      # setup-node runs FIRST to write the registry .npmrc OIDC needs. No cache here
+      # (pnpm owns caching); the setup-pnpm composite's own setup-node has no
+      # registry-url, so it leaves this .npmrc untouched.
+      - name: Configure npm registry for OIDC
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: ${{ inputs.registry-url }}
+
+      - name: Setup pnpm + Node (+ install)
+        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        with:
+          package-json-file: ${{ inputs.package-json-file }}
+          node-version: ${{ inputs.node-version }}
+          node-version-file: ${{ inputs.node-version-file }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          install-args: ${{ inputs.install-args }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Gate
+        if: ${{ inputs.run-gate }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TRUSTED_COMMAND: ${{ inputs.gate-command }}
+        run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
+
+      - name: Build
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TRUSTED_COMMAND: ${{ inputs.build-command }}
+        run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
+
+      # OIDC needs npm >= 11.5.1; Node 24's bundled npm may be older. Upgrade before
+      # publishing. The ad-hoc install is deliberate — npm bootstraps itself and has no
+      # lockfile here; it is the npm CLI that performs the OIDC token exchange.
+      - name: Ensure OIDC-capable npm
+        run: npm install --global npm@latest # zizmor: ignore[adhoc-packages] npm >= 11.5.1 required for OIDC; bootstraps the publish CLI, no lockfile applies
+
+      # No write token -> npm publishes via OIDC Trusted Publishing. `--provenance` is
+      # added ONLY when provenance=true (requires a public repo). provenance is passed
+      # through an env var, never interpolated into the shell, per the input trust boundary.
+      - name: Publish to npm (OIDC Trusted Publishing)
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          NPM_PROVENANCE: ${{ inputs.provenance }}
+        run: |
+          publish_args=(--access public)
+          if [[ "$NPM_PROVENANCE" == "true" ]]; then
+            publish_args+=(--provenance)
+          fi
+          npm publish "${publish_args[@]}"

@@ -95,6 +95,8 @@ while the others were on `@v5`) collapses to one pinned set here.
     secret-scan.yml               #   gitleaks over full history
     security-audit.yml            #   pip-audit and/or pnpm audit (each bool-gated)
     cloudflare-pages-deploy.yml   #   preflight → build → wrangler pages deploy
+    python-publish.yml            #   gate → uv build → PyPI via OIDC (no token)
+    ts-publish.yml                #   gate → build → npm publish via OIDC (no token)
   actions/                        # composite actions — a bundle of steps you `uses:` INSIDE a job
     setup-python-uv/              #   install uv (cached) + pin Python + (opt) uv sync
     setup-pnpm/                   #   pnpm + Node (pnpm cache) + (opt) install
@@ -128,10 +130,27 @@ composite (details below).
 | `secret-scan.yml` | `runs-on` | uses `GITHUB_TOKEN` | checkout `fetch-depth:0` → `gitleaks-action` over full history |
 | `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
+| `python-publish.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `""`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
+| `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `false`, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
 
 \* required. Every other input has a documented default — no version or path is a magic
 literal buried in a step; the gate's coverage floor is deliberately **not** an input (it
 lives in each repo's `pytest --cov-fail-under`, so CI can never pass a looser bar than local).
+
+**OIDC publishing (`python-publish` / `ts-publish`) — no stored token.** Both publish
+workflows carry `on: workflow_call` and are pinned by callers at `@ci-v2`; the caller owns
+the `on: push: tags: ['v*']` trigger and grants `id-token: write` on its publish job (the
+top-level stays read-only, as the security policy requires). The build and the OIDC identity
+run in one job, so nothing needs a `twine`/`NODE_AUTH_TOKEN` write token. Two one-time human
+bootstraps remain, both outside CI: registering the trusted publisher on PyPI/npm once per
+package, and — because npm has **no** "pending publisher" — a single token/OTP first-publish
+for each brand-new npm name before OIDC can take over. Caveats baked into `ts-publish`:
+`provenance` defaults **false** because `npm publish --provenance` writes a public
+transparency-log entry and therefore requires a **public** source repo (flip it true only in
+the wave a repo goes public); and each `package.json` `repository.url` must exactly match its
+GitHub repo or npm OIDC fails. Ready callers live at
+[`examples/shared-libs-python/publish.yml`](./examples/shared-libs-python/publish.yml) (PyPI)
+and [`examples/privacy-core/publish.yml`](./examples/privacy-core/publish.yml) (npm).
 
 ### Composite actions
 
@@ -236,8 +255,8 @@ Bespoke = the irreducible repo-specific build, which still composes the shared c
 | Repo | Reusable workflows | Composites (inside bespoke jobs) | Irreducibly bespoke |
 |---|---|---|---|
 | **edge-proc** | python-gate, secret-scan, security-audit | — | none |
-| **shared-libs-python** | python-gate (+coverage), secret-scan, security-audit | — | `publish.yml` (PyPI/npm release) |
-| **privacy-core** | frontend-gate (+Playwright), secret-scan, security-audit | — | none |
+| **shared-libs-python** | python-gate (+coverage), **python-publish** (PyPI OIDC), secret-scan, security-audit | — | none |
+| **privacy-core** | frontend-gate (+Playwright), **ts-publish** (npm OIDC), secret-scan, security-audit | — | none |
 | **edge-reco** | secret-scan, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
 | **aml-filter** | secret-scan, security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
 | **almamesh** | security-audit (python) | (optional) setup-python-uv | Bun + Pyodide `test.yml`, `deploy.yml`, `nightly-e2e.yml`; key-custody gitleaks |
