@@ -20,8 +20,15 @@ Commit `740c72b3435c0156f1389f935b75f212def37f96`.
 - Remove the first-party carve-out from the security-policy test: `validate_first_party_pins`
   now fails on any `uses: hseshadr/ci/...@ci-vN` in `.github/` or `examples/`, with no
   exemption, and the matching `zizmor` suppressions are gone.
-- Documentation only otherwise — no workflow or action behavior changed
-  (`git diff ci-v1 ci-v2.0.1 -- .github/actions/` is empty).
+- Documentation only otherwise — no composite action behavior changed since `ci-v1`.
+  Every differing line in `.github/actions/` is a comment; verify with:
+
+  ```bash
+  git diff ci-v1 ci-v2.0.1 -- .github/actions/ | grep -E '^[+-]' \
+    | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*(#|$)'
+  ```
+
+  which prints nothing.
 
 ## ci-v2.0.0 — 2026-07-20
 
