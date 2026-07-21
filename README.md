@@ -25,8 +25,9 @@ callers resolve.
 
 **Adopted in code by four repos — the publish path only.** `shared-libs-python` and
 `edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
-calls both. All four pin the `ci-v2.0.1` commit SHA. `edge-reco` and `aml-filter` have
-not adopted anything yet.
+calls both. `privacy-core` pins the `ci-v2.0.2` commit SHA; the other three still pin
+`ci-v2.0.1` and have a re-pin outstanding. `edge-reco` and `aml-filter` have not adopted
+anything yet.
 
 **The publish path is UNVERIFIED end-to-end — no release has run through it.** Those
 callers only fire on a `v*` tag, and no tag has been pushed since they landed:
@@ -372,11 +373,12 @@ An honest self-assessment against a publish-readiness checklist:
 - **Arch maps 1:1 to tree** — ✅ the "What's in here" tree matches `.github/` exactly.
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
-- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.1`, and
-  every release lists the SHA consumers actually pin. `main` sits ahead of that tag with
-  guard/documentation work that changes no workflow behaviour; every first-party ref here
-  pins `ci-v2.0.1`, and `validate_first_party_release_lineage` fails the build if one
-  drifts off it.
+- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.2`, and
+  every release lists the SHA consumers actually pin. Every first-party ref here pins
+  `ci-v2.0.2`, and `validate_first_party_release_lineage` fails the build if one drifts
+  off it. `main` sits exactly one commit ahead of the tag, and that is structural rather
+  than drift: the currency guard requires every ref to name the newest tag's commit, so
+  the re-pin cannot be *in* the commit it names. The tag is cut first, the re-pin follows.
 - **Every YAML valid** — ✅ all 29 files parse. `actionlint` runs in CI over both our own
   workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean.
 - **Live-validated end-to-end** — ⛔ **not yet.** The [Required

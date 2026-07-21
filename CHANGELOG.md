@@ -8,6 +8,8 @@ included.
 
 ## ci-v2.0.2 — 2026-07-21
 
+Commit `102e06c2da82e3a201bd7aee4fb8c3e4554593a6`.
+
 No reusable-workflow *inputs* or composite-action signatures changed, so re-pinning from
 `ci-v2.0.1` is a drop-in — nothing in a caller has to move. Two entries below do change
 what a publish or deploy run *does*, and both are marked.
@@ -17,7 +19,14 @@ what a publish or deploy run *does*, and both are marked.
   executable `uses:` refs across 19 files still named `36bf999` (`ci-v2.0.0`). Sixteen of
   those were `examples/` pointing at *reusable workflows* whose `ci-v2.0.0` copies still
   contain nested `@ci-v1` moving tags, so anyone copying an example inherited the very
-  hole `ci-v2.0.1` closed. All 35 now pin `9e8cf2e…` (`ci-v2.0.1`).
+  hole `ci-v2.0.1` closed. All 37 first-party refs now name this release.
+
+  The re-pin to *this* commit necessarily lands in the commit after the tag: the
+  currency guard below requires every ref to name the newest tag's commit, and a
+  release cannot pin a SHA that does not exist until the commit is written. So `main`
+  sits one commit ahead of `ci-v2.0.2`, and at the tagged commit itself the 37 refs
+  still name `9e8cf2e…` (`ci-v2.0.1`) — immutable, released, and functionally
+  identical, since no composite behavior changed in this release.
 - **Assert pin provenance, not pin shape** (`validate_first_party_release_lineage`).
   Every `hseshadr/ci` SHA must exist here, be an ancestor of the newest `ci-vX.Y.Z` tag,
   and *be* that tag. A shape check cannot express "this valid SHA points at a bad
