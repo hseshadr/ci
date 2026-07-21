@@ -17,11 +17,25 @@ standardized." One place to bump `actions/checkout`, one place to fix the gitlea
 pattern, one place that defines what "run the gate" means. No drift.
 
 **Status.** Templates written and statically validated (every file parses; `actionlint`
-and full-repository `zizmor` are clean). **Not yet live-proven by a consumer run** —
-the six repos still call their old inline workflows; migrating them is a separate wave,
-and cross-repo calls stay broken until the one repo setting in
-[Required setup](#required-setup-read-this-first) is flipped. See the
-[self-assessment](#self-assessment) for the honest scorecard.
+and full-repository `zizmor` are clean), and the cross-repo
+[access flip](#required-setup-read-this-first) is now done, so callers resolve.
+
+**Adopted in code by four repos — the publish path only.** `shared-libs-python` and
+`edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
+calls both. All four pin the `ci-v2.0.1` commit SHA. `edge-reco` and `aml-filter` have
+not adopted anything yet.
+
+**The publish path is UNVERIFIED end-to-end — no release has run through it.** Those
+callers only fire on a `v*` tag, and no tag has been pushed since they landed:
+`edge-proc`, `assay`, and `privacy-core` have zero `publish.yml` runs ever, and
+`shared-libs-python`'s six green publish runs all predate the migration (they used the
+old token + GitHub-Release flow, before `hseshadr/ci` was referenced at all). The gate,
+secret-scan, security-audit, frontend, and deploy templates have **no adopters** — those
+four repos still run their own inline `ci.yml` and `security-audit.yml`.
+
+Net: nothing in this repo has yet executed inside a consumer run. Static validation is
+real; live proof is not there yet. See the [self-assessment](#self-assessment) for the
+scorecard.
 
 ---
 
@@ -273,6 +287,9 @@ everything to resolve. When the repo is public this is automatic.
 
 ## Standardization coverage (per repo)
 
+This is the **target** mapping — what each repo should call once migrated — not current
+adoption. For what is actually wired up today, see [Status](#hseshadrci--one-home-for-the-portfolios-cicd).
+
 Reusable workflow = whole shared job. Composite = shared steps inside a repo's own job.
 Bespoke = the irreducible repo-specific build, which still composes the shared composites.
 
@@ -320,8 +337,9 @@ An honest self-assessment against a publish-readiness checklist:
 - **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.1`, cut
   at HEAD, and every release lists the SHA consumers actually pin.
 - **Every YAML valid** — ✅ all 23 files parse; `actionlint` clean on workflows + examples.
-- **Live-validated end-to-end** — ⛔ **not yet.** A cross-repo CI run can't be driven from
-  here: it needs (a) the [Required setup](#required-setup-read-this-first) access flip
-  (user-only) and (b) a consumer migration (a separate wave, out of scope for this repo).
-  Static validation is done; the first real green run lands when the first repo migrates.
-  This is stated plainly rather than implied-green.
+- **Live-validated end-to-end** — ⛔ **not yet.** The [Required
+  setup](#required-setup-read-this-first) access flip is done, and four repos now call the
+  publish workflows — but nothing has *run*. Those callers fire only on a `v*` tag and none
+  has been pushed since they landed, so zero consumer runs have executed a workflow or
+  composite from this repo. The first real green run lands with the first release tag. This
+  is stated plainly rather than implied-green.
