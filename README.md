@@ -25,7 +25,7 @@ callers resolve.
 
 **Adopted in code by four repos — the publish path only.** `shared-libs-python` and
 `edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
-calls both. All four pin the `ci-v2.0.2` commit SHA. `edge-reco` and `aml-filter` have
+calls both. All four pin the `ci-v2.0.3` commit SHA. `edge-reco` and `aml-filter` have
 not adopted anything yet.
 
 **The publish path is UNVERIFIED end-to-end — no release has run through it.** Those
@@ -59,10 +59,10 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.2
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.3
     with: { sync-args: "--frozen --all-extras" }
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<40-char-sha> # ci-v2.0.2
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<40-char-sha> # ci-v2.0.3
 ```
 
 That is the *whole file*. `gate` runs the repo's `poe gate` (lint, format-check, types,
@@ -134,8 +134,11 @@ tests/
   security-policy.sh              # YAML + pins + pin PROVENANCE + permissions + injection
   lint-examples.sh                # stages examples/ into a real workflow layout, then
                                   #   actionlint + zizmor them (neither tool reaches them otherwise)
+  lineage-guard-cases.sh          # drives the lineage guard against synthetic repos to prove
+                                  #   its release-commit exemption stays one release wide
   lib/
     scan-run-interpolation.rb     #   finds attacker-controllable ${{ }} inside run: blocks
+    first-party-lineage.sh        #   the lineage/currency guard, shared by the two above
 CHANGELOG.md
 ```
 
@@ -216,7 +219,7 @@ Consumers pin a **full 40-character commit SHA**, with the release name in a tra
 comment so Dependabot can bump it:
 
 ```yaml
-uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.2
+uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.3
 ```
 
 Moving tags are **not** a supported pin, not even for first-party refs.
@@ -261,6 +264,24 @@ resolve to the consumer repository instead of this one — so a SHA is the only 
 form available, and `validate_first_party_pins` in `tests/security-policy.sh` enforces
 it with no carve-out.
 
+That last claim is load-bearing enough that we measured it rather than trusting it.
+A throwaway probe put an identically-pathed composite in both repositories, with
+different markers, and had a consumer call a reusable workflow here that referenced it
+as `./.github/actions/probe-origin`. [Run
+29838733369](https://github.com/hseshadr/privacy-core/actions/runs/29838733369) printed
+the **consumer's** marker:
+
+```
+PROBE_RESULT=RESOLVED_TO_CONSUMER_REPO_hseshadr_privacy_core
+action_path=/home/runner/work/privacy-core/privacy-core/./.github/actions/probe-origin
+```
+
+and the no-checkout control failed with `Can't find 'action.yml' … under
+'/home/runner/work/privacy-core/privacy-core/.github/actions/probe-origin'. Did you
+forget to run actions/checkout before running your local action?`. So `./` is
+workspace-relative, not repository-relative: it would silently run whatever the consumer
+happens to have at that path, or nothing at all. It is not an option here.
+
 **A pin-shape check is not enough, which we learned the expensive way.** Every ref can be
 a valid 40-hex SHA and the tree can still be wrong: for a while every file in `examples/`
 pointed at `ci-v2.0.0` (`36bf999`), a real commit and a real ancestor — whose reusable
@@ -270,6 +291,43 @@ supposed to close. `validate_first_party_release_lineage` now asserts *provenanc
 instead: every `hseshadr/ci` SHA must exist in this repository, be an ancestor of the
 newest `ci-vX.Y.Z` tag, and **be** that tag. A superseded-but-valid release now fails the
 build.
+
+### The release-commit bootstrap
+
+There is exactly one state that rule cannot express, and it is forced by arithmetic
+rather than by taste: **a commit cannot contain its own SHA.** Our self-references are
+absolute SHAs (see above — `./` is not available), so at the moment we tag a release,
+every self-reference inside the tagged tree still names the *previous* release. There is
+no value we could have written that would name the new one.
+
+Under a strict "must be the newest tag" rule the tagged commit therefore failed its own
+guard. That was not hypothetical: dispatching CI at `ci-v2.0.2`
+([run 29839090693](https://github.com/hseshadr/ci/actions/runs/29839090693)) went red
+with `first-party ref 9e8cf2e… is a superseded release, not ci-v2.0.2` across all 21
+files — a release that could not re-run its own pipeline green.
+
+So the guard now allows one narrow thing:
+
+| Where the guard runs | What a first-party ref may name |
+|---|---|
+| The newest tag's own commit | that tag, **or** the release immediately before it |
+| Any other commit | that tag, and nothing else |
+
+Ancestry and existence are still checked everywhere, with no carve-out; only the
+*currency* clause relaxes, only at the tagged commit, and only by one release.
+
+**The residual gap, stated plainly.** A consumer pinning `ci-vX.Y.Z` gets that release's
+reusable workflows, but the composite actions nested *inside* those workflows come from
+`ci-vX.Y.(Z-1)`. Those nested refs are still immutable released SHAs — nothing moves
+under anyone — but they are one generation behind. When a release changes a composite's
+behavior, that change reaches consumers only at the following release. The CHANGELOG
+marks any release whose composites changed, and the re-pin commit on `main` immediately
+after each tag is what closes the gap for anyone tracking `main`.
+
+Because this repository's own history cannot produce a two-releases-behind tagged commit
+on demand, the exemption's *scope* is asserted against synthetic repositories in
+`tests/lineage-guard-cases.sh` — seven cases, six of which must keep failing. It runs in
+CI as its own step, and `validate_self_ci` fails the build if that step is ever removed.
 
 ### Publish verification
 
@@ -372,13 +430,14 @@ An honest self-assessment against a publish-readiness checklist:
 - **Arch maps 1:1 to tree** — ✅ the "What's in here" tree matches `.github/` exactly.
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
-- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.2`, and
+- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.3`, and
   every release lists the SHA consumers actually pin. Every first-party ref here pins
-  `ci-v2.0.2`, and `validate_first_party_release_lineage` fails the build if one drifts
+  `ci-v2.0.3`, and `validate_first_party_release_lineage` fails the build if one drifts
   off it. `main` sits ahead of the tag, and at least the first commit of that gap is
-  structural rather than drift: the currency guard requires every ref to name the newest
-  tag's commit, so the re-pin cannot be *in* the commit it names. The tag is cut first,
-  the re-pin follows.
+  structural rather than drift: the re-pin cannot be *in* the commit it names, because a
+  commit cannot contain its own SHA. The tag is cut first, the re-pin follows. The guard
+  accepts that one state at the tagged commit and nowhere else — see [The release-commit
+  bootstrap](#the-release-commit-bootstrap), which also states the residual gap it leaves.
 - **Every YAML valid** — ✅ all 29 files parse. `actionlint` runs in CI over both our own
   workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean.
 - **Live-validated end-to-end** — ⛔ **not yet.** The [Required

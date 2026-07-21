@@ -24,9 +24,15 @@ jobs:
           fetch-depth: 0
       - name: Validate CI security policy
         run: |
-          bash -n .github/actions/*/*.sh tests/*.sh
-          shellcheck .github/actions/*/*.sh tests/*.sh
+          bash -n .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
+          shellcheck .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
           tests/security-policy.sh
+      # The lineage guard tolerates one narrow exemption (a release commit may still
+      # name the previous release). Whether that exemption stays narrow is not
+      # observable from this repository's own history, so it is asserted against
+      # synthetic repositories instead.
+      - name: Validate the lineage guard's exemption stays narrow
+        run: tests/lineage-guard-cases.sh
       - name: Install actionlint
         env:
           # v1.7.7

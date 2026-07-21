@@ -6,6 +6,58 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
+## ci-v2.0.3 — 2026-07-21
+
+No reusable-workflow inputs or composite-action signatures changed, and **no composite
+behavior changed**, so re-pinning from `ci-v2.0.2` is a drop-in. The change is to this
+repo's own guards and docs.
+
+- **A release can now re-run its own pipeline green.** `ci-v2.0.2` could not:
+  dispatching CI at the tag ([run
+  29839090693](https://github.com/hseshadr/ci/actions/runs/29839090693)) failed with
+  `first-party ref 9e8cf2e… is a superseded release, not ci-v2.0.2` across all 21 files.
+  The cause is arithmetic, not drift — a commit cannot contain its own SHA, so the tagged
+  tree necessarily still names the previous release. `validate_first_party_release_lineage`
+  now accepts that one state: at the newest tag's own commit, a first-party ref may name
+  **the immediately-preceding release**. Everywhere else the strict "must be the newest
+  tag" rule is unchanged, and existence + ancestry are still enforced with no carve-out.
+
+  *Residual gap, stated plainly:* a consumer pinning `ci-vX.Y.Z` gets that release's
+  reusable workflows with composites from `ci-vX.Y.(Z-1)` nested inside. Still immutable
+  released SHAs, but one generation behind — so a release that changes a composite reaches
+  consumers at the *following* release. Any such release is marked in this file. See
+  [The release-commit bootstrap](./README.md#the-release-commit-bootstrap).
+
+- **We measured the escape hatch instead of assuming it.** The README asserted that a
+  relative action path (`./.github/actions/…`) inside a reusable workflow resolves against
+  the caller's checkout — the reason self-references must be absolute SHAs, which is what
+  forces the bootstrap above. That assertion had never been tested. A probe with
+  identically-pathed composites in both repositories confirmed it: [run
+  29838733369](https://github.com/hseshadr/privacy-core/actions/runs/29838733369) printed
+  `PROBE_RESULT=RESOLVED_TO_CONSUMER_REPO_hseshadr_privacy_core`, and the no-checkout
+  control failed with "Did you forget to run actions/checkout before running your local
+  action?". `./` is workspace-relative. The constraint is real, and the docs now carry the
+  evidence rather than the claim.
+
+- **The exemption is tested for narrowness** (`tests/lineage-guard-cases.sh`, new). An
+  exemption is only safe while it stays small, and this repository's own history cannot
+  produce a two-releases-behind tagged commit on demand. The suite builds synthetic repos
+  with synthetic `ci-vX.Y.Z` tags and asserts seven verdicts — **six of which must keep
+  failing**, including two-releases-back at a tagged commit, a superseded ref on an
+  ordinary commit, and a non-ancestor ref at a tagged commit. Removing the five-line
+  exemption fails exactly one case and no others. The guard itself moved to
+  `tests/lib/first-party-lineage.sh` so both callers share one copy; `validate_self_ci`
+  fails the build if CI stops running the new suite, and ShellCheck now covers `tests/lib/`.
+
+- **Node 20 deprecation: nothing to bump here** (verified, no change). Every third-party
+  action pinned in this repo already targets Node 24 — `actions/checkout` v7,
+  `actions/setup-node` v6, `actions/cache` v6, `pnpm/action-setup` v6,
+  `astral-sh/setup-uv` v8.3.2 and `gitleaks/gitleaks-action` v3 all declare `using: node24`
+  — and no recent run here carries the deprecation annotation. The warning seen in the
+  portfolio came from `assay`'s **own** workflows (`actions/setup-node` v4.4.0 and
+  `pnpm/action-setup` v4.1.0), not from anything reached through `hseshadr/ci`; it was
+  fixed in that repo.
+
 ## ci-v2.0.2 — 2026-07-21
 
 Commit `102e06c2da82e3a201bd7aee4fb8c3e4554593a6`.

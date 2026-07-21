@@ -188,60 +188,12 @@ validate_first_party_pins() {
     .github examples)
 }
 
-# A pin-SHAPE check can only prove a ref names *a* commit. It cannot prove the
-# commit is one we ever released, and that blindness is what let the last hole
-# survive a green suite: ci-v2.0.0 (36bf999) is a perfectly-formed 40-hex SHA and
-# a genuine ancestor of every later tag — and it carries nested @ci-v1 moving
-# tags. Every example in this repo pointed at it, so a consumer who copied our
-# own documented path inherited the mutable-ref hole the pin was supposed to close.
-#
-# So assert provenance, not shape:
-#   lineage  — the SHA must exist here and be an ancestor of the newest release
-#              tag (catches a fork's SHA, a dropped branch, a typo'd hex string)
-#   currency — the SHA must BE the newest release tag (catches a valid, ancestral,
-#              but superseded release — the ci-v2.0.0 case specifically)
-# Currency is the one that would have caught it; lineage is what makes a bogus
-# SHA legible instead of just "not current".
-validate_first_party_release_lineage() {
-  local newest newest_sha refs sha files
-
-  command -v git >/dev/null 2>&1 || {
-    fail "git is unavailable, so first-party ref provenance cannot be verified"
-    return
-  }
-  git rev-parse --git-dir >/dev/null 2>&1 || {
-    fail "not a git checkout, so first-party ref provenance cannot be verified"
-    return
-  }
-
-  newest="$(git tag -l 'ci-v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)"
-  [[ -n "$newest" ]] || {
-    fail "no ci-vX.Y.Z release tag is reachable (fetch tags: actions/checkout needs fetch-depth: 0)"
-    return
-  }
-  newest_sha="$(git rev-parse "$newest^{commit}")"
-
-  refs="$(grep -rhoE --include='*.yml' \
-    'hseshadr/ci/[^[:space:]]*@[0-9a-f]{40}' .github examples | sed 's/.*@//' | sort -u)"
-
-  while IFS= read -r sha; do
-    [[ -n "$sha" ]] || continue
-
-    files="$(grep -rlF --include='*.yml' "$sha" .github examples | paste -sd' ' -)"
-
-    if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-      fail "first-party ref names a commit unknown to this repository: $sha ($files)"
-      continue
-    fi
-    if ! git merge-base --is-ancestor "$sha" "$newest_sha" 2>/dev/null; then
-      fail "first-party ref $sha is not an ancestor of $newest — it was never part of a release ($files)"
-      continue
-    fi
-    if [[ "$sha" != "$newest_sha" ]]; then
-      fail "first-party ref $sha is a superseded release, not $newest ($newest_sha) — re-pin ($files)"
-    fi
-  done <<< "$refs"
-}
+# validate_first_party_release_lineage lives in tests/lib/ so the scenario suite in
+# tests/lineage-guard-cases.sh can drive the same code against synthetic repos —
+# the release-commit bootstrap it has to tolerate is not reproducible in this repo
+# on demand. The rationale and the exemption's exact scope are documented there.
+# shellcheck source=tests/lib/first-party-lineage.sh
+source "$repo_root/tests/lib/first-party-lineage.sh"
 
 validate_trusted_command_contracts() {
   local phrase="repository-controlled literal command"
@@ -293,8 +245,12 @@ validate_self_ci() {
   }
   grep -q 'tests/security-policy\.sh' "$workflow" ||
     fail "$workflow does not run the security-policy regression test"
-  grep -q 'shellcheck .github/actions/\*/\*.sh tests/\*.sh' "$workflow" ||
+  grep -q 'shellcheck .github/actions/\*/\*.sh tests/\*.sh tests/lib/\*.sh' "$workflow" ||
     fail "$workflow does not run ShellCheck over every shell script"
+  # The lineage guard's exemption is only safe while it stays narrow, and the cases
+  # proving that live in a suite this repo's own history cannot stand in for.
+  grep -q 'tests/lineage-guard-cases\.sh' "$workflow" ||
+    fail "$workflow does not run the lineage guard's exemption-scope cases"
   grep -q 'uvx "zizmor@1\.26\.1" \.' "$workflow" ||
     fail "$workflow does not run the pinned full zizmor audit"
 
