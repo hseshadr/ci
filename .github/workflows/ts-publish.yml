@@ -130,7 +130,7 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}

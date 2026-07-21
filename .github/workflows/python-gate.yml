@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python + uv (+ sync)
-        uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        uses: hseshadr/ci/.github/actions/setup-python-uv@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
         with:
           python-version: ${{ inputs.python-version }}
           sync-args: ${{ inputs.sync-args }}

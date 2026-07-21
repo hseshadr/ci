@@ -41,14 +41,19 @@ validate_action_pins() {
     ref="${ref#"${ref%%[![:space:]]*}"}"
     ref="${ref%"${ref##*[![:space:]]}"}"
 
+    # Local (./) actions ship in the same commit, so they are already
+    # immutable. Everything else — including our own hseshadr/ci refs —
+    # must name a commit. First-party is not the same as trustworthy: a
+    # nested @ci-v1 inside a reusable workflow still resolves through a
+    # mutable tag at run time, so a consumer's SHA pin was only skin-deep.
     case "$ref" in
-      hseshadr/ci/* | ./* | docker://*) continue ;;
+      ./* | docker://*) continue ;;
     esac
 
     if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
-      fail "$file:$line_number third-party action is not pinned to a full commit SHA: $ref"
+      fail "$file:$line_number action is not pinned to a full commit SHA: $ref"
     fi
-    if [[ ! "$line" =~ \#[[:space:]]+v[0-9] ]]; then
+    if [[ ! "$line" =~ \#[[:space:]]+(ci-)?v[0-9] ]]; then
       fail "$file:$line_number pinned action lacks a Dependabot version comment"
     fi
   done < <(
@@ -156,12 +161,18 @@ validate_dependabot_cooldown() {
   ' || fail ".github/dependabot.yml requires a cooldown of at least seven days"
 }
 
-validate_first_party_suppressions() {
-  while IFS=: read -r file line_number line; do
-    [[ "$line" == *'zizmor: ignore[unpinned-uses]'* ]] ||
-      fail "$file:$line_number first-party moving ref lacks a narrow zizmor rationale"
+# First-party refs used to ride the moving @ci-v1 tag behind a zizmor
+# suppression. That left a hole: a consumer pinning python-publish.yml to a
+# SHA still got its nested setup-python-uv@ci-v1 resolved through a mutable
+# tag at run time — and the publish workflows run with id-token: write, so
+# moving that tag would have reached PyPI and npm. Nothing may reintroduce a
+# moving first-party ref, in the workflows we run or the examples we publish.
+validate_first_party_pins() {
+  while IFS=: read -r file line_number _; do
+    fail "$file:$line_number first-party ref is not pinned to a full commit SHA"
   done < <(grep -RInE --include='*.yml' \
-    '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/.+@ci-v1' .github/workflows)
+    '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/[^[:space:]]*@(ci-)?v[0-9]' \
+    .github examples)
 }
 
 validate_trusted_command_contracts() {
@@ -271,7 +282,7 @@ validate_permissions
 validate_shell_boundaries
 validate_checkout_credentials
 validate_dependabot_cooldown
-validate_first_party_suppressions
+validate_first_party_pins
 validate_trusted_command_contracts
 validate_argument_guards
 validate_self_ci

@@ -166,7 +166,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        uses: hseshadr/ci/.github/actions/setup-pnpm@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -187,7 +187,7 @@ jobs:
         run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1 # zizmor: ignore[unpinned-uses] first-party ci-v1; relative paths resolve in caller repo
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}

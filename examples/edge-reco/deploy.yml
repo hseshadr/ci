@@ -12,7 +12,7 @@ permissions:
   contents: read
 jobs:
   deploy:
-    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@ci-v1
+    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
     with:
       project-name: edge-reco
       dist-dir: frontend/app/dist

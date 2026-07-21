@@ -13,9 +13,9 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
     with:
       upload-coverage: true
     secrets: inherit
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@36bf999acd0617135497b62605e19bed29ee1b94 # ci-v2.0.0
