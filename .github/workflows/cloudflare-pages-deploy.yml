@@ -177,7 +177,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@102e06c2da82e3a201bd7aee4fb8c3e4554593a6 # ci-v2.0.2
+        uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -198,7 +198,7 @@ jobs:
         run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@102e06c2da82e3a201bd7aee4fb8c3e4554593a6 # ci-v2.0.2
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}

@@ -8,6 +8,8 @@ included.
 
 ## ci-v2.0.3 — 2026-07-21
 
+Commit `bc68fde66f0805971e1b9aa444933b7975da80b1`.
+
 No reusable-workflow inputs or composite-action signatures changed, and **no composite
 behavior changed**, so re-pinning from `ci-v2.0.2` is a drop-in. The change is to this
 repo's own guards and docs.

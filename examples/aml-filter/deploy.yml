@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@102e06c2da82e3a201bd7aee4fb8c3e4554593a6 # ci-v2.0.2
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
@@ -43,7 +43,7 @@ jobs:
           shred -u /tmp/signing.key
 
       # --- shared deploy half: identical wrangler step used by every Pages repo ---
-      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@102e06c2da82e3a201bd7aee4fb8c3e4554593a6 # ci-v2.0.2
+      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
         with:
           project-name: aml-filter
           dist-dir: frontend/dist
