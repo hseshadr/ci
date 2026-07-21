@@ -16,6 +16,13 @@
 # The CALLER owns the `on: push: tags: ['v*']` trigger (same split as secret-scan /
 # security-audit) and must grant `id-token: write` at its job level.
 #
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. That matters most for THIS workflow: it runs with
+# `id-token: write`, so a mutable ref anywhere in the chain reaches PyPI. Copy the
+# SHA of the release you want from CHANGELOG.md and keep the trailing version
+# comment so Dependabot can bump it. Ready-to-copy callers live in examples/.
+#
 # Caller (.github/workflows/publish.yml):
 #   name: Publish (PyPI, OIDC)
 #   on: { push: { tags: ['v*'] } }
@@ -23,7 +30,7 @@
 #   jobs:
 #     publish:
 #       permissions: { id-token: write, contents: read }
-#       uses: hseshadr/ci/.github/workflows/python-publish.yml@ci-v2
+#       uses: hseshadr/ci/.github/workflows/python-publish.yml@<40-char-sha> # ci-v2.0.1
 #       with: { working-directory: "." }
 name: Python publish (reusable, OIDC)
 

@@ -7,8 +7,12 @@
 # bespoke aml-filter / almamesh deploys compose it directly after their signing build.
 #
 # A composite cannot read the `secrets` context, so the caller passes the two
-# Cloudflare secrets as inputs (from its own `secrets.*`). Usage:
-#   - uses: hseshadr/ci/.github/actions/pages-deploy-dist@ci-v1
+# Cloudflare secrets as inputs (from its own `secrets.*`).
+#
+# PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
+# `@ci-vN`, first-party included. Copy the release SHA from CHANGELOG.md and keep the
+# trailing version comment for Dependabot. Usage:
+#   - uses: hseshadr/ci/.github/actions/pages-deploy-dist@<40-char-sha> # ci-v2.0.1
 #     with:
 #       project-name: aml-filter
 #       dist-dir: frontend/dist

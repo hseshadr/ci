@@ -13,13 +13,19 @@
 # venv or install node_modules). Covers all 5 current audit users: edge-proc /
 # shared-libs / almamesh (python), privacy-core / aml-filter (pnpm), edge-reco (both).
 #
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. Copy the SHA of the release you want from CHANGELOG.md
+# and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
+# callers live in examples/.
+#
 # Caller (python lib, weekly):
 #   on:
 #     schedule: [{ cron: "0 6 * * 1" }]
 #     workflow_dispatch:
 #   jobs:
 #     audit:
-#       uses: hseshadr/ci/.github/workflows/security-audit.yml@ci-v1
+#       uses: hseshadr/ci/.github/workflows/security-audit.yml@<40-char-sha> # ci-v2.0.1
 #       with: { run-python-audit: true }
 name: Security audit (reusable)
 

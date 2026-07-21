@@ -21,13 +21,19 @@
 #     accept injected steps. Keep those two deploys bespoke, but have them compose the
 #     pages-deploy-dist composite for the final wrangler step. See the README limits.
 #
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. Copy the SHA of the release you want from CHANGELOG.md
+# and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
+# callers live in examples/.
+#
 # The CALLER owns the trigger and passes secrets:
 #   on:
 #     workflow_run: { workflows: ["CI"], types: [completed], branches: [main] }
 #     workflow_dispatch:
 #   jobs:
 #     deploy:
-#       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@ci-v1
+#       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@<40-char-sha> # ci-v2.0.1
 #       with:
 #         project-name: edge-reco
 #         dist-dir: frontend/app/dist

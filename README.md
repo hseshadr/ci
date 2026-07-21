@@ -8,7 +8,7 @@ of each**, and every other repo calls it in a few lines. Change CI once here; al
 get the change.
 
 **Why it works.** GitHub lets a workflow *call* a workflow that lives in another repo
-(`uses: hseshadr/ci/...@ci-v1`), and lets a job *reuse* a bundle of steps called a
+(`uses: hseshadr/ci/...@<commit-sha>`), and lets a job *reuse* a bundle of steps called a
 "composite action." So the shared logic lives here exactly once, and each repo keeps
 only the one thing that is genuinely its own — its build command.
 
@@ -37,15 +37,18 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
     with: { sync-args: "--frozen --all-extras" }
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@ci-v1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<40-char-sha> # ci-v2.0.1
 ```
 
 That is the *whole file*. `gate` runs the repo's `poe gate` (lint, format-check, types,
 complexity, tests + coverage floor); `gitleaks` scans the full git history for secrets.
-Ready-to-copy callers for all six repos live in [`examples/`](./examples).
+Ready-to-copy callers for all six repos live in [`examples/`](./examples) — those carry
+the real SHAs, so copy from there rather than typing a ref by hand. Every
+`hseshadr/ci/...` ref must be a full commit SHA, never a moving `@ci-vN` tag; see
+[Version pinning](#version-pinning-full-commit-shas) for why.
 
 ### Before → after (a real consumer)
 
@@ -103,7 +106,7 @@ while the others were on `@v5`) collapses to one pinned set here.
     setup-playwright/             #   cache + install Playwright browsers
     restore-model-cache/          #   cache self-hosted model weights + fetch on miss
     pages-deploy-dist/            #   baseline headers + shared wrangler deploy
-  dependabot.yml                  # bumps THIS repo's action pins → propagates via @ci-v1
+  dependabot.yml                  # bumps THIS repo's action pins; consumers re-pin the new SHA
 examples/                         # copy-paste caller workflows, one folder per repo
 tests/
   security-policy.sh              # YAML + pins + permissions + Pages-header contract
@@ -138,7 +141,9 @@ literal buried in a step; the gate's coverage floor is deliberately **not** an i
 lives in each repo's `pytest --cov-fail-under`, so CI can never pass a looser bar than local).
 
 **OIDC publishing (`python-publish` / `ts-publish`) — no stored token.** Both publish
-workflows carry `on: workflow_call` and are pinned by callers at `@ci-v2`; the caller owns
+workflows carry `on: workflow_call` and are pinned by callers at a full commit SHA (a
+moving tag here would be a supply-chain hole — see [Version
+pinning](#version-pinning-full-commit-shas)); the caller owns
 the `on: push: tags: ['v*']` trigger and grants `id-token: write` on its publish job (the
 top-level stays read-only, as the security policy requires). The build and the OIDC identity
 run in one job, so nothing needs a `twine`/`NODE_AUTH_TOKEN` write token. Two one-time human
@@ -179,13 +184,31 @@ Functions must set equivalent headers in their own response code.
 composes `setup-pnpm` + `pages-deploy-dist`. So the uv pin, the pnpm/Node pins, the
 Playwright cache pattern, and the wrangler invocation each live in exactly one file.
 
-### Version pinning: `@ci-v1`
+### Version pinning: full commit SHAs
 
-Consumers pin `@ci-v1` — a **moving major tag**. Compatible changes (a new input, a
-patched action) move `ci-v1` forward and every consumer picks them up with no edit. A
-breaking input change cuts `ci-v2`; consumers migrate deliberately. Add a Dependabot
-`github-actions` entry in each consumer so the `uses: hseshadr/ci/...@ci-v1` refs are
-tracked like any other dependency.
+Consumers pin a **full 40-character commit SHA**, with the release name in a trailing
+comment so Dependabot can bump it:
+
+```yaml
+uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
+```
+
+Moving tags are **not** a supported pin, not even for first-party refs.
+`tests/security-policy.sh` fails the build on any `uses: hseshadr/ci/...@ci-vN`, in the
+workflows this repo runs and in the examples it publishes.
+
+**Why the stricter rule.** These refs used to ride the moving `@ci-v1` tag behind a
+`zizmor` suppression, and that left a real hole: a consumer that pinned
+`python-publish.yml` to a SHA still had the *nested* `setup-python-uv@ci-v1` resolved
+through a mutable tag at run time, so the pin was only skin-deep. The publish workflows
+run with `id-token: write` for OIDC Trusted Publishing, so moving `ci-v1` would have
+reached PyPI and npm across every consumer. Pinning the whole chain closes it.
+
+`ci-vX.Y.Z` and the moving `ci-vN` pointers still exist as human-readable release
+*names* — read them in [`CHANGELOG.md`](./CHANGELOG.md) to find the SHA you want. They
+are not what you put after the `@`. Add a Dependabot `github-actions` entry in each
+consumer so these pinned SHAs are tracked like any other dependency; upgrading is then a
+deliberate, reviewable commit rather than a tag someone else can move under you.
 
 ### Immutable third-party action pins
 
@@ -203,13 +226,14 @@ Dependabot updates both the SHA and its readable `# v…` label.
 | `codecov/codecov-action` | `# v7` | full commit SHA |
 | `gitleaks/gitleaks-action` | `# v3` | full commit SHA |
 
-The `hseshadr/ci/...@ci-v1` references are first-party release channels, not
-third-party actions. They remain on the moving major tag so compatible fixes from
-this repository reach all consumers; immutable `ci-vX.Y.Z` tags remain available
-for callers that need a frozen shared-workflow release. Each executable self-reference
-has a narrow `zizmor` ignore explaining why it cannot be a relative action path: reusable
-workflows execute against the caller's checkout, where `./.github/actions/...` would
-resolve to the consumer repository instead of this one.
+First-party `hseshadr/ci/...` references get the **same** treatment — full commit SHA,
+no exceptions. First-party is not a synonym for trustworthy: a moving tag is a moving
+tag regardless of who owns it, and these run in workflows that hold `id-token: write`.
+The self-references can't be relative action paths (`./.github/actions/...`), because a
+reusable workflow executes against the *caller's* checkout, where that path would
+resolve to the consumer repository instead of this one — so a SHA is the only immutable
+form available, and `validate_first_party_pins` in `tests/security-policy.sh` enforces
+it with no carve-out.
 
 ### Input trust boundary
 
@@ -242,7 +266,7 @@ gh api -X PUT repos/hseshadr/ci/actions/permissions/access -f access_level=user
 ```
 
 This governs both the reusable workflows *and* the composite actions in this repo (the
-workflows pull the composites from here at `@ci-v1`), so it must be set once for
+workflows pull the composites from here at a pinned SHA), so it must be set once for
 everything to resolve. When the repo is public this is automatic.
 
 ---
@@ -293,8 +317,8 @@ An honest self-assessment against a publish-readiness checklist:
 - **Arch maps 1:1 to tree** — ✅ the "What's in here" tree matches `.github/` exactly.
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
-- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v1.0.0`, cut
-  at HEAD; status says "validated, not yet consumer-proven."
+- **Status matches reality / tags match the story** — ✅ CHANGELOG top = `ci-v2.0.1`, cut
+  at HEAD, and every release lists the SHA consumers actually pin.
 - **Every YAML valid** — ✅ all 23 files parse; `actionlint` clean on workflows + examples.
 - **Live-validated end-to-end** — ⛔ **not yet.** A cross-repo CI run can't be driven from
   here: it needs (a) the [Required setup](#required-setup-read-this-first) access flip

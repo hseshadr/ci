@@ -7,8 +7,12 @@
 # what avoids re-downloading tens of MB every push and re-risking Hugging Face's 429
 # on shared runner IPs.
 #
-# The caller MUST have already run actions/checkout. Usage (edge-reco frontend job):
-#   - uses: hseshadr/ci/.github/actions/restore-model-cache@ci-v1
+# The caller MUST have already run actions/checkout.
+#
+# PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
+# `@ci-vN`, first-party included. Copy the release SHA from CHANGELOG.md and keep the
+# trailing version comment for Dependabot. Usage (edge-reco frontend job):
+#   - uses: hseshadr/ci/.github/actions/restore-model-cache@<40-char-sha> # ci-v2.0.1
 #     with:
 #       cache-path: frontend/app/public/models
 #       cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}

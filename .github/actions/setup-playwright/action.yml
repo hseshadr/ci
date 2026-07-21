@@ -7,10 +7,14 @@
 # are not, so on a cache HIT we still run `install-deps` (fast) for the OS half.
 #
 # The caller MUST have already run actions/checkout AND setup-pnpm (playwright is a
-# devDependency, so `pnpm exec playwright` needs node_modules present). Usage:
-#   - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+# devDependency, so `pnpm exec playwright` needs node_modules present).
+#
+# PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
+# `@ci-vN`, first-party included. Copy the release SHA from CHANGELOG.md and keep the
+# trailing version comment for Dependabot. Usage:
+#   - uses: hseshadr/ci/.github/actions/setup-pnpm@<40-char-sha> # ci-v2.0.1
 #     with: { working-directory: frontend }
-#   - uses: hseshadr/ci/.github/actions/setup-playwright@ci-v1
+#   - uses: hseshadr/ci/.github/actions/setup-playwright@<40-char-sha> # ci-v2.0.1
 #     with:
 #       working-directory: frontend
 #       cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}

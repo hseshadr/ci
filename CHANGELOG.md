@@ -1,16 +1,39 @@
 # Changelog
 
-All notable changes to the shared CI/CD templates. Consumers pin the moving major tag
-`ci-v1`; each release below is also cut as an immutable `ci-vX.Y.Z` tag at its commit.
+All notable changes to the shared CI/CD templates. Each release is cut as an immutable
+`ci-vX.Y.Z` tag, and the `ci-vN` pointer is moved to the newest release in that major.
+**Consumers pin the release's full commit SHA, not a tag** — the SHA of each release is
+listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
+included.
 
-## Unreleased
+## ci-v2.0.1 — 2026-07-20
+
+Commit `740c72b3435c0156f1389f935b75f212def37f96`.
+
+- **Close a transitive pinning hole in the OIDC publish workflows.** A consumer that
+  pinned `python-publish.yml` / `ts-publish.yml` to a SHA still had the *nested*
+  `setup-python-uv` / `setup-pnpm` composites resolved through the mutable `@ci-v1` tag
+  at run time, so the pin was only skin-deep. These workflows run with
+  `id-token: write` for OIDC Trusted Publishing, so moving `ci-v1` would have reached
+  PyPI and npm across every consumer. All nested first-party refs are now full commit
+  SHAs.
+- Remove the first-party carve-out from the security-policy test: `validate_first_party_pins`
+  now fails on any `uses: hseshadr/ci/...@ci-vN` in `.github/` or `examples/`, with no
+  exemption, and the matching `zizmor` suppressions are gone.
+- Documentation only otherwise — no workflow or action behavior changed
+  (`git diff ci-v1 ci-v2.0.1 -- .github/actions/` is empty).
+
+## ci-v2.0.0 — 2026-07-20
+
+Commit `36bf999acd0617135497b62605e19bed29ee1b94`. **Superseded by `ci-v2.0.1`** — this
+commit predates the transitive-pin fix above; do not pin it in a publishing workflow.
 
 - Add two OIDC Trusted Publishing reusable workflows — `python-publish.yml` (PyPI, via
   `pypa/gh-action-pypi-publish`) and `ts-publish.yml` (npm, via `npm publish`) — that
   release from a `v*` tag with **no stored write token**: the build and the `id-token`
   OIDC identity run in one job. `ts-publish` keeps `provenance` off by default (npm
-  provenance needs a public repo). Callers pin them at `@ci-v2`; example callers added
-  for shared-libs-python (PyPI) and privacy-core (npm).
+  provenance needs a public repo). Example callers added for shared-libs-python (PyPI)
+  and privacy-core (npm).
 - Pin every third-party action to a full commit SHA with Dependabot version comments.
 - Restrict reusable workflows and consumer examples to explicit least-privilege token
   permissions.
@@ -19,8 +42,9 @@ All notable changes to the shared CI/CD templates. Consumers pin the moving majo
 - Add a security-policy regression test covering YAML, action pins, permissions, and
   Pages header behavior, enforced by this repository's CI workflow.
 - Eliminate all actionable `zizmor` findings: move command inputs through environment
-  variables, validate data arguments, disable checkout credential persistence, add a
-  Dependabot cooldown, and document narrow first-party `ci-v1` ignores.
+  variables, validate data arguments, disable checkout credential persistence, and add a
+  Dependabot cooldown. (This release still carried narrow first-party `ci-v1` ignores;
+  `ci-v2.0.1` removes them.)
 
 ## ci-v1.0.0 — 2026-07-12
 

@@ -14,10 +14,16 @@
 #     compose the setup-pnpm + setup-playwright + restore-model-cache composites
 #     inside them. This is the honest divergence, not a force-fit.
 #
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. Copy the SHA of the release you want from CHANGELOG.md
+# and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
+# callers live in examples/.
+#
 # Caller (privacy-core):
 #   jobs:
 #     gate:
-#       uses: hseshadr/ci/.github/workflows/frontend-gate.yml@ci-v1
+#       uses: hseshadr/ci/.github/workflows/frontend-gate.yml@<40-char-sha> # ci-v2.0.1
 #       with:
 #         install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
 #         install-playwright: true

@@ -13,9 +13,14 @@
 # composite folds the shared 3-step setup into ONE `uses:` while the job keeps its
 # own cache / weights / e2e steps around it — no caching regression.
 #
-# The caller MUST have already run actions/checkout. Usage:
+# The caller MUST have already run actions/checkout.
+#
+# PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
+# `@ci-vN`, first-party included. This composite is nested inside ts-publish.yml,
+# which runs with `id-token: write`, so a mutable ref here would reach npm. Copy the
+# release SHA from CHANGELOG.md and keep the trailing version comment. Usage:
 #   - uses: actions/checkout@v7
-#   - uses: hseshadr/ci/.github/actions/setup-pnpm@ci-v1
+#   - uses: hseshadr/ci/.github/actions/setup-pnpm@<40-char-sha> # ci-v2.0.1
 #     with:
 #       package-json-file: frontend/package.json
 #       node-version-file: frontend/.nvmrc

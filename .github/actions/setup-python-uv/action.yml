@@ -12,9 +12,14 @@
 # Bun/Playwright/asset steps, and folds Python setup in via one `uses:`.
 #
 # The caller MUST have already run actions/checkout (a composite can't assume the
-# working tree). Usage:
+# working tree).
+#
+# PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
+# `@ci-vN`, first-party included. This composite is nested inside python-publish.yml,
+# which runs with `id-token: write`, so a mutable ref here would reach PyPI. Copy the
+# release SHA from CHANGELOG.md and keep the trailing version comment. Usage:
 #   - uses: actions/checkout@v7
-#   - uses: hseshadr/ci/.github/actions/setup-python-uv@ci-v1
+#   - uses: hseshadr/ci/.github/actions/setup-python-uv@<40-char-sha> # ci-v2.0.1
 #     with: { working-directory: backend, sync-args: "--locked --extra dev" }
 name: "Setup Python + uv"
 description: "Install uv (cached), pin Python, and optionally uv sync. Checkout is the caller's responsibility."

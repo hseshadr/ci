@@ -12,10 +12,16 @@
 # Toolchain setup is NOT inlined here — it composes the setup-python-uv composite,
 # the same one the bespoke almamesh jobs use. One source for the uv pin + Python idiom.
 #
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. Copy the SHA of the release you want from CHANGELOG.md
+# and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
+# callers live in examples/.
+#
 # Caller (one job):
 #   jobs:
 #     gate:
-#       uses: hseshadr/ci/.github/workflows/python-gate.yml@ci-v1
+#       uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
 #       with:
 #         working-directory: backend
 #         sync-args: "--group dev"
