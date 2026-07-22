@@ -41,6 +41,17 @@ the registry** after uploading: the package they were releasing does not resolve
 A green upload step and a published package are different facts, and until now nothing
 here checked the second one. See [Publish verification](#publish-verification).
 
+> **PyPI Trusted Publishing cannot be used through a cross-repo reusable workflow.**
+> PyPI matches the OIDC token's `job_workflow_ref`, which for
+> `uses: hseshadr/ci/.github/workflows/python-publish.yml@<sha>` names **this repo's
+> file** — never the caller's `publish.yml` that the trusted publisher is registered
+> against — so every cross-repo call ends in `invalid-publisher` (proven by assay's
+> v0.1.1 run 29886472639, 2026-07-21). **Inline the pypi-publish job in your caller's
+> own `publish.yml`** (copy `python-publish.yml`'s steps and pins verbatim);
+> `python-publish.yml` remains valid only for same-repo use or token-based flows.
+> npm is unaffected: `ts-publish.yml` works cross-repo because npm matches the
+> *caller's* workflow filename (proven by privacy-core).
+
 Net: nothing in this repo has yet executed inside a consumer run. Static validation is
 real; live proof is not there yet. See the [self-assessment](#self-assessment) for the
 scorecard.

@@ -1,5 +1,16 @@
 # Reusable PyPI publish — release a Python package with OIDC Trusted Publishing.
 #
+# WARNING — PyPI Trusted Publishing CANNOT be used through a cross-repo reusable
+# workflow. PyPI matches the OIDC token's `job_workflow_ref`, and for a caller job that
+# `uses: hseshadr/ci/.github/workflows/python-publish.yml@<sha>` that ref names THIS
+# file — never the caller's publish.yml, which is what the trusted publisher is
+# registered against — so every cross-repo call ends in "invalid-publisher" (proven by
+# assay's v0.1.1 run 29886472639, 2026-07-21). Inline the pypi-publish job in your
+# caller's own publish.yml (copy these steps and pins verbatim); this reusable workflow
+# remains valid only for SAME-REPO use or token-based flows. npm is different:
+# ts-publish.yml keeps working cross-repo because npm matches the CALLER's workflow
+# filename (proven by privacy-core).
+#
 # WHY OIDC: after a ONE-TIME trusted-publisher registration on PyPI (project →
 # Manage → Publishing, or an account-level "pending publisher" for a not-yet-created
 # project), every release is `git tag vX.Y.Z && git push --tags` and CI does the rest.
@@ -89,7 +100,7 @@ jobs:
       id-token: write # OIDC: mint the short-lived token PyPI verifies. This is the credential.
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
