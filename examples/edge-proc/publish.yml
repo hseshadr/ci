@@ -1,6 +1,6 @@
-# shared-libs-python (PyPI package: edgeproc-core) — .github/workflows/publish.yml
-# PyPI release via OIDC Trusted Publishing. A `v*` tag push is the whole trigger; there is
-# NO PyPI token in this repo.
+# edge-proc — .github/workflows/publish.yml (single-package inline PyPI pattern)
+# PyPI release of `edge-proc` via OIDC Trusted Publishing. A `v*` tag push is the whole
+# trigger; there is NO PyPI token in this repo.
 #
 # WHY THE JOB IS INLINE, not a call to the hseshadr/ci reusable workflow (learned from
 # assay's v0.1.1 red run 29886472639): PyPI Trusted Publishing matches the OIDC token's
@@ -12,10 +12,10 @@
 # verbatim) so `job_workflow_ref` names THIS file and the registered publisher matches.
 #
 # One-time bootstrap (deferred — needs a human): register the GitHub Actions trusted
-# publisher on PyPI as a PENDING publisher (edgeproc-core is not yet on PyPI), against
-# {owner, edgeproc-core, publish.yml}. After the first OIDC publish creates the project,
+# publisher on PyPI as a PENDING publisher (edge-proc is not yet on PyPI), against
+# {owner, edge-proc, publish.yml}. After the first OIDC publish creates the project,
 # every `git tag vX.Y.Z && git push --tags` releases automatically. The workflow filename
-# + repo + owner ARE the credential.
+# + repo + owner ARE the credential — no `twine` password, no stored API token.
 #
 # The publish re-runs `uv run poe gate` on the tagged ref before building, so nothing
 # ships unless it passes the same gate CI enforces.
@@ -61,8 +61,8 @@ jobs:
           attestations: true
           print-hash: true
 
-      # "The upload step exited 0" and "the package exists" are DIFFERENT FACTS — THIS
-      # repo accumulated six green publish runs while the package 404'd on PyPI the
+      # "The upload step exited 0" and "the package exists" are DIFFERENT FACTS — six
+      # green publish runs once stacked up on a sibling package that 404'd on PyPI the
       # whole time. Ask the registry, not the uploader. (Copied from the ci Lego's
       # verify step; kept on purpose in the inline job.)
       - name: Verify the release is actually on PyPI

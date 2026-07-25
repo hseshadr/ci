@@ -16,30 +16,43 @@ only the one thing that is genuinely its own — its build command.
 standardized." One place to bump `actions/checkout`, one place to fix the gitleaks
 pattern, one place that defines what "run the gate" means. No drift.
 
-**Status.** Templates written and statically validated — all 29 YAML files parse, and
+**Status.** Templates written and statically validated — all 31 YAML files parse, and
 `actionlint` plus `zizmor` run in CI over the workflows *and* over `examples/` (the
 examples need staging into a `.github/workflows/` layout first, which
 `tests/lint-examples.sh` does; a plain repo-root scan reaches none of them). Both are
 clean. The cross-repo [access flip](#required-setup-read-this-first) is now done, so
 callers resolve.
 
-**Adopted in code by four repos — the publish path only.** `shared-libs-python` and
-`edge-proc` call `python-publish.yml`; `privacy-core` calls `ts-publish.yml`; `assay`
-calls both. All four pin the `ci-v2.0.3` commit SHA. `edge-reco` and `aml-filter` have
-not adopted anything yet.
+**Adopted in code by four repos — the publish path only.** `privacy-core` calls
+`ts-publish.yml` cross-repo; `assay` calls `ts-publish.yml` cross-repo **and** carries an
+inline PyPI job that composes this repo's `setup-python-uv` composite; `edge-proc` and
+`shared-libs-python` carry the same inline PyPI job (cross-repo PyPI is structurally
+impossible — see the warning below). All four pin the `ci-v2.0.3` commit SHA. `edge-reco`
+and `aml-filter` have not adopted anything yet.
 
-**The publish path is UNVERIFIED end-to-end — no release has run through it.** Those
-callers only fire on a `v*` tag, and no tag has been pushed since they landed:
-`edge-proc`, `assay`, and `privacy-core` have zero `publish.yml` runs ever, and
-`shared-libs-python`'s six green publish runs all predate the migration (they used the
-old token + GitHub-Release flow, before `hseshadr/ci` was referenced at all). The gate,
-secret-scan, security-audit, frontend, and deploy templates have **no adopters** — those
-four repos still run their own inline `ci.yml` and `security-audit.yml`.
+**The publish path is LIVE-VALIDATED end-to-end — two consumer releases have run
+through it green (2026-07-22):**
 
-Those six green runs are also why both publish workflows now **verify the release against
-the registry** after uploading: the package they were releasing does not resolve on PyPI.
-A green upload step and a published package are different facts, and until now nothing
-here checked the second one. See [Publish verification](#publish-verification).
+- **npm, cross-repo:** privacy-core `v0.2.1 Publish (npm, OIDC)` —
+  [run 29886074787](https://github.com/hseshadr/privacy-core/actions/runs/29886074787),
+  SUCCESS — a consumer release executing this repo's `ts-publish.yml` at the pinned
+  `ci-v2.0.3` SHA.
+- **the calls-both pattern:** assay `v0.1.1 Publish (OIDC)` —
+  [run 29887096259](https://github.com/hseshadr/assay/actions/runs/29887096259),
+  SUCCESS on both jobs — `publish-pypi` inline (composing this repo's
+  `setup-python-uv` composite at the pinned SHA) and `publish-npm` through cross-repo
+  `ts-publish.yml`.
+
+Still unproven: the gate, secret-scan, security-audit, frontend, and deploy templates
+have **no consumer runs** — those repos still run their own inline `ci.yml` and
+`security-audit.yml`. And `shared-libs-python`'s six older green publish runs predate
+the migration *and* its PyPI trusted-publisher bootstrap, which is why the package never
+resolved on PyPI (see [Publish verification](#publish-verification)).
+
+Those six older green runs are also why both publish workflows **verify the release
+against the registry** after uploading: the package they were releasing does not resolve
+on PyPI. A green upload step and a published package are different facts, and until then
+nothing here checked the second one. See [Publish verification](#publish-verification).
 
 > **PyPI Trusted Publishing cannot be used through a cross-repo reusable workflow.**
 > PyPI matches the OIDC token's `job_workflow_ref`, which for
@@ -47,14 +60,17 @@ here checked the second one. See [Publish verification](#publish-verification).
 > file** — never the caller's `publish.yml` that the trusted publisher is registered
 > against — so every cross-repo call ends in `invalid-publisher` (proven by assay's
 > v0.1.1 run 29886472639, 2026-07-21). **Inline the pypi-publish job in your caller's
-> own `publish.yml`** (copy `python-publish.yml`'s steps and pins verbatim);
-> `python-publish.yml` remains valid only for same-repo use or token-based flows.
-> npm is unaffected: `ts-publish.yml` works cross-repo because npm matches the
-> *caller's* workflow filename (proven by privacy-core).
+> own `publish.yml`** — ready-made copies of green callers live at
+> [`examples/edge-proc/publish.yml`](./examples/edge-proc/publish.yml) (single package)
+> and [`examples/assay/publish.yml`](./examples/assay/publish.yml) (PyPI + npm pair);
+> `python-publish.yml` remains valid only for same-repo use or token-based flows and
+> says so in its header. npm is unaffected: `ts-publish.yml` works cross-repo because
+> npm matches the *caller's* workflow filename (proven by privacy-core run 29886074787).
 
-Net: nothing in this repo has yet executed inside a consumer run. Static validation is
-real; live proof is not there yet. See the [self-assessment](#self-assessment) for the
-scorecard.
+Net: the npm publish Lego (`ts-publish.yml`) and the `setup-python-uv` composite have
+executed green inside real consumer releases — the two runs above. The gate, audit, and
+deploy templates have not yet had a consumer run. See the
+[self-assessment](#self-assessment) for the scorecard.
 
 ---
 
@@ -131,7 +147,7 @@ while the others were on `@v5`) collapses to one pinned set here.
     secret-scan.yml               #   gitleaks over full history
     security-audit.yml            #   pip-audit and/or pnpm audit (each bool-gated)
     cloudflare-pages-deploy.yml   #   preflight → build → wrangler pages deploy
-    python-publish.yml            #   gate → uv build → PyPI via OIDC → verify on PyPI
+    python-publish.yml            #   gate → uv build → PyPI via OIDC → verify on PyPI (SAME-REPO only)
     ts-publish.yml                #   gate → build → npm via OIDC → verify on npm
   actions/                        # composite actions — a bundle of steps you `uses:` INSIDE a job
     setup-python-uv/              #   install uv (cached) + pin Python + (opt) uv sync
@@ -168,12 +184,12 @@ composite (details below).
 
 | Workflow | Key inputs | Secrets | What the job runs |
 |---|---|---|---|
-| `python-gate.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `""`, `gate-task` `gate`, `upload-coverage` `false`, `coverage-file` `coverage.xml` | `CODECOV_TOKEN` (optional) | checkout → **setup-python-uv** → `uv run poe <gate-task>` → optional Codecov upload |
+| `python-gate.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked` (must carry `--frozen`/`--locked`; opt out only via `--allow-unlocked`), `gate-task` `gate`, `upload-coverage` `false`, `coverage-file` `coverage.xml` | `CODECOV_TOKEN` (optional) | checkout → **setup-python-uv** → `uv run poe <gate-task>` → optional Codecov upload |
 | `frontend-gate.yml` | `working-directory` `.`, `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path` `pnpm-lock.yaml`, `install-args` `--frozen-lockfile`, `gate-command` `pnpm gate`, `install-playwright` `false`, `playwright-browsers` `chromium` | — | checkout → **setup-pnpm** → optional **setup-playwright** → `gate-command` |
 | `secret-scan.yml` | `runs-on` | uses `GITHUB_TOKEN` | checkout `fetch-depth:0` → `gitleaks-action` over full history |
 | `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
-| `python-publish.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `""`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
+| `python-publish.yml` (**same-repo only** — cross-repo consumers inline it) | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
 | `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `false`, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
 
 \* required. Every other input has a documented default — no version or path is a magic
@@ -193,15 +209,20 @@ for each brand-new npm name before OIDC can take over. Caveats baked into `ts-pu
 `provenance` defaults **false** because `npm publish --provenance` writes a public
 transparency-log entry and therefore requires a **public** source repo (flip it true only in
 the wave a repo goes public); and each `package.json` `repository.url` must exactly match its
-GitHub repo or npm OIDC fails. Ready callers live at
-[`examples/shared-libs-python/publish.yml`](./examples/shared-libs-python/publish.yml) (PyPI)
-and [`examples/privacy-core/publish.yml`](./examples/privacy-core/publish.yml) (npm).
+GitHub repo or npm OIDC fails. Ready callers:
+[`examples/privacy-core/publish.yml`](./examples/privacy-core/publish.yml) (npm,
+cross-repo — live-proven by run 29886074787),
+[`examples/edge-proc/publish.yml`](./examples/edge-proc/publish.yml) and
+[`examples/shared-libs-python/publish.yml`](./examples/shared-libs-python/publish.yml)
+(inline PyPI job — the only shape PyPI Trusted Publishing permits from another repo), and
+[`examples/assay/publish.yml`](./examples/assay/publish.yml) (both at once — live-proven
+by run 29887096259).
 
 ### Composite actions
 
 | Action | Key inputs | What it runs |
 |---|---|---|
-| `setup-python-uv` | validated `python-version` `3.13`, allowlisted `sync-args` `""`, `working-directory` `.`, `run-sync` `true` | install uv (cached) → `uv python install` → optional `uv sync` |
+| `setup-python-uv` | validated `python-version` `3.13`, allowlisted `sync-args` `--locked` (locked by default; explicit `--allow-unlocked` to opt out), `working-directory` `.`, `run-sync` `true` | install uv (cached) → `uv python install` → optional `uv sync` |
 | `setup-pnpm` | `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path`, allowlisted `install-args` `--frozen-lockfile`, `working-directory` `.`, `install` `true` | `pnpm/action-setup` → `setup-node` (pnpm cache) → optional `pnpm install` |
 | `setup-playwright` | `cache-key`*, allowlisted `browsers` `chromium`, `working-directory` `.` | cache `~/.cache/ms-playwright` → install browsers (miss) or OS deps only (hit) |
 | `restore-model-cache` | `cache-path`*, `cache-key`*, `fetch-command`*, `working-directory` `.`, `always-fetch` `false` | cache the weights dir → run `fetch-command` only on a cache miss |
@@ -402,8 +423,8 @@ Bespoke = the irreducible repo-specific build, which still composes the shared c
 
 | Repo | Reusable workflows | Composites (inside bespoke jobs) | Irreducibly bespoke |
 |---|---|---|---|
-| **edge-proc** | python-gate, secret-scan, security-audit | — | none |
-| **shared-libs-python** | python-gate (+coverage), **python-publish** (PyPI OIDC), secret-scan, security-audit | — | none |
+| **edge-proc** | python-gate, secret-scan, security-audit | setup-python-uv (inside its inline PyPI publish job) | none |
+| **shared-libs-python** | python-gate (+coverage), secret-scan, security-audit | setup-python-uv (inside its inline PyPI publish job — cross-repo `python-publish.yml` is impossible for PyPI TP) | none |
 | **privacy-core** | frontend-gate (+Playwright), **ts-publish** (npm OIDC), secret-scan, security-audit | — | none |
 | **edge-reco** | secret-scan, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
 | **aml-filter** | secret-scan, security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
@@ -449,11 +470,17 @@ An honest self-assessment against a publish-readiness checklist:
   commit cannot contain its own SHA. The tag is cut first, the re-pin follows. The guard
   accepts that one state at the tagged commit and nowhere else — see [The release-commit
   bootstrap](#the-release-commit-bootstrap), which also states the residual gap it leaves.
-- **Every YAML valid** — ✅ all 29 files parse. `actionlint` runs in CI over both our own
-  workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean.
-- **Live-validated end-to-end** — ⛔ **not yet.** The [Required
-  setup](#required-setup-read-this-first) access flip is done, and four repos now call the
-  publish workflows — but nothing has *run*. Those callers fire only on a `v*` tag and none
-  has been pushed since they landed, so zero consumer runs have executed a workflow or
-  composite from this repo. The first real green run lands with the first release tag. This
-  is stated plainly rather than implied-green.
+- **Every YAML valid** — ✅ all 31 files parse. `actionlint` runs in CI over both our own
+  workflows and, via `tests/lint-examples.sh`, over `examples/`; both are clean, with
+  zizmor's **online** audits enabled on both surfaces.
+- **Live-validated end-to-end** — ✅ **for the publish path** (2026-07-22): privacy-core
+  [run 29886074787](https://github.com/hseshadr/privacy-core/actions/runs/29886074787)
+  (npm `v0.2.1` through cross-repo `ts-publish.yml`) and assay
+  [run 29887096259](https://github.com/hseshadr/assay/actions/runs/29887096259)
+  (`v0.1.1`: PyPI through the inline job composing `setup-python-uv`, plus npm through
+  cross-repo `ts-publish.yml`) — both SUCCESS, both executing this repo's code at the
+  pinned `ci-v2.0.3` SHA inside real consumer releases. ⛔ **Still open:** the gate,
+  secret-scan, security-audit, frontend, and deploy templates have zero consumer runs,
+  and cross-repo PyPI through `python-publish.yml` is structurally **impossible**
+  (`job_workflow_ref` mismatch — documented above), not merely unverified; consumers
+  inline that job instead.
