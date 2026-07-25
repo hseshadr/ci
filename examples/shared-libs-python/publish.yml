@@ -63,7 +63,7 @@ jobs:
 
       # "The upload step exited 0" and "the package exists" are DIFFERENT FACTS — THIS
       # repo accumulated six green publish runs while the package 404'd on PyPI the
-      # whole time. Ask the registry, not the uploader. (Copied from the ci Lego's
+      # whole time. Ask the registry, not the uploader. (Copied from the ci reusable workflow's
       # verify step; kept on purpose in the inline job.)
       - name: Verify the release is actually on PyPI
         run: |

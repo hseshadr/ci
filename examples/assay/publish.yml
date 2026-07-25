@@ -14,7 +14,7 @@
 #     hseshadr/ci python-publish.yml steps (ci-v2.0.3; action pins copied verbatim) so
 #     `job_workflow_ref` names THIS file and the registered publisher matches.
 #   * publish-npm STAYS on the reusable workflow. npm Trusted Publishing matches the
-#     CALLER's workflow filename, not `job_workflow_ref`, so the cross-repo Lego works
+#     CALLER's workflow filename, not `job_workflow_ref`, so the cross-repo workflow works
 #     for npm (privacy-core publishes through ts-publish.yml today).
 #
 # BOTH NAMES ARE ALREADY LIVE at 0.1.0: PyPI `avow` and npm `@edgeproc/avow` were published
@@ -79,7 +79,7 @@ jobs:
 
       # "The upload step exited 0" and "the package exists" are DIFFERENT FACTS — six
       # green publish runs once stacked up on a package that 404'd on PyPI the whole
-      # time. Ask the registry, not the uploader. (Copied from the ci Lego's verify
+      # time. Ask the registry, not the uploader. (Copied from the ci reusable workflow's verify
       # step; kept on purpose in the inline job.)
       - name: Verify the release is actually on PyPI
         run: |

@@ -67,7 +67,7 @@ nothing here checked the second one. See [Publish verification](#publish-verific
 > says so in its header. npm is unaffected: `ts-publish.yml` works cross-repo because
 > npm matches the *caller's* workflow filename (proven by privacy-core run 29886074787).
 
-Net: the npm publish Lego (`ts-publish.yml`) and the `setup-python-uv` composite have
+Net: the npm publish workflow (`ts-publish.yml`) and the `setup-python-uv` composite have
 executed green inside real consumer releases — the two runs above. The gate, audit, and
 deploy templates have not yet had a consumer run. See the
 [self-assessment](#self-assessment) for the scorecard.
