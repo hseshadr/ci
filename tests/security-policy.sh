@@ -188,6 +188,42 @@ validate_shell_boundaries() {
   done <<< "$findings"
 }
 
+# True (exit 0) when the scanner reports at least one finding for the file.
+scanner_reports_finding() {
+  local findings
+  findings="$(ruby "$repo_root/tests/lib/scan-run-interpolation.rb" "$1")" || return 2
+  [[ -n "$findings" ]]
+}
+
+# GitHub's expression syntax does not care about whitespace: `${{inputs.x}}`
+# and `${{   github.event.foo }}` expand exactly like the canonical spacing.
+# A scanner keyed to the one-space literal therefore missed both. These
+# fixtures pin the property across spacings, and keep the env:-routed safe
+# pattern (the documented remediation) unflagged.
+validate_interpolation_scanner_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{inputs.name}}\n' > "$dir/no-space.yml"
+  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{  github.event.issue.title }}\n' > "$dir/extra-space.yml"
+  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{ github.head_ref}}\n' > "$dir/head-ref.yml"
+  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{ inputs.name }}\n' > "$dir/canonical.yml"
+  printf 'jobs:\n  a:\n    steps:\n      - env:\n          SAFE: ${{ inputs.name }}\n        run: echo "$SAFE"\n' \
+    > "$dir/env-routed.yml"
+
+  expect_success "injection scanner misses \${{inputs.*}} with no inner whitespace" \
+    scanner_reports_finding "$dir/no-space.yml"
+  expect_success "injection scanner misses \${{ github.event.* }} with extra inner whitespace" \
+    scanner_reports_finding "$dir/extra-space.yml"
+  expect_success "injection scanner misses \${{ github.head_ref}} with asymmetric whitespace" \
+    scanner_reports_finding "$dir/head-ref.yml"
+  expect_success "injection scanner misses the canonical one-space interpolation" \
+    scanner_reports_finding "$dir/canonical.yml"
+  expect_failure "injection scanner flags the safe env:-routed reference" \
+    scanner_reports_finding "$dir/env-routed.yml"
+}
+
 validate_checkout_credentials() {
   local unsafe_files
   local yaml_files=()
@@ -384,6 +420,7 @@ run_check validate_action_pins
 run_check validate_permissions
 run_check validate_permission_guard_cases
 run_check validate_shell_boundaries
+run_check validate_interpolation_scanner_cases
 run_check validate_checkout_credentials
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
