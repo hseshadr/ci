@@ -11,6 +11,31 @@ included.
 **Composite/workflow behavior WILL change at the next release** — this section is the
 heads-up consumers re-pin against.
 
+- **Provenance on by default (behavior change).** `ts-publish.yml`'s `provenance` input
+  now defaults to **`true`**. It defaulted `false` as a private-repo hangover, and that
+  was a silent trap — `--provenance` needs a public repo, so the safe-looking default
+  meant a caller who simply *forgot* the input shipped an **unsigned** release and a
+  perfectly green run. All four publishing repos went public on 2026-07-25, so signing is
+  now the default and *not* signing is the thing you ask for: a **PRIVATE** caller must
+  pass `provenance: false` explicitly or its publish will fail. Existing callers all pass
+  `provenance: true` already and are unaffected.
+- **A new guard makes that unfalsifiable** (`validate_publish_provenance`, backed by
+  `tests/lib/scan-publish-provenance.rb`). It parses every workflow and example and fails
+  on: a `pypa/gh-action-pypi-publish` step without `attestations: true`; an inline
+  `npm publish` without `--provenance`; a caller setting `provenance: false`; a reusable
+  `provenance`/`attestations` input that *defaults* off; and a publishing job that does
+  not grant `id-token: write` (OIDC is the credential — lose it and the rail is dead).
+  It is a YAML parse, not a grep: one of its fixtures carries the literal text
+  `attestations: true` in a **comment** above a step that never sets it, and is rejected.
+  Red-proofed four ways — flipping the reusable default back to `false`, restoring
+  `provenance: false` in the privacy-core example, deleting `attestations: true` from the
+  edge-proc example, and dropping `id-token: write` from the shared-libs-python example
+  each turn the suite red with a named reason.
+- **`examples/privacy-core/publish.yml` was carrying `provenance: false`** long after the
+  repo went public, alongside a stale `@gainratio/privacy-core` package name. `examples/`
+  is the copy-paste surface, so that file was handing new consumers an unsigned rail. It
+  is now synced to the proven caller (run 30173462035 → `@edgeproc/privacy-core` 0.2.2,
+  which the registry serves with a SLSA v1 provenance attestation).
 - **Locked-by-default installs (behavior change).** `setup-python-uv` `sync-args` and the
   `sync-args` input of `python-gate.yml` / `python-publish.yml` now default to `--locked`,
   and an argument list without `--frozen`/`--locked` (including the old empty default) is

@@ -322,6 +322,171 @@ validate_first_party_pins() {
 # shellcheck source=tests/lib/first-party-lineage.sh
 source "$repo_root/tests/lib/first-party-lineage.sh"
 
+# Provenance is the one publish property that fails SILENTLY: drop `--provenance`
+# or `attestations:` and the release still ships, the run is still green, and the
+# only witness is the registry months later. `provenance` used to default FALSE in
+# ts-publish.yml (a private-repo hangover) and examples/privacy-core still carried
+# `provenance: false` long after the repo went public — a caller copying it got an
+# unsigned release and a green run. Nothing could see either, because nothing looked.
+validate_publish_provenance() {
+  local findings
+  local yaml_files=()
+
+  while IFS= read -r file; do
+    yaml_files+=("$file")
+  done < <(yaml_sources)
+
+  findings="$(ruby "$repo_root/tests/lib/scan-publish-provenance.rb" "${yaml_files[@]}")" || {
+    fail "publish-provenance scan failed to execute"
+    return
+  }
+
+  while IFS=$'\t' read -r file reason; do
+    [[ -z "$file" ]] || fail "$file: $reason"
+  done <<< "$findings"
+}
+
+# True (exit 0) when the scanner reports at least one finding for the file.
+scanner_reports_provenance_finding() {
+  local findings
+  findings="$(ruby "$repo_root/tests/lib/scan-publish-provenance.rb" "$1")" || return 2
+  [[ -n "$findings" ]]
+}
+
+# Break the property, not the form. Each fixture is a release pipeline that would
+# have gone out green: the SIGNING is what differs, never the shape. The comment
+# fixture is the load-bearing one — it carries the literal text `attestations: true`
+# in a YAML comment above a step that never sets it, which is exactly the file a
+# grep-based check blesses and a parse rejects.
+validate_publish_provenance_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  cat > "$dir/pypi-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with: {packages-dir: dist, attestations: false}
+YAML
+  cat > "$dir/pypi-absent.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with: {packages-dir: dist}
+YAML
+  cat > "$dir/pypi-comment-only.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      # attestations: true — string present in a comment, setting absent from the step.
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with: {packages-dir: dist}
+YAML
+  cat > "$dir/no-oidc.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {contents: read}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with: {packages-dir: dist, attestations: true}
+YAML
+  cat > "$dir/npm-inline-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - run: npm publish --access public
+YAML
+  cat > "$dir/npm-caller-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1
+    with: {provenance: false}
+YAML
+  cat > "$dir/reusable-default-off.yml" <<'YAML'
+on:
+  workflow_call:
+    inputs:
+      provenance: {type: boolean, default: false}
+jobs: {}
+YAML
+  cat > "$dir/pypi-on.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with: {packages-dir: dist, attestations: true}
+YAML
+  cat > "$dir/npm-caller-on.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1
+    with: {provenance: true}
+YAML
+  cat > "$dir/npm-caller-inherits.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1
+    with: {working-directory: "."}
+YAML
+  cat > "$dir/reusable-forwards-input.yml" <<'YAML'
+on:
+  workflow_call:
+    inputs:
+      attestations: {type: boolean, default: true}
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          attestations: ${{ inputs.attestations }}
+YAML
+  cat > "$dir/not-a-publisher.yml" <<'YAML'
+permissions: {contents: read}
+jobs:
+  gate:
+    steps:
+      - run: pnpm gate
+YAML
+
+  expect_success "provenance guard passes a PyPI upload with attestations: false" \
+    scanner_reports_provenance_finding "$dir/pypi-off.yml"
+  expect_success "provenance guard passes a PyPI upload with no attestations key" \
+    scanner_reports_provenance_finding "$dir/pypi-absent.yml"
+  expect_success "provenance guard passes a PyPI upload whose attestations live only in a COMMENT" \
+    scanner_reports_provenance_finding "$dir/pypi-comment-only.yml"
+  expect_success "provenance guard passes a publishing job with no id-token: write" \
+    scanner_reports_provenance_finding "$dir/no-oidc.yml"
+  expect_success "provenance guard passes an inline npm publish without --provenance" \
+    scanner_reports_provenance_finding "$dir/npm-inline-off.yml"
+  expect_success "provenance guard passes a caller that sets provenance: false" \
+    scanner_reports_provenance_finding "$dir/npm-caller-off.yml"
+  expect_success "provenance guard passes a reusable workflow whose provenance input defaults off" \
+    scanner_reports_provenance_finding "$dir/reusable-default-off.yml"
+
+  expect_failure "provenance guard flags a correct PyPI upload" \
+    scanner_reports_provenance_finding "$dir/pypi-on.yml"
+  expect_failure "provenance guard flags a caller with provenance: true" \
+    scanner_reports_provenance_finding "$dir/npm-caller-on.yml"
+  expect_failure "provenance guard flags a caller that inherits the on-by-default provenance" \
+    scanner_reports_provenance_finding "$dir/npm-caller-inherits.yml"
+  expect_failure "provenance guard flags a reusable workflow forwarding an on-by-default input" \
+    scanner_reports_provenance_finding "$dir/reusable-forwards-input.yml"
+  expect_failure "provenance guard flags a workflow that publishes nothing" \
+    scanner_reports_provenance_finding "$dir/not-a-publisher.yml"
+}
+
 validate_trusted_command_contracts() {
   local phrase="repository-controlled literal command"
 
@@ -553,6 +718,8 @@ run_check validate_checkout_credentials
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
 run_check validate_first_party_release_lineage
+run_check validate_publish_provenance
+run_check validate_publish_provenance_cases
 run_check validate_trusted_command_contracts
 run_check validate_argument_guards
 run_check validate_self_ci
