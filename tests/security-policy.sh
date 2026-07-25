@@ -27,6 +27,15 @@ expect_success() {
   fi
 }
 
+expect_exit() {
+  local expected="$1" description="$2"
+  shift 2
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  [[ "$actual" -eq "$expected" ]] ||
+    fail "$description (exit $actual, expected $expected)"
+}
+
 # Fail soft. This suite used to run under a bare `set -e`, so the first check
 # that hit a malformed YAML file died inside a command substitution and took the
 # whole script with it — the remaining checks never ran and the run still looked
@@ -80,22 +89,78 @@ validate_action_pins() {
   )
 }
 
+# Verdict on ONE file's top-level permissions:
+#   0 = declared and read-only, 1 = not declared, 2 = grants a top-level write.
+# Extracted from validate_permissions so tests can drive it against fixtures.
+check_top_level_permissions() {
+  awk '
+    /^permissions:/ {
+      found = 1
+      # The value can ride on this very line: `permissions: write-all` or a
+      # flow-style map like `permissions: {contents: write}`. The old code
+      # jumped to the next line here, so both forms passed unexamined.
+      rest = $0
+      sub(/^permissions:[[:space:]]*/, "", rest)
+      sub(/#.*/, "", rest)
+      gsub(/[[:space:]]+$/, "", rest)
+      if (rest != "") {
+        if (rest ~ /write/) write_permission = 1
+      } else {
+        in_permissions = 1
+      }
+      next
+    }
+    in_permissions && /^[^[:space:]]/ { in_permissions = 0 }
+    in_permissions && /:[[:space:]]*(write|write-all)([[:space:]]*#.*)?$/ { write_permission = 1 }
+    END { exit(found ? (write_permission ? 2 : 0) : 1) }
+  ' "$1"
+}
+
 validate_permissions() {
+  local verdict
   while IFS= read -r file; do
-    if awk '
-      /^permissions:/ { found = 1; in_permissions = 1; next }
-      in_permissions && /^[^[:space:]]/ { in_permissions = 0 }
-      in_permissions && /:[[:space:]]*write([[:space:]]*#.*)?$/ { write_permission = 1 }
-      END { exit(found ? (write_permission ? 2 : 0) : 1) }
-    ' "$file"; then
-      continue
-    else
-      case "$?" in
-        1) fail "$file does not declare top-level permissions" ;;
-        2) fail "$file grants a top-level write permission" ;;
-      esac
-    fi
+    verdict=0
+    check_top_level_permissions "$file" || verdict=$?
+    case "$verdict" in
+      1) fail "$file does not declare top-level permissions" ;;
+      2) fail "$file grants a top-level write permission" ;;
+    esac
   done < <(find .github/workflows examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+}
+
+# The guard above is only worth having if it actually REJECTS the writes it
+# exists to block. These fixtures pin the property, not the shape: the two
+# single-line forms (`permissions: write-all`, flow-style `{contents: write}`)
+# used to sail through because the awk `next` skipped the value carried on the
+# `permissions:` line itself.
+validate_permission_guard_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  printf 'permissions: write-all\njobs: {}\n' > "$dir/write-all.yml"
+  printf 'permissions: {contents: write}\njobs: {}\n' > "$dir/flow-write.yml"
+  printf 'permissions: {contents: read}\njobs: {}\n' > "$dir/flow-read.yml"
+  printf 'permissions: read-all\njobs: {}\n' > "$dir/read-all.yml"
+  printf 'permissions:\n  contents: read\njobs:\n  publish:\n    permissions: {contents: read, id-token: write}\n' \
+    > "$dir/job-level-oidc.yml"
+  printf 'permissions:\n  contents: write\njobs: {}\n' > "$dir/block-write.yml"
+  printf 'jobs: {}\n' > "$dir/missing.yml"
+
+  expect_exit 2 "permissions guard passes 'permissions: write-all'" \
+    check_top_level_permissions "$dir/write-all.yml"
+  expect_exit 2 "permissions guard passes flow-style 'permissions: {contents: write}'" \
+    check_top_level_permissions "$dir/flow-write.yml"
+  expect_exit 0 "permissions guard rejects flow-style read-only permissions" \
+    check_top_level_permissions "$dir/flow-read.yml"
+  expect_exit 0 "permissions guard rejects 'permissions: read-all'" \
+    check_top_level_permissions "$dir/read-all.yml"
+  expect_exit 0 "permissions guard rejects a job-level OIDC write under a read-only top level" \
+    check_top_level_permissions "$dir/job-level-oidc.yml"
+  expect_exit 2 "permissions guard passes a block-style top-level write" \
+    check_top_level_permissions "$dir/block-write.yml"
+  expect_exit 1 "permissions guard passes a workflow with no top-level permissions" \
+    check_top_level_permissions "$dir/missing.yml"
 }
 
 # Any attacker-influenced expression pasted into a `run:` block is executed by
@@ -317,6 +382,7 @@ validate_pages_headers() {
 run_check validate_yaml
 run_check validate_action_pins
 run_check validate_permissions
+run_check validate_permission_guard_cases
 run_check validate_shell_boundaries
 run_check validate_checkout_credentials
 run_check validate_dependabot_cooldown
