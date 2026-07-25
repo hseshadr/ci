@@ -310,7 +310,7 @@ validate_dependabot_cooldown() {
 validate_first_party_pins() {
   while IFS=: read -r file line_number _; do
     fail "$file:$line_number first-party ref is not pinned to a full commit SHA"
-  done < <(grep -RInE --include='*.yml' \
+  done < <(grep -RInE --include='*.yml' --include='*.yaml' \
     '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/[^[:space:]]*@(ci-)?v[0-9]' \
     .github examples)
 }

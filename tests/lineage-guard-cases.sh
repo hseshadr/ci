@@ -80,6 +80,14 @@ commit_empty() {
   git commit -q --allow-empty -m "$1"
 }
 
+# Same as commit_ref_to, but through the .yaml spelling of the extension.
+commit_yaml_ref_to() {
+  printf 'jobs:\n  gate:\n    uses: hseshadr/ci/.github/workflows/python-gate.yml@%s\n' "$1" \
+    > .github/workflows/gate.yaml
+  git add -A
+  git commit -qm "$2"
+}
+
 # Two tagged releases, r1 then r2, leaving HEAD at r2's commit.
 build_two_releases() {
   commit_empty "release one"
@@ -153,6 +161,30 @@ case_first_release_refs_untagged_ancestor() {
   git tag ci-v1.0.0
 }
 
+# A tree with releases but not one first-party ref anywhere: the guard has
+# nothing to certify, and "checked zero refs" must be a failure, not a pass —
+# a grep pattern drifting out of sync with reality would otherwise turn the
+# whole provenance guard green forever.
+case_no_refs_at_all() {
+  build_two_releases
+}
+
+# Same vacuity through a different door: the ref exists, but only in a .yaml
+# file — a perfectly legal GitHub workflow extension the guard must scan.
+# This ref names the NEWEST release, so the verdict must be a clean pass; a
+# guard blind to .yaml instead reports an empty ref set.
+case_newest_ref_in_yaml_file() {
+  build_two_releases
+  commit_yaml_ref_to "$(git rev-parse 'ci-v1.0.1^{commit}')" "yaml-extension ref to newest"
+}
+
+# And the dangerous half of the .yaml blindness: a SUPERSEDED ref hiding in a
+# .yaml file must still be caught as drift.
+case_stale_ref_in_yaml_file() {
+  build_two_releases
+  commit_yaml_ref_to "$(git rev-parse 'ci-v1.0.0^{commit}')" "yaml-extension stale ref"
+}
+
 run_case pass "tagged release commit referencing the immediately-preceding release" \
   case_tagged_release_refs_previous
 run_case fail "tagged release commit referencing two releases back" \
@@ -167,6 +199,12 @@ run_case fail "tagged release commit referencing an unknown commit" \
   case_tagged_release_refs_unknown_commit
 run_case fail "first release referencing an untagged ancestor (no previous release)" \
   case_first_release_refs_untagged_ancestor
+run_case fail "release history with no first-party refs anywhere (empty set must not pass vacuously)" \
+  case_no_refs_at_all
+run_case pass "newest-release ref carried in a .yaml file" \
+  case_newest_ref_in_yaml_file
+run_case fail "superseded ref hiding in a .yaml file" \
+  case_stale_ref_in_yaml_file
 
 if ((suite_failures > 0)); then
   printf '\n%d lineage guard case(s) failed.\n' "$suite_failures" >&2
