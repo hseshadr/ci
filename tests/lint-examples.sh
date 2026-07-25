@@ -19,6 +19,17 @@ cd "$repo_root"
 
 ZIZMOR_VERSION="1.26.1"
 
+# zizmor's ONLINE audits (known-vulnerable-actions, ref-version-mismatch, ...)
+# need a GitHub API token. Running without one silently skips them — a quieter
+# gate pretending to be a passing one — so a missing token is an error here,
+# never a downgrade. CI passes GH_TOKEN; locally `gh auth token` fills it.
+GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+if [[ -z "$GH_TOKEN" ]]; then
+  echo "::error::no GitHub token available (set GH_TOKEN or authenticate gh) — refusing to run zizmor with its online audits skipped"
+  exit 1
+fi
+export GH_TOKEN
+
 stage_dir="$(mktemp -d)"
 trap 'rm -rf "$stage_dir"' EXIT
 
@@ -42,7 +53,7 @@ status=0
 echo "--- actionlint (examples) ---"
 actionlint "$stage_dir"/*/.github/workflows/*.yml || status=1
 
-echo "--- zizmor (examples) ---"
-uvx "zizmor@${ZIZMOR_VERSION}" --no-online-audits "$stage_dir" || status=1
+echo "--- zizmor (examples, online audits on) ---"
+uvx "zizmor@${ZIZMOR_VERSION}" "$stage_dir" || status=1
 
 exit "$status"
