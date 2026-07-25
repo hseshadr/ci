@@ -25,7 +25,9 @@ jobs:
       - name: Validate CI security policy
         run: |
           bash -n .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
-          shellcheck .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
+          # -x follows `source`d files (tests/lib/) so they are checked in the
+          # context that sources them instead of being SC1091-skipped.
+          shellcheck -x .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
           tests/security-policy.sh
       # The lineage guard tolerates one narrow exemption (a release commit may still
       # name the previous release). Whether that exemption stays narrow is not

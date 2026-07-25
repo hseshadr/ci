@@ -205,12 +205,38 @@ validate_interpolation_scanner_cases() {
   dir="$(mktemp -d)"
   trap 'rm -rf "${dir:-}"' RETURN
 
-  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{inputs.name}}\n' > "$dir/no-space.yml"
-  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{  github.event.issue.title }}\n' > "$dir/extra-space.yml"
-  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{ github.head_ref}}\n' > "$dir/head-ref.yml"
-  printf 'jobs:\n  a:\n    steps:\n      - run: echo ${{ inputs.name }}\n' > "$dir/canonical.yml"
-  printf 'jobs:\n  a:\n    steps:\n      - env:\n          SAFE: ${{ inputs.name }}\n        run: echo "$SAFE"\n' \
-    > "$dir/env-routed.yml"
+  cat > "$dir/no-space.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{inputs.name}}
+YAML
+  cat > "$dir/extra-space.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{  github.event.issue.title }}
+YAML
+  cat > "$dir/head-ref.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{ github.head_ref}}
+YAML
+  cat > "$dir/canonical.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{ inputs.name }}
+YAML
+  cat > "$dir/env-routed.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - env:
+          SAFE: ${{ inputs.name }}
+        run: echo "$SAFE"
+YAML
 
   expect_success "injection scanner misses \${{inputs.*}} with no inner whitespace" \
     scanner_reports_finding "$dir/no-space.yml"
@@ -307,10 +333,65 @@ validate_trusted_command_contracts() {
     fail "frontend-gate does not document its gate-command trust boundary"
 }
 
+# --- property harness for workflow-embedded argument validation --------------
+# The old checks grepped the workflows for their error STRINGS ("Invalid poe
+# gate task", ...), which a comment could satisfy while the validation itself
+# was deleted — a shape check. These helpers extract the actual `run:` script
+# from the YAML and execute it against good and bad inputs, with the
+# downstream tools stubbed to exit 0, so only the validation decides the
+# verdict.
+
+# Print the `run:` script of the first step whose env block declares $2.
+extract_run_script_by_env() {
+  ruby -r yaml -e '
+    target = nil
+    walk = lambda do |value|
+      if value.is_a?(Hash)
+        env = value["env"]
+        if target.nil? && value["run"].is_a?(String) && env.is_a?(Hash) && env.key?(ARGV.fetch(1))
+          target = value["run"]
+        end
+        value.each_value { |child| walk.call(child) }
+      elsif value.is_a?(Array)
+        value.each { |child| walk.call(child) }
+      end
+    end
+    walk.call(YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true))
+    abort "no run: step declares env #{ARGV.fetch(1)} in #{ARGV.fetch(0)}" if target.nil?
+    print target
+  ' "$1" "$2"
+}
+
+# Execute that script the way the runner would (bash -e -u -o pipefail), in a
+# scratch dir, with $2=$3 in the environment and real tools shadowed by the
+# exit-0 stubs in $argument_stub_bin (set by validate_argument_guards).
+run_guarded_step() {
+  local file="$1" env_var="$2" value="$3" script workdir status=0
+  script="$(extract_run_script_by_env "$file" "$env_var")" || return 2
+  workdir="$(mktemp -d)"
+  (
+    cd "$workdir" &&
+      env "$env_var=$value" PATH="$argument_stub_bin:$PATH" \
+        bash -e -u -o pipefail -c "$script"
+  ) >/dev/null 2>&1 || status=$?
+  rm -rf "$workdir"
+  return "$status"
+}
+
 validate_argument_guards() {
   local playwright=".github/actions/setup-playwright/run-playwright.sh"
   local pnpm=".github/actions/setup-pnpm/run-install.sh"
   local uv=".github/actions/setup-python-uv/run-uv.sh"
+  local gate_wf=".github/workflows/python-gate.yml"
+  local audit_wf=".github/workflows/security-audit.yml"
+
+  local argument_stub_bin tool
+  argument_stub_bin="$(mktemp -d)"
+  trap 'rm -rf "${argument_stub_bin:-}"' RETURN
+  for tool in uv uvx pnpm; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$argument_stub_bin/$tool"
+    chmod +x "$argument_stub_bin/$tool"
+  done
 
   expect_success "Playwright browser allowlist rejects valid browsers" \
     "$playwright" --validate "chromium firefox webkit"
@@ -329,12 +410,42 @@ validate_argument_guards() {
   expect_failure "uv sync allowlist accepts an unsupported argument" \
     "$uv" --validate-sync "--directory /tmp"
 
-  grep -q 'Invalid poe gate task' .github/workflows/python-gate.yml ||
-    fail "python-gate does not validate gate-task"
-  grep -q 'Invalid pip-audit export argument' .github/workflows/security-audit.yml ||
-    fail "security-audit does not validate pip-audit export arguments"
-  grep -q 'Invalid pnpm audit level' .github/workflows/security-audit.yml ||
-    fail "security-audit does not validate pnpm-audit-level"
+  # Property, not shape: execute the real workflow scripts against good and
+  # bad inputs (tools stubbed). Each file+variable pair carries BOTH polarities
+  # on purpose — if extraction ever breaks (step renamed, env var dropped), the
+  # expect_success case goes red rather than the expect_failure case passing
+  # vacuously.
+  expect_success "python-gate rejects a well-formed poe gate task" \
+    run_guarded_step "$gate_wf" POE_GATE_TASK "gate"
+  expect_failure "python-gate accepts a shell-metacharacter poe gate task" \
+    run_guarded_step "$gate_wf" POE_GATE_TASK "gate; touch /tmp/injected"
+  expect_success "security-audit rejects the documented pip-audit export args" \
+    run_guarded_step "$audit_wf" PIP_AUDIT_EXPORT_ARGS "--frozen --all-extras --no-emit-project --no-hashes"
+  expect_failure "security-audit accepts an unsupported pip-audit export argument" \
+    run_guarded_step "$audit_wf" PIP_AUDIT_EXPORT_ARGS "--frozen --index-url https://evil.example"
+  expect_success "security-audit rejects a valid pnpm audit level" \
+    run_guarded_step "$audit_wf" PNPM_AUDIT_LEVEL "high"
+  expect_failure "security-audit accepts a shell-metacharacter pnpm audit level" \
+    run_guarded_step "$audit_wf" PNPM_AUDIT_LEVEL "low; touch /tmp/injected"
+
+  # Non-vacuity self-check: a step carrying the error string only in a COMMENT,
+  # with the validation deleted, is exactly the file the old grep-based check
+  # blessed. The harness must let the bad input sail through it (exit 0 via the
+  # stub) — proving these cases measure the validation, not the string.
+  local gutted="$argument_stub_bin/gutted.yml"
+  cat > "$gutted" <<'YAML'
+jobs:
+  gate:
+    steps:
+      - name: Gate
+        env:
+          POE_GATE_TASK: placeholder
+        run: |
+          # Invalid poe gate task — string present, validation absent.
+          uv run poe "$POE_GATE_TASK"
+YAML
+  expect_success "harness self-check: a validation-free step must pass bad input through to the stub" \
+    run_guarded_step "$gutted" POE_GATE_TASK "gate; touch /tmp/injected"
 }
 
 validate_self_ci() {
@@ -346,8 +457,8 @@ validate_self_ci() {
   }
   grep -q 'tests/security-policy\.sh' "$workflow" ||
     fail "$workflow does not run the security-policy regression test"
-  grep -q 'shellcheck .github/actions/\*/\*.sh tests/\*.sh tests/lib/\*.sh' "$workflow" ||
-    fail "$workflow does not run ShellCheck over every shell script"
+  grep -q 'shellcheck -x .github/actions/\*/\*.sh tests/\*.sh tests/lib/\*.sh' "$workflow" ||
+    fail "$workflow does not run ShellCheck (-x, following sourced files) over every shell script"
   # The lineage guard's exemption is only safe while it stays narrow, and the cases
   # proving that live in a suite this repo's own history cannot stand in for.
   grep -q 'tests/lineage-guard-cases\.sh' "$workflow" ||
