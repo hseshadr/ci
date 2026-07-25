@@ -410,6 +410,23 @@ validate_argument_guards() {
   expect_failure "uv sync allowlist accepts an unsupported argument" \
     "$uv" --validate-sync "--directory /tmp"
 
+  # Locked-by-default is a policy, not a suggestion: an empty or lock-flag-free
+  # argument list silently runs an UNLOCKED `uv sync` / non-frozen
+  # `pnpm install`, letting CI resolve dependencies the lockfile never pinned.
+  # Opting out must be explicit (a named sentinel), never the quiet default.
+  expect_failure "uv sync allowlist accepts an EMPTY argument list (unlocked sync)" \
+    "$uv" --validate-sync ""
+  expect_failure "uv sync allowlist accepts a lock-flag-free argument list" \
+    "$uv" --validate-sync "--all-extras"
+  expect_success "uv sync allowlist rejects the explicit --allow-unlocked opt-out" \
+    "$uv" --validate-sync "--allow-unlocked --all-extras"
+  expect_failure "pnpm install allowlist accepts an EMPTY argument list (non-frozen install)" \
+    "$pnpm" --validate ""
+  expect_failure "pnpm install allowlist accepts a frozen-lockfile-free argument list" \
+    "$pnpm" --validate "--config.dangerously-allow-all-builds=true"
+  expect_success "pnpm install allowlist rejects the explicit --allow-unfrozen-lockfile opt-out" \
+    "$pnpm" --validate "--allow-unfrozen-lockfile"
+
   # Property, not shape: execute the real workflow scripts against good and
   # bad inputs (tools stubbed). Each file+variable pair carries BOTH polarities
   # on purpose — if extraction ever breaks (step renamed, env var dropped), the

@@ -45,7 +45,10 @@ inputs:
   install-args:
     description: >-
       Space-separated allowlisted args: --frozen-lockfile and
-      --config.dangerously-allow-all-builds=true.
+      --config.dangerously-allow-all-builds=true. FROZEN BY DEFAULT: the list
+      must include --frozen-lockfile; to intentionally install without it, opt
+      out explicitly with --allow-unfrozen-lockfile (a policy sentinel consumed
+      by this action, not passed to pnpm). Empty input is rejected.
     default: "--frozen-lockfile"
   working-directory:
     description: "Dir to run `pnpm install` from."

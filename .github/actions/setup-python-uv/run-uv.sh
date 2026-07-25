@@ -17,13 +17,24 @@ validate_sync_args() {
   local requested=()
   local argument
   local option_value
+  local lock_flag=""
+  local allow_unlocked=""
 
   read -r -a requested <<< "$value"
   while ((index < ${#requested[@]})); do
     argument="${requested[$index]}"
     case "$argument" in
-      --frozen | --locked | --all-extras)
+      --frozen | --locked)
+        lock_flag=1
         validated_args+=("$argument")
+        ;;
+      --all-extras)
+        validated_args+=("$argument")
+        ;;
+      --allow-unlocked)
+        # Explicit opt-out from the locked-by-default policy. Consumed here —
+        # it is a policy sentinel for this action, not a real uv flag.
+        allow_unlocked=1
         ;;
       --group | --extra)
         index=$((index + 1))
@@ -41,6 +52,14 @@ validate_sync_args() {
     esac
     index=$((index + 1))
   done
+
+  # Locked by default: a sync that carries neither --frozen nor --locked lets
+  # CI resolve dependency versions the lockfile never pinned. Opting out of
+  # that guarantee must be explicit, never the quiet result of an empty input.
+  if [[ -z "$lock_flag" && -z "$allow_unlocked" ]]; then
+    printf '::error::uv sync would run UNLOCKED: sync-args must include --frozen or --locked (or opt out explicitly with --allow-unlocked)\n' >&2
+    exit 1
+  fi
 }
 
 case "$mode" in

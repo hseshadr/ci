@@ -24,7 +24,7 @@
 #       uses: hseshadr/ci/.github/workflows/python-gate.yml@<40-char-sha> # ci-v2.0.1
 #       with:
 #         working-directory: backend
-#         sync-args: "--group dev"
+#         sync-args: "--locked --group dev"
 name: Python gate (reusable)
 
 on:
@@ -41,9 +41,11 @@ on:
       sync-args:
         description: >-
           Extra args appended to `uv sync` (e.g. '--frozen --all-extras',
-          '--group dev', '--locked --extra dev'). Empty = bare `uv sync`.
+          '--group dev', '--locked --extra dev'). LOCKED BY DEFAULT: must
+          include --frozen or --locked; opt out only with the explicit
+          --allow-unlocked sentinel. Empty input is rejected.
         type: string
-        default: ""
+        default: "--locked"
       gate-task:
         description: "poe task run as the gate."
         type: string

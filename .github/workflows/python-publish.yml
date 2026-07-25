@@ -58,10 +58,12 @@ on:
         default: "3.13"
       sync-args:
         description: >-
-          Extra args appended to `uv sync` before the gate (e.g. '--frozen --all-extras',
-          '--group dev'). Empty = bare `uv sync`. Same allowlist as python-gate.
+          Extra args appended to `uv sync` before the gate (e.g. '--frozen
+          --all-extras', '--locked --group dev'). Same allowlist as
+          python-gate. LOCKED BY DEFAULT: must include --frozen or --locked;
+          opt out only with the explicit --allow-unlocked sentinel.
         type: string
-        default: ""
+        default: "--locked"
       gate-task:
         description: "poe task run as the gate before building. Ignored when run-gate is false."
         type: string
