@@ -23,12 +23,12 @@ jobs:
     uses: hseshadr/ci/.github/workflows/python-gate.yml@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
     with:
       working-directory: backend
-      sync-args: "--group dev"
+      sync-args: "--locked --group dev"
 
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
@@ -50,7 +50,7 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3

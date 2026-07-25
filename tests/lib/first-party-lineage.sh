@@ -79,13 +79,22 @@ validate_first_party_release_lineage() {
     fi
   fi
 
-  refs="$(grep -rhoE --include='*.yml' \
+  refs="$(grep -rhoE --include='*.yml' --include='*.yaml' \
     'hseshadr/ci/[^[:space:]]*@[0-9a-f]{40}' .github examples | sed 's/.*@//' | sort -u)"
+
+  # An empty ref set means the guard certified NOTHING — and stayed green while
+  # doing it. That is exactly how a grep pattern drifting away from reality
+  # (wrong extension, moved directory, renamed org) would present. Zero refs to
+  # check is a failure of the guard's premise, never a pass.
+  if [[ -z "$refs" ]]; then
+    fail "no first-party hseshadr/ci refs found under .github/ or examples/ — an empty ref set certifies nothing, so this is a guard failure, not a pass"
+    return
+  fi
 
   while IFS= read -r sha; do
     [[ -n "$sha" ]] || continue
 
-    files="$(grep -rlF --include='*.yml' "$sha" .github examples | paste -sd' ' -)"
+    files="$(grep -rlF --include='*.yml' --include='*.yaml' "$sha" .github examples | paste -sd' ' -)"
 
     if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
       fail "first-party ref names a commit unknown to this repository: $sha ($files)"

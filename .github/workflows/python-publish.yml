@@ -1,15 +1,23 @@
 # Reusable PyPI publish — release a Python package with OIDC Trusted Publishing.
 #
-# WARNING — PyPI Trusted Publishing CANNOT be used through a cross-repo reusable
-# workflow. PyPI matches the OIDC token's `job_workflow_ref`, and for a caller job that
-# `uses: hseshadr/ci/.github/workflows/python-publish.yml@<sha>` that ref names THIS
-# file — never the caller's publish.yml, which is what the trusted publisher is
-# registered against — so every cross-repo call ends in "invalid-publisher" (proven by
-# assay's v0.1.1 run 29886472639, 2026-07-21). Inline the pypi-publish job in your
-# caller's own publish.yml (copy these steps and pins verbatim); this reusable workflow
-# remains valid only for SAME-REPO use or token-based flows. npm is different:
-# ts-publish.yml keeps working cross-repo because npm matches the CALLER's workflow
-# filename (proven by privacy-core).
+# ============================ SAME-REPO ONLY =================================
+# This reusable workflow serves exactly two purposes, by decision (2026-07-25):
+#   1. SAME-REPO use (`uses: ./.github/workflows/python-publish.yml`) or
+#      token-based flows, where `job_workflow_ref` names the caller's own repo.
+#   2. The CANONICAL TEMPLATE that cross-repo consumers copy INLINE into their
+#      own publish.yml — ready-made copies live at examples/edge-proc/publish.yml
+#      (single package) and examples/assay/publish.yml (PyPI + npm pair), both
+#      taken verbatim from callers with green release runs.
+#
+# WHY it cannot be called cross-repo: PyPI Trusted Publishing matches the OIDC
+# token's `job_workflow_ref`, and for a caller job that
+# `uses: hseshadr/ci/.github/workflows/python-publish.yml@<sha>` that ref names
+# THIS file — never the caller's publish.yml, which is what the trusted
+# publisher is registered against — so every cross-repo call ends in
+# "invalid-publisher" (proven by assay's v0.1.1 run 29886472639, 2026-07-21).
+# npm is different: ts-publish.yml keeps working cross-repo because npm matches
+# the CALLER's workflow filename (proven by privacy-core run 29886074787).
+# =============================================================================
 #
 # WHY OIDC: after a ONE-TIME trusted-publisher registration on PyPI (project →
 # Manage → Publishing, or an account-level "pending publisher" for a not-yet-created
@@ -30,20 +38,20 @@
 # PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
 # hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
 # rejects a moving `@ci-vN`. That matters most for THIS workflow: it runs with
-# `id-token: write`, so a mutable ref anywhere in the chain reaches PyPI. Copy the
-# SHA of the release you want from CHANGELOG.md and keep the trailing version
-# comment so Dependabot can bump it. Ready-to-copy callers live in examples/.
+# `id-token: write`, so a mutable ref anywhere in the chain reaches PyPI.
 #
-# Caller (.github/workflows/publish.yml):
+# Same-repo caller (.github/workflows/publish.yml in THIS repository only):
 #   name: Publish (PyPI, OIDC)
 #   on: { push: { tags: ['v*'] } }
 #   permissions: { contents: read }
 #   jobs:
 #     publish:
 #       permissions: { id-token: write, contents: read }
-#       uses: hseshadr/ci/.github/workflows/python-publish.yml@<40-char-sha> # ci-v2.0.1
+#       uses: ./.github/workflows/python-publish.yml
 #       with: { working-directory: "." }
-name: Python publish (reusable, OIDC)
+# Cross-repo consumers: do NOT `uses:` this file — copy the inline job from
+# examples/edge-proc/publish.yml or examples/assay/publish.yml instead.
+name: Python publish (reusable, OIDC, SAME-REPO only)
 
 on:
   workflow_call:
@@ -58,10 +66,12 @@ on:
         default: "3.13"
       sync-args:
         description: >-
-          Extra args appended to `uv sync` before the gate (e.g. '--frozen --all-extras',
-          '--group dev'). Empty = bare `uv sync`. Same allowlist as python-gate.
+          Extra args appended to `uv sync` before the gate (e.g. '--frozen
+          --all-extras', '--locked --group dev'). Same allowlist as
+          python-gate. LOCKED BY DEFAULT: must include --frozen or --locked;
+          opt out only with the explicit --allow-unlocked sentinel.
         type: string
-        default: ""
+        default: "--locked"
       gate-task:
         description: "poe task run as the gate before building. Ignored when run-gate is false."
         type: string

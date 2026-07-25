@@ -6,6 +6,35 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
+## Unreleased (on `main`, after ci-v2.0.3)
+
+**Composite/workflow behavior WILL change at the next release** — this section is the
+heads-up consumers re-pin against.
+
+- **Locked-by-default installs (behavior change).** `setup-python-uv` `sync-args` and the
+  `sync-args` input of `python-gate.yml` / `python-publish.yml` now default to `--locked`,
+  and an argument list without `--frozen`/`--locked` (including the old empty default) is
+  **rejected**; the explicit opt-out is the `--allow-unlocked` sentinel (consumed by the
+  action, never passed to `uv`). `setup-pnpm` likewise rejects an `install-args` list
+  without `--frozen-lockfile` unless it carries `--allow-unfrozen-lockfile`. Callers that
+  already pass `--frozen`/`--frozen-lockfile` (every example in this repo) are unaffected.
+- **Guard hardening, each red-proofed with a bypass that now fails:** the top-level
+  permissions check rejects `permissions: write-all` and flow-style
+  `permissions: {contents: write}`; the run-block injection scanner is
+  whitespace-insensitive inside `${{ }}`; the workflow argument validations
+  (poe gate task, pip-audit export args, pnpm audit level) are asserted by *executing*
+  the extracted scripts against good/bad inputs instead of grepping for error strings;
+  the first-party lineage guard fails on an empty ref set instead of passing vacuously
+  and scans `*.yaml` as well as `*.yml`.
+- **zizmor online audits are ON** for both the repo scan and the staged `examples/`
+  audit (GH_TOKEN required; a missing token is an error, not a silent downgrade). The
+  ten major-only pin comments the new audit flagged now name exact releases.
+- **`python-publish.yml` is marked SAME-REPO ONLY** (PyPI Trusted Publishing cannot
+  match a cross-repo `job_workflow_ref`); cross-repo consumers copy the inline job from
+  `examples/edge-proc/publish.yml` or `examples/assay/publish.yml` — both taken verbatim
+  from callers with green release runs (assay run 29887096259, privacy-core run
+  29886074787 for the npm half).
+
 ## ci-v2.0.3 — 2026-07-21
 
 Commit `bc68fde66f0805971e1b9aa444933b7975da80b1`.

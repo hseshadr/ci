@@ -27,6 +27,15 @@ expect_success() {
   fi
 }
 
+expect_exit() {
+  local expected="$1" description="$2"
+  shift 2
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  [[ "$actual" -eq "$expected" ]] ||
+    fail "$description (exit $actual, expected $expected)"
+}
+
 # Fail soft. This suite used to run under a bare `set -e`, so the first check
 # that hit a malformed YAML file died inside a command substitution and took the
 # whole script with it — the remaining checks never ran and the run still looked
@@ -80,22 +89,78 @@ validate_action_pins() {
   )
 }
 
+# Verdict on ONE file's top-level permissions:
+#   0 = declared and read-only, 1 = not declared, 2 = grants a top-level write.
+# Extracted from validate_permissions so tests can drive it against fixtures.
+check_top_level_permissions() {
+  awk '
+    /^permissions:/ {
+      found = 1
+      # The value can ride on this very line: `permissions: write-all` or a
+      # flow-style map like `permissions: {contents: write}`. The old code
+      # jumped to the next line here, so both forms passed unexamined.
+      rest = $0
+      sub(/^permissions:[[:space:]]*/, "", rest)
+      sub(/#.*/, "", rest)
+      gsub(/[[:space:]]+$/, "", rest)
+      if (rest != "") {
+        if (rest ~ /write/) write_permission = 1
+      } else {
+        in_permissions = 1
+      }
+      next
+    }
+    in_permissions && /^[^[:space:]]/ { in_permissions = 0 }
+    in_permissions && /:[[:space:]]*(write|write-all)([[:space:]]*#.*)?$/ { write_permission = 1 }
+    END { exit(found ? (write_permission ? 2 : 0) : 1) }
+  ' "$1"
+}
+
 validate_permissions() {
+  local verdict
   while IFS= read -r file; do
-    if awk '
-      /^permissions:/ { found = 1; in_permissions = 1; next }
-      in_permissions && /^[^[:space:]]/ { in_permissions = 0 }
-      in_permissions && /:[[:space:]]*write([[:space:]]*#.*)?$/ { write_permission = 1 }
-      END { exit(found ? (write_permission ? 2 : 0) : 1) }
-    ' "$file"; then
-      continue
-    else
-      case "$?" in
-        1) fail "$file does not declare top-level permissions" ;;
-        2) fail "$file grants a top-level write permission" ;;
-      esac
-    fi
+    verdict=0
+    check_top_level_permissions "$file" || verdict=$?
+    case "$verdict" in
+      1) fail "$file does not declare top-level permissions" ;;
+      2) fail "$file grants a top-level write permission" ;;
+    esac
   done < <(find .github/workflows examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+}
+
+# The guard above is only worth having if it actually REJECTS the writes it
+# exists to block. These fixtures pin the property, not the shape: the two
+# single-line forms (`permissions: write-all`, flow-style `{contents: write}`)
+# used to sail through because the awk `next` skipped the value carried on the
+# `permissions:` line itself.
+validate_permission_guard_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  printf 'permissions: write-all\njobs: {}\n' > "$dir/write-all.yml"
+  printf 'permissions: {contents: write}\njobs: {}\n' > "$dir/flow-write.yml"
+  printf 'permissions: {contents: read}\njobs: {}\n' > "$dir/flow-read.yml"
+  printf 'permissions: read-all\njobs: {}\n' > "$dir/read-all.yml"
+  printf 'permissions:\n  contents: read\njobs:\n  publish:\n    permissions: {contents: read, id-token: write}\n' \
+    > "$dir/job-level-oidc.yml"
+  printf 'permissions:\n  contents: write\njobs: {}\n' > "$dir/block-write.yml"
+  printf 'jobs: {}\n' > "$dir/missing.yml"
+
+  expect_exit 2 "permissions guard passes 'permissions: write-all'" \
+    check_top_level_permissions "$dir/write-all.yml"
+  expect_exit 2 "permissions guard passes flow-style 'permissions: {contents: write}'" \
+    check_top_level_permissions "$dir/flow-write.yml"
+  expect_exit 0 "permissions guard rejects flow-style read-only permissions" \
+    check_top_level_permissions "$dir/flow-read.yml"
+  expect_exit 0 "permissions guard rejects 'permissions: read-all'" \
+    check_top_level_permissions "$dir/read-all.yml"
+  expect_exit 0 "permissions guard rejects a job-level OIDC write under a read-only top level" \
+    check_top_level_permissions "$dir/job-level-oidc.yml"
+  expect_exit 2 "permissions guard passes a block-style top-level write" \
+    check_top_level_permissions "$dir/block-write.yml"
+  expect_exit 1 "permissions guard passes a workflow with no top-level permissions" \
+    check_top_level_permissions "$dir/missing.yml"
 }
 
 # Any attacker-influenced expression pasted into a `run:` block is executed by
@@ -121,6 +186,68 @@ validate_shell_boundaries() {
     [[ -z "$file" ]] ||
       fail "$file interpolates $vector directly into shell code"
   done <<< "$findings"
+}
+
+# True (exit 0) when the scanner reports at least one finding for the file.
+scanner_reports_finding() {
+  local findings
+  findings="$(ruby "$repo_root/tests/lib/scan-run-interpolation.rb" "$1")" || return 2
+  [[ -n "$findings" ]]
+}
+
+# GitHub's expression syntax does not care about whitespace: `${{inputs.x}}`
+# and `${{   github.event.foo }}` expand exactly like the canonical spacing.
+# A scanner keyed to the one-space literal therefore missed both. These
+# fixtures pin the property across spacings, and keep the env:-routed safe
+# pattern (the documented remediation) unflagged.
+validate_interpolation_scanner_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  cat > "$dir/no-space.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{inputs.name}}
+YAML
+  cat > "$dir/extra-space.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{  github.event.issue.title }}
+YAML
+  cat > "$dir/head-ref.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{ github.head_ref}}
+YAML
+  cat > "$dir/canonical.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - run: echo ${{ inputs.name }}
+YAML
+  cat > "$dir/env-routed.yml" <<'YAML'
+jobs:
+  a:
+    steps:
+      - env:
+          SAFE: ${{ inputs.name }}
+        run: echo "$SAFE"
+YAML
+
+  expect_success "injection scanner misses \${{inputs.*}} with no inner whitespace" \
+    scanner_reports_finding "$dir/no-space.yml"
+  expect_success "injection scanner misses \${{ github.event.* }} with extra inner whitespace" \
+    scanner_reports_finding "$dir/extra-space.yml"
+  expect_success "injection scanner misses \${{ github.head_ref}} with asymmetric whitespace" \
+    scanner_reports_finding "$dir/head-ref.yml"
+  expect_success "injection scanner misses the canonical one-space interpolation" \
+    scanner_reports_finding "$dir/canonical.yml"
+  expect_failure "injection scanner flags the safe env:-routed reference" \
+    scanner_reports_finding "$dir/env-routed.yml"
 }
 
 validate_checkout_credentials() {
@@ -183,7 +310,7 @@ validate_dependabot_cooldown() {
 validate_first_party_pins() {
   while IFS=: read -r file line_number _; do
     fail "$file:$line_number first-party ref is not pinned to a full commit SHA"
-  done < <(grep -RInE --include='*.yml' \
+  done < <(grep -RInE --include='*.yml' --include='*.yaml' \
     '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/[^[:space:]]*@(ci-)?v[0-9]' \
     .github examples)
 }
@@ -206,10 +333,65 @@ validate_trusted_command_contracts() {
     fail "frontend-gate does not document its gate-command trust boundary"
 }
 
+# --- property harness for workflow-embedded argument validation --------------
+# The old checks grepped the workflows for their error STRINGS ("Invalid poe
+# gate task", ...), which a comment could satisfy while the validation itself
+# was deleted — a shape check. These helpers extract the actual `run:` script
+# from the YAML and execute it against good and bad inputs, with the
+# downstream tools stubbed to exit 0, so only the validation decides the
+# verdict.
+
+# Print the `run:` script of the first step whose env block declares $2.
+extract_run_script_by_env() {
+  ruby -r yaml -e '
+    target = nil
+    walk = lambda do |value|
+      if value.is_a?(Hash)
+        env = value["env"]
+        if target.nil? && value["run"].is_a?(String) && env.is_a?(Hash) && env.key?(ARGV.fetch(1))
+          target = value["run"]
+        end
+        value.each_value { |child| walk.call(child) }
+      elsif value.is_a?(Array)
+        value.each { |child| walk.call(child) }
+      end
+    end
+    walk.call(YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true))
+    abort "no run: step declares env #{ARGV.fetch(1)} in #{ARGV.fetch(0)}" if target.nil?
+    print target
+  ' "$1" "$2"
+}
+
+# Execute that script the way the runner would (bash -e -u -o pipefail), in a
+# scratch dir, with $2=$3 in the environment and real tools shadowed by the
+# exit-0 stubs in $argument_stub_bin (set by validate_argument_guards).
+run_guarded_step() {
+  local file="$1" env_var="$2" value="$3" script workdir status=0
+  script="$(extract_run_script_by_env "$file" "$env_var")" || return 2
+  workdir="$(mktemp -d)"
+  (
+    cd "$workdir" &&
+      env "$env_var=$value" PATH="$argument_stub_bin:$PATH" \
+        bash -e -u -o pipefail -c "$script"
+  ) >/dev/null 2>&1 || status=$?
+  rm -rf "$workdir"
+  return "$status"
+}
+
 validate_argument_guards() {
   local playwright=".github/actions/setup-playwright/run-playwright.sh"
   local pnpm=".github/actions/setup-pnpm/run-install.sh"
   local uv=".github/actions/setup-python-uv/run-uv.sh"
+  local gate_wf=".github/workflows/python-gate.yml"
+  local audit_wf=".github/workflows/security-audit.yml"
+
+  local argument_stub_bin tool
+  argument_stub_bin="$(mktemp -d)"
+  trap 'rm -rf "${argument_stub_bin:-}"' RETURN
+  for tool in uv uvx pnpm; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$argument_stub_bin/$tool"
+    chmod +x "$argument_stub_bin/$tool"
+  done
 
   expect_success "Playwright browser allowlist rejects valid browsers" \
     "$playwright" --validate "chromium firefox webkit"
@@ -228,12 +410,59 @@ validate_argument_guards() {
   expect_failure "uv sync allowlist accepts an unsupported argument" \
     "$uv" --validate-sync "--directory /tmp"
 
-  grep -q 'Invalid poe gate task' .github/workflows/python-gate.yml ||
-    fail "python-gate does not validate gate-task"
-  grep -q 'Invalid pip-audit export argument' .github/workflows/security-audit.yml ||
-    fail "security-audit does not validate pip-audit export arguments"
-  grep -q 'Invalid pnpm audit level' .github/workflows/security-audit.yml ||
-    fail "security-audit does not validate pnpm-audit-level"
+  # Locked-by-default is a policy, not a suggestion: an empty or lock-flag-free
+  # argument list silently runs an UNLOCKED `uv sync` / non-frozen
+  # `pnpm install`, letting CI resolve dependencies the lockfile never pinned.
+  # Opting out must be explicit (a named sentinel), never the quiet default.
+  expect_failure "uv sync allowlist accepts an EMPTY argument list (unlocked sync)" \
+    "$uv" --validate-sync ""
+  expect_failure "uv sync allowlist accepts a lock-flag-free argument list" \
+    "$uv" --validate-sync "--all-extras"
+  expect_success "uv sync allowlist rejects the explicit --allow-unlocked opt-out" \
+    "$uv" --validate-sync "--allow-unlocked --all-extras"
+  expect_failure "pnpm install allowlist accepts an EMPTY argument list (non-frozen install)" \
+    "$pnpm" --validate ""
+  expect_failure "pnpm install allowlist accepts a frozen-lockfile-free argument list" \
+    "$pnpm" --validate "--config.dangerously-allow-all-builds=true"
+  expect_success "pnpm install allowlist rejects the explicit --allow-unfrozen-lockfile opt-out" \
+    "$pnpm" --validate "--allow-unfrozen-lockfile"
+
+  # Property, not shape: execute the real workflow scripts against good and
+  # bad inputs (tools stubbed). Each file+variable pair carries BOTH polarities
+  # on purpose — if extraction ever breaks (step renamed, env var dropped), the
+  # expect_success case goes red rather than the expect_failure case passing
+  # vacuously.
+  expect_success "python-gate rejects a well-formed poe gate task" \
+    run_guarded_step "$gate_wf" POE_GATE_TASK "gate"
+  expect_failure "python-gate accepts a shell-metacharacter poe gate task" \
+    run_guarded_step "$gate_wf" POE_GATE_TASK "gate; touch /tmp/injected"
+  expect_success "security-audit rejects the documented pip-audit export args" \
+    run_guarded_step "$audit_wf" PIP_AUDIT_EXPORT_ARGS "--frozen --all-extras --no-emit-project --no-hashes"
+  expect_failure "security-audit accepts an unsupported pip-audit export argument" \
+    run_guarded_step "$audit_wf" PIP_AUDIT_EXPORT_ARGS "--frozen --index-url https://evil.example"
+  expect_success "security-audit rejects a valid pnpm audit level" \
+    run_guarded_step "$audit_wf" PNPM_AUDIT_LEVEL "high"
+  expect_failure "security-audit accepts a shell-metacharacter pnpm audit level" \
+    run_guarded_step "$audit_wf" PNPM_AUDIT_LEVEL "low; touch /tmp/injected"
+
+  # Non-vacuity self-check: a step carrying the error string only in a COMMENT,
+  # with the validation deleted, is exactly the file the old grep-based check
+  # blessed. The harness must let the bad input sail through it (exit 0 via the
+  # stub) — proving these cases measure the validation, not the string.
+  local gutted="$argument_stub_bin/gutted.yml"
+  cat > "$gutted" <<'YAML'
+jobs:
+  gate:
+    steps:
+      - name: Gate
+        env:
+          POE_GATE_TASK: placeholder
+        run: |
+          # Invalid poe gate task — string present, validation absent.
+          uv run poe "$POE_GATE_TASK"
+YAML
+  expect_success "harness self-check: a validation-free step must pass bad input through to the stub" \
+    run_guarded_step "$gutted" POE_GATE_TASK "gate; touch /tmp/injected"
 }
 
 validate_self_ci() {
@@ -245,8 +474,8 @@ validate_self_ci() {
   }
   grep -q 'tests/security-policy\.sh' "$workflow" ||
     fail "$workflow does not run the security-policy regression test"
-  grep -q 'shellcheck .github/actions/\*/\*.sh tests/\*.sh tests/lib/\*.sh' "$workflow" ||
-    fail "$workflow does not run ShellCheck over every shell script"
+  grep -q 'shellcheck -x .github/actions/\*/\*.sh tests/\*.sh tests/lib/\*.sh' "$workflow" ||
+    fail "$workflow does not run ShellCheck (-x, following sourced files) over every shell script"
   # The lineage guard's exemption is only safe while it stays narrow, and the cases
   # proving that live in a suite this repo's own history cannot stand in for.
   grep -q 'tests/lineage-guard-cases\.sh' "$workflow" ||
@@ -317,7 +546,9 @@ validate_pages_headers() {
 run_check validate_yaml
 run_check validate_action_pins
 run_check validate_permissions
+run_check validate_permission_guard_cases
 run_check validate_shell_boundaries
+run_check validate_interpolation_scanner_cases
 run_check validate_checkout_credentials
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins

@@ -31,8 +31,11 @@ inputs:
   sync-args:
     description: >-
       Space-separated allowlisted args: --frozen, --locked, --all-extras,
-      --group <name>, and --extra <name>. Empty = bare `uv sync`.
-    default: ""
+      --group <name>, and --extra <name>. LOCKED BY DEFAULT: the list must
+      include --frozen or --locked; to intentionally sync without a lockfile
+      guarantee, opt out explicitly with --allow-unlocked (a policy sentinel
+      consumed by this action, not passed to uv). Empty input is rejected.
+    default: "--locked"
   working-directory:
     description: "Dir holding pyproject.toml + uv.lock."
     default: "."
