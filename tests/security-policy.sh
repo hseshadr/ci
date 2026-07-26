@@ -290,6 +290,114 @@ validate_checkout_credentials() {
   done <<< "$unsafe_files"
 }
 
+# `workflow_run` runs in the BASE repository with the BASE repository's secrets, and
+# `head_branch` is attacker-controlled: a fork's default branch is ALSO called `main`,
+# so a fork-PR run satisfies a `head_branch == 'main'` gate and a `branches: [main]`
+# trigger filter alike. Three live Pages deploys shipped exactly that gate while this
+# repo's own cloudflare-pages-deploy.yml already carried the fix — nothing checked, so
+# nothing noticed. Every workflow_run-triggered file must pin the triggering run to
+# its own repository, in a real `if:`, not in a comment.
+#
+# Verdict on ONE file: 0 = not workflow_run-triggered, 1 = pinned, 2 = UNPINNED.
+workflow_run_repository_pin_verdict() {
+  # The Ruby program is quoted verbatim; nothing in it is a shell expansion.
+  # shellcheck disable=SC2016
+  ruby -r yaml -e '
+    def walk(value, &block)
+      yield value if value.is_a?(Hash)
+      children = value.is_a?(Hash) ? value.values : value
+      children.each { |child| walk(child, &block) } if children.is_a?(Array)
+    end
+
+    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    exit 0 unless document.is_a?(Hash)
+    # YAML 1.1 reads a bare `on:` key as the boolean true, not the string "on".
+    triggers = document["on"] || document[true]
+    exit 0 unless triggers.is_a?(Hash) && triggers.key?("workflow_run")
+
+    conditions = []
+    walk(document) { |node| conditions << node["if"].to_s if node.key?("if") }
+    pinned = conditions.any? do |condition|
+      condition.include?("github.event.workflow_run.head_repository.full_name") &&
+        condition.include?("github.repository")
+    end
+    exit(pinned ? 1 : 2)
+  ' "$1"
+}
+
+validate_workflow_run_repository_pin() {
+  local verdict
+  while IFS= read -r file; do
+    verdict=0
+    workflow_run_repository_pin_verdict "$file" || verdict=$?
+    [[ "$verdict" -ne 2 ]] ||
+      fail "$file triggers on workflow_run without pinning head_repository.full_name to github.repository"
+  done < <(yaml_sources)
+}
+
+# Break the property, not the form. Every fixture is a deploy that would have gone out
+# green; only the GATE differs. The comment fixture is the load-bearing one — it carries
+# the pin's literal text in a YAML comment above a gate that never applies it, which is
+# exactly the file a grep-based check blesses and a parse rejects.
+validate_workflow_run_pin_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  cat > "$dir/branch-only.yml" <<'YAML'
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+YAML
+  cat > "$dir/comment-only.yml" <<'YAML'
+on:
+  workflow_run: {workflows: ["CI"], types: [completed]}
+jobs:
+  deploy:
+    # github.event.workflow_run.head_repository.full_name == github.repository
+    # — present as prose, absent from the gate below.
+    if: github.event.workflow_run.conclusion == 'success'
+YAML
+  cat > "$dir/no-gate.yml" <<'YAML'
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+YAML
+  cat > "$dir/pinned.yml" <<'YAML'
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+YAML
+  cat > "$dir/not-workflow-run.yml" <<'YAML'
+on:
+  push: {branches: [main]}
+jobs:
+  gate:
+    if: github.event.workflow_run.head_branch == 'main'
+YAML
+
+  expect_exit 2 "workflow_run pin guard passes a branch-name-only gate" \
+    workflow_run_repository_pin_verdict "$dir/branch-only.yml"
+  expect_exit 2 "workflow_run pin guard passes a pin that lives only in a COMMENT" \
+    workflow_run_repository_pin_verdict "$dir/comment-only.yml"
+  expect_exit 2 "workflow_run pin guard passes a workflow_run deploy with no gate at all" \
+    workflow_run_repository_pin_verdict "$dir/no-gate.yml"
+  expect_exit 1 "workflow_run pin guard rejects a correctly pinned gate" \
+    workflow_run_repository_pin_verdict "$dir/pinned.yml"
+  expect_exit 0 "workflow_run pin guard judges a workflow that has no workflow_run trigger" \
+    workflow_run_repository_pin_verdict "$dir/not-workflow-run.yml"
+}
+
 validate_dependabot_cooldown() {
   ruby -e '
     require "yaml"
@@ -550,6 +658,8 @@ run_check validate_permission_guard_cases
 run_check validate_shell_boundaries
 run_check validate_interpolation_scanner_cases
 run_check validate_checkout_credentials
+run_check validate_workflow_run_repository_pin
+run_check validate_workflow_run_pin_cases
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
 run_check validate_first_party_release_lineage
