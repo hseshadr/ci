@@ -51,15 +51,52 @@ yaml_sources() {
   find .github examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort
 }
 
+# EVERY file-scanning guard below is vacuously green on an empty input set: a `find`
+# whose path moved, a `--include` glob that stops matching a renamed extension, or a
+# directory rename turns "no violations found" into "nothing was looked at" — and the
+# two are indistinguishable from the outside. Only the lineage guard asserted its input
+# was non-empty; the other eight were one typo away from being decorative forever.
+#
+# The floors are deliberately well above one. A guard that scanned 1 of 31 files is
+# still broken, and "at least one" would not notice.
+YAML_SOURCE_FLOOR=20
+PERMISSION_SOURCE_FLOOR=15
+USES_LINE_FLOOR=30
+
+inputs_are_sufficient() {
+  local count="$1" minimum="${2:-1}"
+  [[ "$count" -ge "$minimum" ]]
+}
+
+require_inputs() {
+  local label="$1" count="$2" minimum="${3:-1}"
+  inputs_are_sufficient "$count" "$minimum" ||
+    fail "$label scanned $count input(s), expected at least $minimum — its input set has drifted and the check is now vacuous"
+}
+
+validate_input_floor_cases() {
+  expect_failure "input-floor helper accepts an EMPTY input set" \
+    inputs_are_sufficient 0 1
+  expect_failure "input-floor helper accepts a set that collapsed below its floor" \
+    inputs_are_sufficient 3 "$YAML_SOURCE_FLOOR"
+  expect_success "input-floor helper rejects a set at its floor" \
+    inputs_are_sufficient "$YAML_SOURCE_FLOOR" "$YAML_SOURCE_FLOOR"
+}
+
 validate_yaml() {
+  local count=0
   while IFS= read -r file; do
+    count=$((count + 1))
     ruby -e 'require "yaml"; YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)' "$file" ||
       fail "$file is not valid YAML"
   done < <(yaml_sources)
+  require_inputs "YAML validation" "$count" "$YAML_SOURCE_FLOOR"
 }
 
 validate_action_pins() {
+  local count=0
   while IFS=: read -r file line_number line; do
+    count=$((count + 1))
     ref="${line#*uses:}"
     ref="${ref%%#*}"
     ref="${ref#"${ref%%[![:space:]]*}"}"
@@ -87,38 +124,50 @@ validate_action_pins() {
       }' "$file"
     done < <(yaml_sources)
   )
+  require_inputs "action-pin scan" "$count" "$USES_LINE_FLOOR"
 }
 
 # Verdict on ONE file's top-level permissions:
 #   0 = declared and read-only, 1 = not declared, 2 = grants a top-level write.
 # Extracted from validate_permissions so tests can drive it against fixtures.
+#
+# THIS IS A YAML PARSE, NOT A LINE SCAN. The awk version it replaces reasoned about
+# the TEXT of the `permissions:` line, which meant it only understood the two
+# spellings its author had in mind. Three others slipped straight through, each a
+# real top-level `contents: write`:
+#
+#   permissions:            permissions: {          x-perms: &perms
+#     {contents: write}       contents: write         contents: write
+#                           }                       permissions: *perms
+#
+# The first two put the write on a line the scanner had stopped reading; the third
+# hides it behind a YAML alias, which no amount of line matching resolves. A parse
+# sees one value in every spelling — and YAML.safe_load already runs with
+# `aliases: true` elsewhere in this suite, so the alias form was always loadable.
 check_top_level_permissions() {
-  awk '
-    /^permissions:/ {
-      found = 1
-      # The value can ride on this very line: `permissions: write-all` or a
-      # flow-style map like `permissions: {contents: write}`. The old code
-      # jumped to the next line here, so both forms passed unexamined.
-      rest = $0
-      sub(/^permissions:[[:space:]]*/, "", rest)
-      sub(/#.*/, "", rest)
-      gsub(/[[:space:]]+$/, "", rest)
-      if (rest != "") {
-        if (rest ~ /write/) write_permission = 1
-      } else {
-        in_permissions = 1
-      }
-      next
-    }
-    in_permissions && /^[^[:space:]]/ { in_permissions = 0 }
-    in_permissions && /:[[:space:]]*(write|write-all)([[:space:]]*#.*)?$/ { write_permission = 1 }
-    END { exit(found ? (write_permission ? 2 : 0) : 1) }
+  # The Ruby program is quoted verbatim; nothing in it is a shell expansion.
+  # shellcheck disable=SC2016
+  ruby -r yaml -e '
+    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    exit 1 unless document.is_a?(Hash)
+
+    value = document["permissions"]
+    exit 1 if value.nil?
+
+    grants_write =
+      case value
+      when String then value.strip.match?(/write/)
+      when Hash then value.values.any? { |scope| scope.to_s.strip.match?(/write/) }
+      else true # an unrecognised shape gets the loudest verdict, never the quietest
+      end
+    exit(grants_write ? 2 : 0)
   ' "$1"
 }
 
 validate_permissions() {
-  local verdict
+  local verdict count=0
   while IFS= read -r file; do
+    count=$((count + 1))
     verdict=0
     check_top_level_permissions "$file" || verdict=$?
     case "$verdict" in
@@ -126,6 +175,7 @@ validate_permissions() {
       2) fail "$file grants a top-level write permission" ;;
     esac
   done < <(find .github/workflows examples -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  require_inputs "top-level permissions guard" "$count" "$PERMISSION_SOURCE_FLOOR"
 }
 
 # The guard above is only worth having if it actually REJECTS the writes it
@@ -146,6 +196,11 @@ validate_permission_guard_cases() {
     > "$dir/job-level-oidc.yml"
   printf 'permissions:\n  contents: write\njobs: {}\n' > "$dir/block-write.yml"
   printf 'jobs: {}\n' > "$dir/missing.yml"
+  # The three spellings an auditor walked a top-level `contents: write` through.
+  printf 'permissions:\n  {contents: write}\njobs: {}\n' > "$dir/flow-next-line.yml"
+  printf 'permissions: {\n  contents: write\n}\njobs: {}\n' > "$dir/flow-multiline.yml"
+  printf 'x-perms: &perms\n  contents: write\npermissions: *perms\njobs: {}\n' > "$dir/aliased-write.yml"
+  printf 'x-perms: &perms\n  contents: read\npermissions: *perms\njobs: {}\n' > "$dir/aliased-read.yml"
 
   expect_exit 2 "permissions guard passes 'permissions: write-all'" \
     check_top_level_permissions "$dir/write-all.yml"
@@ -161,6 +216,14 @@ validate_permission_guard_cases() {
     check_top_level_permissions "$dir/block-write.yml"
   expect_exit 1 "permissions guard passes a workflow with no top-level permissions" \
     check_top_level_permissions "$dir/missing.yml"
+  expect_exit 2 "permissions guard passes a flow-style write on the line BELOW permissions:" \
+    check_top_level_permissions "$dir/flow-next-line.yml"
+  expect_exit 2 "permissions guard passes a MULTI-LINE flow-style top-level write" \
+    check_top_level_permissions "$dir/flow-multiline.yml"
+  expect_exit 2 "permissions guard passes a top-level write hidden behind a YAML ALIAS" \
+    check_top_level_permissions "$dir/aliased-write.yml"
+  expect_exit 0 "permissions guard rejects read-only permissions supplied through a YAML alias" \
+    check_top_level_permissions "$dir/aliased-read.yml"
 }
 
 # Any attacker-influenced expression pasted into a `run:` block is executed by
@@ -176,6 +239,8 @@ validate_shell_boundaries() {
   while IFS= read -r file; do
     yaml_files+=("$file")
   done < <(yaml_sources)
+
+  require_inputs "run-block interpolation scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
 
   findings="$(ruby "$repo_root/tests/lib/scan-run-interpolation.rb" "${yaml_files[@]}")" || {
     fail "run-block interpolation scan failed to execute"
@@ -258,6 +323,8 @@ validate_checkout_credentials() {
     yaml_files+=("$file")
   done < <(yaml_sources)
 
+  require_inputs "checkout-credentials scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
+
   unsafe_files="$(ruby -e '
     require "yaml"
 
@@ -291,76 +358,133 @@ validate_checkout_credentials() {
 }
 
 # `workflow_run` runs in the BASE repository with the BASE repository's secrets, and
-# `head_branch` is attacker-controlled: a fork's default branch is ALSO called `main`,
-# so a fork-PR run satisfies a `head_branch == 'main'` gate and a `branches: [main]`
-# trigger filter alike. Three live Pages deploys shipped exactly that gate while this
-# repo's own cloudflare-pages-deploy.yml already carried the fix — nothing checked, so
-# nothing noticed. Every workflow_run-triggered file must pin the triggering run to
-# its own repository, in a real `if:`, not in a comment.
+# every `head_*` field is attacker-controlled: a fork's default branch is ALSO called
+# `main`, so a fork-PR run satisfies a `head_branch == 'main'` gate and a
+# `branches: [main]` trigger filter alike. Three live Pages deploys shipped exactly
+# that gate — nothing checked, so nothing noticed.
 #
-# Verdict on ONE file: 0 = not workflow_run-triggered, 1 = pinned, 2 = UNPINNED.
+# The check that replaced them asked whether two SUBSTRINGS appeared anywhere in any
+# `if:`. That is a shape test, and it blessed five different fork-code deploys: an
+# inverted `!=` pin, a pin ORed away by `|| github.run_id != ''`, a pin sitting in a
+# job that holds no secrets while another job does, a gate with no
+# `conclusion == 'success'` at all, and a gate with no `event == 'push'`. It also
+# early-exited on `on: workflow_call` files, so the pin could be deleted outright from
+# cloudflare-pages-deploy.yml with this suite still green.
+#
+# tests/lib/workflow-run-pin.rb replaces it with a parse + exhaustive proof; the
+# rationale and the scope rule live there.
+#
+# Verdict on ONE file: 0 = out of scope, 1 = pinned, 2 = UNPINNED.
 workflow_run_repository_pin_verdict() {
-  # The Ruby program is quoted verbatim; nothing in it is a shell expansion.
-  # shellcheck disable=SC2016
-  ruby -r yaml -e '
-    def walk(value, &block)
-      yield value if value.is_a?(Hash)
-      children = value.is_a?(Hash) ? value.values : value
-      children.each { |child| walk(child, &block) } if children.is_a?(Array)
-    end
-
-    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
-    exit 0 unless document.is_a?(Hash)
-    # YAML 1.1 reads a bare `on:` key as the boolean true, not the string "on".
-    triggers = document["on"] || document[true]
-    exit 0 unless triggers.is_a?(Hash) && triggers.key?("workflow_run")
-
-    conditions = []
-    walk(document) { |node| conditions << node["if"].to_s if node.key?("if") }
-    pinned = conditions.any? do |condition|
-      condition.include?("github.event.workflow_run.head_repository.full_name") &&
-        condition.include?("github.repository")
-    end
-    exit(pinned ? 1 : 2)
-  ' "$1"
+  ruby "$repo_root/tests/lib/workflow-run-pin.rb" "$1"
 }
 
 validate_workflow_run_repository_pin() {
-  local verdict
+  local verdict reason count=0
   while IFS= read -r file; do
+    count=$((count + 1))
     verdict=0
-    workflow_run_repository_pin_verdict "$file" || verdict=$?
+    reason="$(workflow_run_repository_pin_verdict "$file")" || verdict=$?
     [[ "$verdict" -ne 2 ]] ||
-      fail "$file triggers on workflow_run without pinning head_repository.full_name to github.repository"
+      fail "$file is triggered by (or consumes) workflow_run with an unsound gate: ${reason//$'\n'/; }"
   done < <(yaml_sources)
+  require_inputs "fork-deploy pin guard" "$count" "$YAML_SOURCE_FLOOR"
 }
 
 # Break the property, not the form. Every fixture is a deploy that would have gone out
-# green; only the GATE differs. The comment fixture is the load-bearing one — it carries
-# the pin's literal text in a YAML comment above a gate that never applies it, which is
-# exactly the file a grep-based check blesses and a parse rejects.
+# green; only the GATE differs. The first five are the auditor's bypasses of the
+# substring check that shipped here — each one hands fork-authored code the base
+# repository's deploy credentials while reading, to a grep, exactly like the fix.
 validate_workflow_run_pin_cases() {
   local dir
   dir="$(mktemp -d)"
   trap 'rm -rf "${dir:-}"' RETURN
 
-  cat > "$dir/branch-only.yml" <<'YAML'
+  local gate_prefix="github.event.workflow_run"
+
+  cat > "$dir/inverted.yml" <<YAML
 on:
   workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
 jobs:
   deploy:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      \${{ $gate_prefix.event == 'push' &&
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_repository.full_name != github.repository }}
 YAML
-  cat > "$dir/comment-only.yml" <<'YAML'
+  cat > "$dir/ored-away.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      \${{ ($gate_prefix.event == 'push' &&
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_repository.full_name == github.repository) ||
+      github.run_id != '' }}
+YAML
+  cat > "$dir/wrong-job.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  audit:
+    if: >-
+      \${{ $gate_prefix.event == 'push' &&
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_repository.full_name == github.repository }}
+    steps: [{run: "echo audited"}]
+  deploy:
+    if: \${{ $gate_prefix.head_branch == 'main' }}
+    steps:
+      - env: {TOKEN: "\${{ secrets.CLOUDFLARE_API_TOKEN }}"}
+        run: echo deploying
+YAML
+  cat > "$dir/no-conclusion.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      \${{ $gate_prefix.event == 'push' &&
+      $gate_prefix.head_repository.full_name == github.repository }}
+YAML
+  cat > "$dir/no-push.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      \${{ $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_branch == 'main' &&
+      $gate_prefix.head_repository.full_name == github.repository }}
+YAML
+  cat > "$dir/workflow-call-unpinned.yml" <<YAML
+on:
+  workflow_call:
+    secrets: {CLOUDFLARE_API_TOKEN: {required: true}}
+jobs:
+  deploy:
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000000
+        with: {ref: "\${{ $gate_prefix.head_sha }}"}
+YAML
+  cat > "$dir/branch-only.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  deploy:
+    if: >-
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_branch == 'main'
+YAML
+  cat > "$dir/comment-only.yml" <<YAML
 on:
   workflow_run: {workflows: ["CI"], types: [completed]}
 jobs:
   deploy:
-    # github.event.workflow_run.head_repository.full_name == github.repository
+    # $gate_prefix.head_repository.full_name == github.repository
     # — present as prose, absent from the gate below.
-    if: github.event.workflow_run.conclusion == 'success'
+    if: $gate_prefix.conclusion == 'success'
 YAML
   cat > "$dir/no-gate.yml" <<'YAML'
 on:
@@ -369,33 +493,154 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 YAML
-  cat > "$dir/pinned.yml" <<'YAML'
+  cat > "$dir/pinned.yml" <<YAML
 on:
   workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
 jobs:
   deploy:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event_name == 'workflow_dispatch' ||
+      ($gate_prefix.event == 'push' &&
+       $gate_prefix.conclusion == 'success' &&
+       $gate_prefix.head_branch == 'main' &&
+       $gate_prefix.head_repository.full_name == github.repository)
 YAML
-  cat > "$dir/not-workflow-run.yml" <<'YAML'
+  cat > "$dir/pinned-via-needs.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  preflight:
+    if: >-
+      $gate_prefix.event == 'push' &&
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_repository.full_name == github.repository
+  deploy:
+    needs: preflight
+    if: \${{ needs.preflight.outputs.configured == 'true' }}
+YAML
+  cat > "$dir/needs-escaped-by-always.yml" <<YAML
+on:
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+jobs:
+  preflight:
+    if: >-
+      $gate_prefix.event == 'push' &&
+      $gate_prefix.conclusion == 'success' &&
+      $gate_prefix.head_repository.full_name == github.repository
+  deploy:
+    needs: preflight
+    if: \${{ always() }}
+YAML
+  cat > "$dir/not-workflow-run.yml" <<YAML
 on:
   push: {branches: [main]}
 jobs:
   gate:
-    if: github.event.workflow_run.head_branch == 'main'
+    if: $gate_prefix.head_branch == 'main'
 YAML
 
-  expect_exit 2 "workflow_run pin guard passes a branch-name-only gate" \
+  expect_exit 2 "fork-deploy guard passes an INVERTED pin (\`!= github.repository\`)" \
+    workflow_run_repository_pin_verdict "$dir/inverted.yml"
+  expect_exit 2 "fork-deploy guard passes a pin ORed away by \`|| github.run_id != ''\`" \
+    workflow_run_repository_pin_verdict "$dir/ored-away.yml"
+  expect_exit 2 "fork-deploy guard passes a pin sitting in a job OTHER than the secret-holder" \
+    workflow_run_repository_pin_verdict "$dir/wrong-job.yml"
+  expect_exit 2 "fork-deploy guard passes a gate with no \`conclusion == 'success'\`" \
+    workflow_run_repository_pin_verdict "$dir/no-conclusion.yml"
+  expect_exit 2 "fork-deploy guard passes a gate with no \`event == 'push'\`" \
+    workflow_run_repository_pin_verdict "$dir/no-push.yml"
+  expect_exit 2 "fork-deploy guard IGNORES an on: workflow_call file that consumes workflow_run data" \
+    workflow_run_repository_pin_verdict "$dir/workflow-call-unpinned.yml"
+  expect_exit 2 "fork-deploy guard passes a branch-name-only gate" \
     workflow_run_repository_pin_verdict "$dir/branch-only.yml"
-  expect_exit 2 "workflow_run pin guard passes a pin that lives only in a COMMENT" \
+  expect_exit 2 "fork-deploy guard passes a pin that lives only in a COMMENT" \
     workflow_run_repository_pin_verdict "$dir/comment-only.yml"
-  expect_exit 2 "workflow_run pin guard passes a workflow_run deploy with no gate at all" \
+  expect_exit 2 "fork-deploy guard passes a workflow_run deploy with no gate at all" \
     workflow_run_repository_pin_verdict "$dir/no-gate.yml"
-  expect_exit 1 "workflow_run pin guard rejects a correctly pinned gate" \
+  expect_exit 2 "fork-deploy guard lets always() erase an inherited needs: gate" \
+    workflow_run_repository_pin_verdict "$dir/needs-escaped-by-always.yml"
+
+  expect_exit 1 "fork-deploy guard REJECTS a correctly pinned gate" \
     workflow_run_repository_pin_verdict "$dir/pinned.yml"
-  expect_exit 0 "workflow_run pin guard judges a workflow that has no workflow_run trigger" \
+  expect_exit 1 "fork-deploy guard REJECTS a job pinned through its needs: chain" \
+    workflow_run_repository_pin_verdict "$dir/pinned-via-needs.yml"
+  expect_exit 0 "fork-deploy guard judges a workflow that never sees workflow_run data" \
     workflow_run_repository_pin_verdict "$dir/not-workflow-run.yml"
+}
+
+# A `# zizmor: ignore[dangerous-triggers]` comment on the `on:` key silences the audit
+# for the WHOLE key, not for the trigger it was written about. Adding
+# `pull_request_target:` underneath one of the two shipped examples makes zizmor print
+# "No findings to report. Good job!" — the suppression turns the most dangerous trigger
+# GitHub offers into a silent one. The comment stays (zizmor's audit is category-level
+# and cannot see the repository pin that mitigates it), but it is no longer a bare
+# assertion: this guard makes the exemption's preconditions machine-checked.
+suppressed_dangerous_triggers_verdict() {
+  # The Ruby program is quoted verbatim; nothing in it is a shell expansion.
+  # shellcheck disable=SC2016
+  ruby -r yaml -e '
+    ALLOWED = %w[workflow_run workflow_dispatch].freeze
+
+    file = ARGV.fetch(0)
+    exit 0 unless File.read(file).include?("zizmor: ignore[dangerous-triggers]")
+
+    document = YAML.safe_load(File.read(file), aliases: true)
+    triggers = document["on"] || document[true]
+    keys = triggers.is_a?(Hash) ? triggers.keys : Array(triggers)
+    extra = keys - ALLOWED
+    exit 0 if extra.empty?
+
+    puts "suppression also hides #{extra.join(", ")}"
+    exit 1
+  ' "$1"
+}
+
+validate_dangerous_trigger_suppressions() {
+  local count=0 pin_verdict
+  while IFS= read -r file; do
+    grep -q 'zizmor: ignore\[dangerous-triggers\]' "$file" || continue
+    count=$((count + 1))
+    suppressed_dangerous_triggers_verdict "$file" ||
+      fail "$file suppresses zizmor's dangerous-triggers audit for triggers beyond workflow_run/workflow_dispatch"
+    # The justification is "the triggering run is pinned"; that claim must be true.
+    pin_verdict=0
+    workflow_run_repository_pin_verdict "$file" >/dev/null || pin_verdict=$?
+    [[ "$pin_verdict" -eq 1 ]] ||
+      fail "$file suppresses dangerous-triggers while its own fork-deploy gate is unsound (verdict $pin_verdict)"
+  done < <(yaml_sources)
+  require_inputs "dangerous-triggers suppression guard" "$count" 2
+}
+
+validate_dangerous_trigger_suppression_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  cat > "$dir/hidden-target.yml" <<'YAML'
+on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+  workflow_dispatch:
+  pull_request_target:
+jobs: {}
+YAML
+  cat > "$dir/scoped.yml" <<'YAML'
+on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design
+  workflow_run: {workflows: ["CI"], types: [completed], branches: [main]}
+  workflow_dispatch:
+jobs: {}
+YAML
+  cat > "$dir/unsuppressed.yml" <<'YAML'
+on:
+  pull_request_target:
+jobs: {}
+YAML
+
+  expect_failure "dangerous-triggers guard lets a suppression hide pull_request_target" \
+    suppressed_dangerous_triggers_verdict "$dir/hidden-target.yml"
+  expect_success "dangerous-triggers guard rejects a suppression scoped to workflow_run" \
+    suppressed_dangerous_triggers_verdict "$dir/scoped.yml"
+  expect_success "dangerous-triggers guard inspects a file that carries no suppression" \
+    suppressed_dangerous_triggers_verdict "$dir/unsuppressed.yml"
 }
 
 validate_dependabot_cooldown() {
@@ -416,11 +661,19 @@ validate_dependabot_cooldown() {
 # moving that tag would have reached PyPI and npm. Nothing may reintroduce a
 # moving first-party ref, in the workflows we run or the examples we publish.
 validate_first_party_pins() {
+  local yaml_files=()
+  while IFS= read -r file; do
+    yaml_files+=("$file")
+  done < <(yaml_sources)
+  # Scanning the SAME file list every other guard uses, instead of a second set of
+  # `--include` globs, removes an input set that could drift on its own.
+  require_inputs "first-party pin scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
+
   while IFS=: read -r file line_number _; do
     fail "$file:$line_number first-party ref is not pinned to a full commit SHA"
-  done < <(grep -RInE --include='*.yml' --include='*.yaml' \
+  done < <(grep -HInE \
     '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+hseshadr/ci/[^[:space:]]*@(ci-)?v[0-9]' \
-    .github examples)
+    "${yaml_files[@]}" || true)
 }
 
 # validate_first_party_release_lineage lives in tests/lib/ so the scenario suite in
@@ -443,6 +696,8 @@ validate_publish_provenance() {
   while IFS= read -r file; do
     yaml_files+=("$file")
   done < <(yaml_sources)
+
+  require_inputs "publish-provenance scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
 
   findings="$(ruby "$repo_root/tests/lib/scan-publish-provenance.rb" "${yaml_files[@]}")" || {
     fail "publish-provenance scan failed to execute"
@@ -511,6 +766,61 @@ jobs:
     steps:
       - run: npm publish --access public
 YAML
+  # `\b` does not split `pnpm`, so `/\bnpm\s+publish\b/` never saw the package manager
+  # this portfolio actually uses. Same hole for yarn.
+  cat > "$dir/pnpm-inline-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - run: pnpm publish --access public --no-git-checks
+YAML
+  cat > "$dir/yarn-inline-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - run: yarn publish --access public
+YAML
+  cat > "$dir/pnpm-inline-on.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    steps:
+      - run: pnpm publish --access public --provenance --no-git-checks
+YAML
+  # A composite action's steps live under runs.steps; the scanner only walked jobs.*,
+  # so every .github/actions/*/action.yml was exempt from the provenance contract.
+  cat > "$dir/composite-off.yml" <<'YAML'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pnpm publish --access public
+YAML
+  cat > "$dir/composite-on.yml" <<'YAML'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pnpm publish --access public --provenance
+YAML
+  # The caller check only knew about ts-publish.yml; python-publish.yml callers could
+  # turn attestations off and ship an unsigned PyPI release, green.
+  cat > "$dir/pypi-caller-off.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    uses: hseshadr/ci/.github/workflows/python-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1
+    with: {attestations: false}
+YAML
+  cat > "$dir/pypi-caller-on.yml" <<'YAML'
+jobs:
+  publish:
+    permissions: {id-token: write, contents: read}
+    uses: hseshadr/ci/.github/workflows/python-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1
+    with: {attestations: true}
+YAML
   cat > "$dir/npm-caller-off.yml" <<'YAML'
 jobs:
   publish:
@@ -578,6 +888,14 @@ YAML
     scanner_reports_provenance_finding "$dir/no-oidc.yml"
   expect_success "provenance guard passes an inline npm publish without --provenance" \
     scanner_reports_provenance_finding "$dir/npm-inline-off.yml"
+  expect_success "provenance guard passes an inline PNPM publish without --provenance" \
+    scanner_reports_provenance_finding "$dir/pnpm-inline-off.yml"
+  expect_success "provenance guard passes an inline YARN publish without --provenance" \
+    scanner_reports_provenance_finding "$dir/yarn-inline-off.yml"
+  expect_success "provenance guard passes a COMPOSITE action that publishes unsigned" \
+    scanner_reports_provenance_finding "$dir/composite-off.yml"
+  expect_success "provenance guard passes a python-publish caller that sets attestations: false" \
+    scanner_reports_provenance_finding "$dir/pypi-caller-off.yml"
   expect_success "provenance guard passes a caller that sets provenance: false" \
     scanner_reports_provenance_finding "$dir/npm-caller-off.yml"
   expect_success "provenance guard passes a reusable workflow whose provenance input defaults off" \
@@ -587,6 +905,12 @@ YAML
     scanner_reports_provenance_finding "$dir/pypi-on.yml"
   expect_failure "provenance guard flags a caller with provenance: true" \
     scanner_reports_provenance_finding "$dir/npm-caller-on.yml"
+  expect_failure "provenance guard flags an inline pnpm publish --provenance" \
+    scanner_reports_provenance_finding "$dir/pnpm-inline-on.yml"
+  expect_failure "provenance guard flags a composite that publishes with --provenance" \
+    scanner_reports_provenance_finding "$dir/composite-on.yml"
+  expect_failure "provenance guard flags a python-publish caller with attestations: true" \
+    scanner_reports_provenance_finding "$dir/pypi-caller-on.yml"
   expect_failure "provenance guard flags a caller that inherits the on-by-default provenance" \
     scanner_reports_provenance_finding "$dir/npm-caller-inherits.yml"
   expect_failure "provenance guard flags a reusable workflow forwarding an on-by-default input" \
@@ -816,6 +1140,7 @@ validate_pages_headers() {
   [[ "$before" == "$after" ]] || fail "Pages baseline overwrites an app-owned _headers file"
 }
 
+run_check validate_input_floor_cases
 run_check validate_yaml
 run_check validate_action_pins
 run_check validate_permissions
@@ -825,6 +1150,8 @@ run_check validate_interpolation_scanner_cases
 run_check validate_checkout_credentials
 run_check validate_workflow_run_repository_pin
 run_check validate_workflow_run_pin_cases
+run_check validate_dangerous_trigger_suppressions
+run_check validate_dangerous_trigger_suppression_cases
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
 run_check validate_first_party_release_lineage

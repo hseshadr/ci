@@ -11,6 +11,47 @@ included.
 **Composite/workflow behavior WILL change at the next release** — this section is the
 heads-up consumers re-pin against.
 
+- **`cloudflare-pages-deploy.yml`'s fork-deploy gate now requires
+  `github.event.workflow_run.event == 'push'` (behavior change, security fix).** The
+  shipped brick was **weaker than all three hand-rolled deploys that copied it**: it
+  pinned the repository, the branch and the conclusion, but not the event, so a fork
+  *pull_request* workflow_run reached a job holding `CLOUDFLARE_API_TOKEN` if the
+  repository pin were ever weakened. Callers should copy the `if:` block now documented
+  at the top of that file.
+- **The fork-deploy guard is a parse and a proof, not two substrings**
+  (`tests/lib/workflow-run-pin.rb`). The check it replaces asked whether
+  `head_repository.full_name` and `github.repository` both appeared *somewhere* in *some*
+  `if:`. Five genuinely exploitable gates satisfied it: an inverted `!=` pin, a pin ORed
+  away by `|| github.event.workflow_run.id != ''`, a pin sitting in a job other than the
+  secret-holder, a gate with no `conclusion == 'success'`, and a gate with no
+  `event == 'push'`. It also early-exited on `on: workflow_call` files, so the pin could
+  be deleted outright from `cloudflare-pages-deploy.yml` with the suite still green. The
+  gate is now parsed into a boolean AST and each of the three properties proven by
+  exhaustion; a `workflow_call` workflow that *consumes* `github.event.workflow_run.*` is
+  in scope; and every job inherits its `needs:` chain's gates. All ten bypasses are
+  fixtures.
+- **`pnpm publish` was invisible to the provenance guard.** `/\bnpm\s+publish\b/` does
+  **not** match `pnpm publish` — `\b` does not split `p` from `n` — and pnpm is this
+  portfolio's package manager, so the one guard written to catch unsigned npm releases
+  could not see the command it would actually be given. It now covers `npm`/`pnpm`/`yarn`,
+  parses composite actions' `runs.steps` (previously every `.github/actions/*/action.yml`
+  was exempt), and treats a `python-publish.yml` caller passing `attestations: false` the
+  same as a `ts-publish.yml` caller passing `provenance: false`.
+- **The top-level-permissions guard reasoned about text and missed three spellings of
+  `contents: write`**: a flow map on the line *below* `permissions:`, a multi-line flow
+  map, and a write hidden behind a YAML **alias**. It is now a YAML parse, so one value is
+  judged in every spelling.
+- **Eight of nine file-scanning guards were vacuous on an empty input set** — only the
+  lineage guard asserted its input was non-empty. Every guard now declares a floor and
+  fails loudly when its input set collapses; red-proofed by drifting the `find` paths,
+  which turns eight checks red where the previous suite printed "Security policy checks
+  passed."
+- **`# zizmor: ignore[dangerous-triggers]` is now an exemption with a machine-checked
+  precondition.** The comment silences the audit for the entire `on:` key: adding
+  `pull_request_target:` beneath one of the two shipped deploy examples made zizmor print
+  *"No findings to report. Good job!"*. A new guard refuses to let a suppression cover any
+  trigger beyond `workflow_run`/`workflow_dispatch`, and requires the suppressing file's
+  own fork-deploy gate to be provably sound.
 - **Provenance on by default (behavior change).** `ts-publish.yml`'s `provenance` input
   now defaults to **`true`**. It defaulted `false` as a private-repo hangover, and that
   was a silent trap — `--provenance` needs a public repo, so the safe-looking default

@@ -27,12 +27,21 @@
 # and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
 # callers live in examples/.
 #
-# The CALLER owns the trigger and passes secrets:
+# The CALLER owns the trigger and passes secrets. Copy the `if:` verbatim — the
+# trigger's `branches: [main]` filter is NOT a trust boundary (a fork's default branch
+# is also `main`), and this workflow re-applies the same gate so the pair is safe to
+# copy independently:
 #   on:
 #     workflow_run: { workflows: ["CI"], types: [completed], branches: [main] }
 #     workflow_dispatch:
 #   jobs:
 #     deploy:
+#       if: >-
+#         ${{ github.event_name == 'workflow_dispatch' ||
+#         (github.event.workflow_run.event == 'push' &&
+#          github.event.workflow_run.conclusion == 'success' &&
+#          github.event.workflow_run.head_branch == 'main' &&
+#          github.event.workflow_run.head_repository.full_name == github.repository) }}
 #       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@<40-char-sha> # ci-v2.0.1
 #       with:
 #         project-name: edge-reco
@@ -123,10 +132,16 @@ jobs:
     # head_branch alone is NOT a trust boundary: a fork can name its branch `main`,
     # and a fork-PR run reports that name here. Since the deploy job checks out
     # workflow_run.head_sha with CLOUDFLARE_* in scope, that would build fork-authored
-    # code with our deploy credentials. Pin the triggering run to THIS repository.
+    # code with our deploy credentials. Pin the triggering run to THIS repository AND
+    # to a push — a fork PR produces a `pull_request` workflow_run whose head_branch
+    # the fork chooses, so without `event == 'push'` the repository pin is the only
+    # thing standing between a PR and the deploy credentials. This brick shipped
+    # WEAKER than the three hand-rolled deploys that copied it; tests/security-policy.sh
+    # now proves the gate requires all three properties instead of grepping for two.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     outputs:

@@ -2,7 +2,14 @@
 # Fits the reusable Pages deploy: the model-weights fetch goes in pre-build-run; the
 # only thing lost vs bespoke is the deploy-time weights cache (fine — deploys are rare).
 name: Deploy edge-reco.com
-on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design; the triggering run is pinned to this repo + branch main + conclusion success, and no PR code is ever checked out
+# The suppression below is an EXEMPTION WITH A MACHINE-CHECKED PRECONDITION, not a
+# promise: tests/security-policy.sh proves this file's gate actually requires the
+# repository pin, `event == 'push'` and `conclusion == 'success'`, and refuses to let
+# the suppression cover any trigger other than workflow_run/workflow_dispatch. That
+# second half matters — a `# zizmor: ignore[dangerous-triggers]` comment silences the
+# audit for the whole `on:` key, so adding `pull_request_target:` here used to make
+# zizmor print "No findings to report. Good job!".
+on: # zizmor: ignore[dangerous-triggers] deploy-after-CI by design; the triggering run is pinned to this repo + event push + branch main + conclusion success, and no PR code is ever checked out
   workflow_run:
     workflows: ["CI"]
     types: [completed]

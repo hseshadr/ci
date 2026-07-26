@@ -9,7 +9,8 @@
 # Three properties are checked per job, and each is a real credential fact:
 #
 #   1. npm      — an inline `npm publish` must pass `--provenance`, and a caller
-#                 of the shared ts-publish.yml must not set `provenance: false`.
+#                 of the shared ts-publish.yml / python-publish.yml must not turn
+#                 signing off.
 #   2. PyPI     — a `pypa/gh-action-pypi-publish` step must set
 #                 `attestations: true` (PEP 740 / SLSA). Absent is a violation,
 #                 not a default: the action's own default has moved before.
@@ -30,8 +31,21 @@
 # Output: one `<file>\t<reason>` line per violation; empty output means clean.
 require "yaml"
 
-TS_PUBLISH = "ts-publish.yml".freeze
+# `\b` does NOT split `pnpm`: the boundary between `p` and `n` is between two word
+# characters, so `/\bnpm\s+publish\b/` never matched `pnpm publish` — and pnpm is this
+# portfolio's package manager. An unsigned `pnpm publish` was therefore invisible to
+# the one guard written to catch it. Match the whole family, and bound the left edge
+# with an explicit non-word/dash lookbehind rather than `\b`.
+PUBLISH_COMMAND = /(?<![\w-])(?:p?npm|yarn)\s+publish(?![\w-])/.freeze
 PYPI_ACTION = "pypa/gh-action-pypi-publish@".freeze
+
+# Callers of a shared publish workflow inherit ITS signing default; naming the switch
+# and turning it off is the failure mode. python-publish.yml was never covered — a
+# caller passing `attestations: false` shipped an unsigned PyPI release, green.
+PUBLISH_CALLERS = {
+  "ts-publish.yml" => "provenance",
+  "python-publish.yml" => "attestations"
+}.freeze
 
 # The `on:` key parses to the YAML 1.1 boolean `true`, not the string "on".
 def triggers(document)
@@ -98,27 +112,29 @@ def step_findings(step, document)
     end
   end
 
-  if /\bnpm\s+publish\b/.match?(run)
+  if PUBLISH_COMMAND.match?(run)
     publishes = true
-    reasons << "inline `npm publish` never passes --provenance" unless run.include?("--provenance")
+    reasons << "inline npm/pnpm/yarn publish never passes --provenance" unless run.include?("--provenance")
   end
 
   [publishes, reasons]
 end
 
-# Violations raised by a job that CALLS the shared npm publish workflow.
-def caller_findings(job)
-  return [false, []] unless job["uses"].to_s.include?(TS_PUBLISH)
+# Violations raised by a job that CALLS one of the shared publish workflows.
+def caller_findings(job, document)
+  uses = job["uses"].to_s
+  name, switch = PUBLISH_CALLERS.find { |workflow, _| uses.include?(workflow) }
+  return [false, []] if name.nil?
 
   with = job["with"].is_a?(Hash) ? job["with"] : {}
-  return [true, []] unless with.key?("provenance")
-  return [true, []] if with["provenance"] == true || with["provenance"].to_s.strip.casecmp?("true")
+  return [true, []] unless with.key?(switch)
+  return [true, []] if enabled?(with[switch], document)
 
-  [true, ["npm publish caller sets `provenance: false` — the release ships unsigned"]]
+  [true, ["#{name} caller sets `#{switch}: false` — the release ships unsigned"]]
 end
 
 def job_findings(job, document)
-  publishes, reasons = caller_findings(job)
+  publishes, reasons = caller_findings(job, document)
   steps_of(job).each do |step|
     step_publishes, step_reasons = step_findings(step, document)
     publishes ||= step_publishes
@@ -130,6 +146,22 @@ def job_findings(job, document)
     reasons << "publishing job does not grant `id-token: write` — OIDC is the credential"
   end
   reasons
+end
+
+# A composite action's steps live under `runs.steps`, not `jobs.*.steps`. Scanning only
+# `jobs` meant every `.github/actions/*/action.yml` was exempt from the provenance
+# check — a composite is exactly where a shared publish step would be factored to.
+# Composites carry no `permissions:` of their own (they inherit the calling job's), so
+# the OIDC half of the contract is the caller's to satisfy, not theirs.
+def composite_findings(document)
+  runs = document["runs"]
+  return [] unless runs.is_a?(Hash)
+
+  steps = runs["steps"]
+  return [] unless steps.is_a?(Array)
+
+  steps.select { |step| step.is_a?(Hash) }
+       .flat_map { |step| step_findings(step, document).fetch(1) }
 end
 
 # A reusable workflow whose provenance switch DEFAULTS to off is a trap for
@@ -147,7 +179,7 @@ end
 def findings(document)
   jobs = document["jobs"]
   reasons = jobs.is_a?(Hash) ? jobs.each_value.flat_map { |job| job.is_a?(Hash) ? job_findings(job, document) : [] } : []
-  reasons + input_default_findings(document)
+  reasons + composite_findings(document) + input_default_findings(document)
 end
 
 ARGV.each do |file|
