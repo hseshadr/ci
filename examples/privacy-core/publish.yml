@@ -1,17 +1,25 @@
 # privacy-core — .github/workflows/publish.yml
-# npm release of @gainratio/privacy-core via OIDC Trusted Publishing. A tag push is the
-# whole trigger; there is NO npm write token in this repo.
+# npm release of `@edgeproc/privacy-core` via OIDC Trusted Publishing. A `v*` tag push is
+# the whole trigger; there is NO npm write token in this repo.
 #
-# Two npm truths this example encodes:
-#   1. FIRST publish of the brand-new @gainratio/privacy-core name CANNOT use OIDC (npm
-#      has no "pending publisher" — the package must exist to attach a trusted publisher).
-#      Do one token/OTP `npm publish` by hand, THEN register the trusted publisher in the
-#      package settings ({hseshadr, privacy-core, publish.yml}). Every tag push after that
-#      runs THROUGH here, token-free.
-#   2. provenance stays FALSE until the repo is PUBLIC — `--provenance` writes a public
-#      transparency-log entry and fails on a private repo. Flip it true in the same wave
-#      privacy-core goes public. Also confirm package.json `repository.url` matches the
-#      GitHub repo before the first OIDC release (npm OIDC requires an exact match).
+# Taken verbatim from the caller that has a green release run: privacy-core
+# https://github.com/hseshadr/privacy-core/actions/runs/30173462035 published
+# @edgeproc/privacy-core 0.2.2, and the registry serves it with a SLSA v1 provenance
+# attestation. This example is the copy-paste surface, so it tracks the proven caller.
+#
+# Two npm truths this example encodes (see ts-publish.yml):
+#   1. The FIRST publish of a name CANNOT use OIDC — npm has no "pending publisher", so
+#      the package must already exist before a trusted publisher can be attached. Do one
+#      token/OTP `npm publish` by hand, THEN register the trusted publisher in the package
+#      settings ({owner, repo, this workflow's filename}). Every tag push after that runs
+#      through here, token-free. Registries refuse to overwrite a published version, so
+#      the next release tag must carry a HIGHER version.
+#   2. `provenance` is TRUE — and true is now the ts-publish DEFAULT, so this line is
+#      belt-and-braces rather than load-bearing. `--provenance` writes a public
+#      transparency-log entry linking each release to this repo + workflow, which REQUIRES
+#      a public repo; a private repo must pass `provenance: false` explicitly. Also confirm
+#      package.json `repository.url` exactly matches the GitHub repo before the first OIDC
+#      release — npm OIDC ENEEDAUTHs on a missing or mismatched URL.
 #
 # run-gate is false here: the full gate (biome -> tsc -> vitest -> e2e -> build, which
 # needs a Playwright browser) already ran on the merge to main via ci.yml. This tag flow
@@ -34,4 +42,4 @@ jobs:
       working-directory: "."
       install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
       run-gate: false
-      provenance: false # flip true only when the repo is public
+      provenance: true # repo is public — provenance writes a public transparency-log entry

@@ -190,7 +190,7 @@ composite (details below).
 | `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
 | `python-publish.yml` (**same-repo only** — cross-repo consumers inline it) | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
-| `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `false`, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
+| `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `true`, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
 
 \* required. Every other input has a documented default — no version or path is a magic
 literal buried in a step; the gate's coverage floor is deliberately **not** an input (it
@@ -205,13 +205,22 @@ top-level stays read-only, as the security policy requires). The build and the O
 run in one job, so nothing needs a `twine`/`NODE_AUTH_TOKEN` write token. Two one-time human
 bootstraps remain, both outside CI: registering the trusted publisher on PyPI/npm once per
 package, and — because npm has **no** "pending publisher" — a single token/OTP first-publish
-for each brand-new npm name before OIDC can take over. Caveats baked into `ts-publish`:
-`provenance` defaults **false** because `npm publish --provenance` writes a public
-transparency-log entry and therefore requires a **public** source repo (flip it true only in
-the wave a repo goes public); and each `package.json` `repository.url` must exactly match its
-GitHub repo or npm OIDC fails. Ready callers:
+for each brand-new npm name before OIDC can take over.
+
+**Signing is the default; not signing is what you ask for.** `ts-publish`'s `provenance`
+and `python-publish`'s `attestations` both default **true**, and
+`tests/security-policy.sh` **rejects** any workflow or example that publishes without
+them — a PyPI upload missing `attestations: true`, an inline `npm publish` missing
+`--provenance`, a caller setting `provenance: false`, or a publishing job missing
+`id-token: write`. `provenance` defaulted false until 2026-07-25 as a private-repo
+hangover, and that was a silent trap: `npm publish --provenance` writes a public
+transparency-log entry and so requires a **public** source repo, but a caller who simply
+forgot the input got an unsigned release and a perfectly green run. A **private** caller
+must now pass `provenance: false` explicitly. Unchanged: each `package.json`
+`repository.url` must exactly match its GitHub repo or npm OIDC fails. Ready callers:
 [`examples/privacy-core/publish.yml`](./examples/privacy-core/publish.yml) (npm,
-cross-repo — live-proven by run 29886074787),
+cross-repo — live-proven by run 30173462035, which put a SLSA v1 provenance attestation
+on `@edgeproc/privacy-core` 0.2.2),
 [`examples/edge-proc/publish.yml`](./examples/edge-proc/publish.yml) and
 [`examples/shared-libs-python/publish.yml`](./examples/shared-libs-python/publish.yml)
 (inline PyPI job — the only shape PyPI Trusted Publishing permits from another repo), and

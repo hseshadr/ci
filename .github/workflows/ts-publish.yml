@@ -11,8 +11,12 @@
 #     trusted publisher, so the FIRST publish of a brand-new name (e.g. @gainratio/avow)
 #     is unavoidably token/OTP-based; every publish AFTER that is OIDC through here.
 #   * `--provenance` writes to a PUBLIC transparency log, so it REQUIRES a PUBLIC source
-#     repo. `provenance` defaults FALSE — flip it true only in the wave the repo goes
-#     public, or the publish fails. (See the provenance input.)
+#     repo. `provenance` defaults TRUE (since 2026-07-25, when the portfolio's publishing
+#     repos went public): signing is the default and NOT signing is the thing you have to
+#     ask for. A PRIVATE caller must pass `provenance: false` explicitly or the publish
+#     fails. The old false default was a silent trap — a caller that simply forgot the
+#     input shipped an unsigned release and a perfectly green run. tests/security-policy.sh
+#     now rejects that default, and rejects any caller that sets it back to false.
 #   * `package.json` `repository.url` MUST exactly match the GitHub repo or OIDC publish
 #     fails (ENEEDAUTH). Verify per package before the first OIDC release.
 #   * npm >= 11.5.1 is required for OIDC; Node 24 currently ships an older npm, so this
@@ -85,10 +89,10 @@ on:
         default: true
       provenance:
         description: >-
-          Emit npm provenance (`--provenance`). REQUIRES a PUBLIC repo — keep false until
-          the source repo is public, or the publish fails.
+          Emit npm provenance (`--provenance`). ON BY DEFAULT. REQUIRES a PUBLIC repo —
+          a PRIVATE caller must set this to false explicitly, or the publish fails.
         type: boolean
-        default: false
+        default: true
       registry-url:
         description: "npm registry the OIDC publish targets."
         type: string
