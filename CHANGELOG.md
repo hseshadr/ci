@@ -11,6 +11,21 @@ included.
 **Composite/workflow behavior WILL change at the next release** — this section is the
 heads-up consumers re-pin against.
 
+- **This repo stops exempting itself.** It published `secret-scan.yml` while running no
+  gitleaks step of its own, and had **zero** scheduled runs while selling zizmor's online
+  audits — audits against a *moving* advisory database, so a push-only gate proves the
+  tree was clean the last time someone pushed and nothing more. `ci.yml` now calls its own
+  `secret-scan.yml` through a local `./` ref (so the brick is proven against the commit
+  being changed, not a released SHA) and carries a weekly `schedule`, which re-runs the
+  whole gate — policy suite, actionlint, zizmor online, examples audit — against today's
+  advisory data at no duplication cost. `validate_self_ci` asserts both, plus a
+  conditional: if this repo ever gains a `pyproject.toml`/`package.json` it must also run
+  its own `security-audit.yml` (it has no dependency manifest today, so calling that
+  workflow now would be a permanently, vacuously green job).
+- **README: `provenance` is `true` on `main` but still `false` in `ci-v2.0.3`.** A caller
+  that followed the docs and omitted the input shipped an unsigned release with a green
+  run. The input table and the signing section now name the discrepancy; cutting
+  `ci-v3.0.0` is the real fix and is an owner action.
 - **`cloudflare-pages-deploy.yml`'s fork-deploy gate now requires
   `github.event.workflow_run.event == 'push'` (behavior change, security fix).** The
   shipped brick was **weaker than all three hand-rolled deploys that copied it**: it

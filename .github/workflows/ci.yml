@@ -1,15 +1,38 @@
+# This repository publishes security controls, and for a long time it applied almost
+# none of them to itself: no gitleaks step anywhere in its own CI while shipping
+# secret-scan.yml, and no scheduled run at all. A push-only gate re-audits nothing
+# between pushes — zizmor's online audits (known-vulnerable-actions, ref-version-mismatch)
+# are checks against a MOVING advisory database, so a workflow that was clean on Monday
+# is only known to be clean on Monday. The weekly `schedule` below re-runs this entire
+# gate against today's data, and costs nothing to maintain because it duplicates no job.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Mondays, 06:17 UTC — off the hour so it does not queue behind the hourly rush.
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Dogfood the brick. `secret-scan.yml` is the single most-copied workflow in the
+  # portfolio and this repo — the one that publishes it — was the only repo not running
+  # it. A local `./` ref is used deliberately: it always names THIS commit, so the
+  # workflow is proven against the version being changed rather than a released SHA.
+  secret-scan:
+    name: Secret scan (own brick)
+    # The reusable workflow needs pull-requests: read to list a PR's commits via the API;
+    # a caller job may raise a scope the read-only top level does not grant.
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/secret-scan.yml
+
   security-policy:
     name: Security policy
     runs-on: ubuntu-latest

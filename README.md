@@ -190,7 +190,14 @@ composite (details below).
 | `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
 | `python-publish.yml` (**same-repo only** — cross-repo consumers inline it) | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
-| `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `true`, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
+| `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `true` **(on `main`; `false` in `ci-v2.0.3` — see below)**, `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
+
+> ⚠️ **`provenance` still defaults to `false` in the newest cut release, `ci-v2.0.3`.**
+> This table documents `main`. Consumers pin a release SHA, so a caller that follows this
+> table and *omits* the input today ships an **unsigned release with a perfectly green
+> run** — the exact silent failure the default was flipped to prevent. Until `ci-v3.0.0`
+> is cut, **pass `provenance: true` explicitly**, or re-pin to a `main` SHA. Cutting that
+> release is the real fix and is an owner action (this repo does not create its own tags).
 
 \* required. Every other input has a documented default — no version or path is a magic
 literal buried in a step; the gate's coverage floor is deliberately **not** an input (it
@@ -207,12 +214,15 @@ bootstraps remain, both outside CI: registering the trusted publisher on PyPI/np
 package, and — because npm has **no** "pending publisher" — a single token/OTP first-publish
 for each brand-new npm name before OIDC can take over.
 
-**Signing is the default; not signing is what you ask for.** `ts-publish`'s `provenance`
-and `python-publish`'s `attestations` both default **true**, and
+**Signing is the default; not signing is what you ask for.** On `main`, `ts-publish`'s
+`provenance` and `python-publish`'s `attestations` both default **true** (in `ci-v2.0.3`,
+the newest cut release, `provenance` is still `false` — pass it explicitly until
+`ci-v3.0.0`), and
 `tests/security-policy.sh` **rejects** any workflow or example that publishes without
-them — a PyPI upload missing `attestations: true`, an inline `npm publish` missing
-`--provenance`, a caller setting `provenance: false`, or a publishing job missing
-`id-token: write`. `provenance` defaulted false until 2026-07-25 as a private-repo
+them — a PyPI upload missing `attestations: true`, an inline `npm`/`pnpm`/`yarn publish`
+missing `--provenance` (in a workflow *or* a composite action), a `ts-publish` caller
+setting `provenance: false`, a `python-publish` caller setting `attestations: false`, or a
+publishing job missing `id-token: write`. `provenance` defaulted false until 2026-07-25 as a private-repo
 hangover, and that was a silent trap: `npm publish --provenance` writes a public
 transparency-log entry and so requires a **public** source repo, but a caller who simply
 forgot the input got an unsigned release and a perfectly green run. A **private** caller
@@ -438,10 +448,29 @@ Bespoke = the irreducible repo-specific build, which still composes the shared c
 | **edge-reco** | secret-scan, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
 | **aml-filter** | secret-scan, security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
 | **almamesh** | security-audit (python) | (optional) setup-python-uv | Bun + Pyodide `test.yml`, `deploy.yml`, `nightly-e2e.yml`; key-custody gitleaks |
+| **ci** (this repo) | **secret-scan** (via a local `./` ref, so it runs against the commit being changed) | — | its own policy suite + actionlint + zizmor, weekly on a `schedule` as well as on push/PR |
 
 The point of the composites: even the "bespoke" jobs re-implement **zero** setup or
 caching — aml-filter's signing deploy still calls `pages-deploy-dist` for the wrangler
 step, so there is one deploy half across edge-reco, aml-filter, and almamesh.
+
+**This repo is on that list too, and for a while it wasn't.** `ci` published
+`secret-scan.yml` while running no gitleaks step of its own, and had no scheduled run at
+all — so its zizmor **online** audits, which check a *moving* advisory database, only ever
+told you the tree was clean the last time someone pushed. Both are fixed above. One gap
+remains and it is not fixable from a workflow file: **`ci` has no branch protection and no
+repository secret scanning**, which are repository settings. See
+[Owner actions](#owner-actions).
+
+### Owner actions
+
+Settings this repository cannot configure for itself:
+
+| Setting | Why it matters here |
+|---|---|
+| **Branch protection on `main`** (require the CI check, no force-push, no deletion) | Every consumer pins a commit SHA from this repo's history. An unprotected `main` means the branch those SHAs descend from can be rewritten. |
+| **Repository secret scanning + push protection** | Complements the gitleaks job: gitleaks catches what is already committed, push protection stops the commit. |
+| **Cut `ci-v3.0.0`** | `provenance` still defaults `false` in `ci-v2.0.3`, and `cloudflare-pages-deploy.yml`'s fork gate is weaker there than on `main`. Consumers get the fixes only once a release exists to pin. |
 
 ## Limits — where standardization genuinely can't reach
 

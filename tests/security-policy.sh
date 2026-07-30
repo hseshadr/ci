@@ -1087,6 +1087,26 @@ validate_self_ci() {
     fail "$workflow does not run actionlint, which the README claims is clean"
   grep -q 'tests/lint-examples.sh' "$workflow" ||
     fail "$workflow does not lint/audit examples/, which zizmor cannot reach on its own"
+
+  # This repo publishes secret-scan.yml and, until now, was the only repo in the
+  # portfolio not running it. A control you sell and do not apply is a claim, not a
+  # control.
+  grep -q 'uses: \./\.github/workflows/secret-scan\.yml' "$workflow" ||
+    fail "$workflow does not run this repo's own secret-scan.yml over this repo"
+
+  # zizmor's ONLINE audits check a MOVING advisory database. A push-only gate proves
+  # the tree was clean the last time someone pushed, which is not the same fact.
+  grep -qE '^[[:space:]]+- cron:' "$workflow" ||
+    fail "$workflow has no scheduled run — its online audits are never re-run between pushes"
+
+  # security-audit.yml audits DEPENDENCY manifests. This repo has none, so calling it
+  # here would be a permanently, vacuously green job — the exact failure mode the rest
+  # of this suite exists to prevent. The moment that stops being true, it must be wired
+  # in; that condition is checked rather than left to memory.
+  if [[ -f pyproject.toml || -f package.json ]]; then
+    grep -q 'security-audit\.yml' "$workflow" ||
+      fail "$workflow gained a dependency manifest but does not run this repo's own security-audit.yml"
+  fi
 }
 
 validate_pages_headers() {
