@@ -1,0 +1,73 @@
+# Known consumer drift — controls a consumer repository hand-rolls today that
+# hseshadr/ci already publishes.
+#
+# FORMAT (one entry per line):
+#
+#     <repo>/<workflow-file>/<category>|<reason>
+#
+#   `#` starts a comment. Blank lines are ignored. The reason is MANDATORY —
+#   tests/consumer-drift.sh exits 2 on an entry without one. An allowlist whose
+#   entries carry no reason is a mute suppression list nobody can ever safely
+#   delete from, which is how five hand-rolled Pages deploys survived long
+#   enough for one of them to grow a fork-PR deploy vulnerability.
+#
+# THIS FILE IS A CONVERGENCE BACKLOG, NOT AN EXEMPTION LIST. Every entry is
+# something to delete. Deleting one is free: the detector reports an allowlisted
+# entry that no longer drifts as stale and warns — it never fails.
+#
+# Populated 2026-07-26 from the first live sweep: 30 hand-rolled controls across
+# all 7 consumers. Nothing here is new drift; new drift is what this file exists
+# to make fail.
+
+# --- pages-deploy (4) --------------------------------------------------------
+# The control this detector was built for. Each of these builds a dist dir and
+# pushes it to Cloudflare Pages with its own wrangler invocation, while
+# cloudflare-pages-deploy.yml + the pages-deploy-dist composite sit unused.
+aml-filter/deploy.yml/pages-deploy|Converged caller already drafted at examples/aml-filter/deploy.yml in this repo; the live repo has not adopted it. Adoption is the fix, not an exemption.
+edge-reco/deploy.yml/pages-deploy|Converged caller already drafted at examples/edge-reco/deploy.yml; the live repo still runs `npx wrangler@4.103.0 pages deploy frontend/app/dist` inline.
+almamesh/deploy.yml/pages-deploy|Bespoke: builds the Pyodide runtime + models and re-verifies deployed source identity after upload. No examples/almamesh/deploy.yml exists yet — converge after aml-filter and edge-reco land.
+aml-filter/publish-watchlist.yml/pages-deploy|Not a site deploy: signs a watchlist bundle with a decoded key, then pushes it to the same Pages project. Needs a signing-aware pre-deploy hook before it can call the reusable workflow.
+
+# --- secret-scan (8) ---------------------------------------------------------
+# gitleaks runs as a step inside an existing job rather than as a job calling
+# secret-scan.yml. Converging means splitting a job out — mechanical, but it
+# touches every consumer, so it is batched deliberately rather than forgotten.
+almamesh/deploy.yml/secret-scan|gitleaks inlined into the deploy job; converge with the almamesh CI sweep.
+almamesh/test.yml/secret-scan|Uses gitleaks/gitleaks-action directly instead of calling secret-scan.yml.
+aml-filter/security-audit.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/aml-filter/security-audit.yml already shows the converged caller.
+assay/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; assay has no converged examples/assay/ci.yml yet.
+edge-proc/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-proc/ci.yml already shows the converged caller.
+edge-reco/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-reco/ci.yml already shows the converged caller.
+edgeproc-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; edgeproc-core has no converged example yet.
+privacy-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/privacy-core/ci.yml already shows the converged caller.
+
+# --- dependency-audit (7) ----------------------------------------------------
+# Every consumer has its own security-audit.yml predating security-audit.yml
+# being callable, and each encodes a repo-specific audit floor, so convergence
+# is per-repo work rather than one sweep.
+almamesh/security-audit.yml/dependency-audit|Inline pip-audit; examples/almamesh/security-audit.yml already shows the converged caller.
+aml-filter/security-audit.yml/dependency-audit|Inline pnpm audit; examples/aml-filter/security-audit.yml already shows the converged caller.
+assay/security-audit.yml/dependency-audit|Inline pip-audit; assay has no converged examples/assay/security-audit.yml yet.
+edge-proc/security-audit.yml/dependency-audit|Inline pip-audit; examples/edge-proc/security-audit.yml already shows the converged caller.
+edge-reco/security-audit.yml/dependency-audit|Inline pnpm audit plus pip-audit via `uv run poe audit`; examples/edge-reco/security-audit.yml already shows the converged caller.
+edgeproc-core/security-audit.yml/dependency-audit|Inline pip-audit; edgeproc-core has no converged example yet.
+privacy-core/security-audit.yml/dependency-audit|Inline pnpm audit; examples/privacy-core/security-audit.yml already shows the converged caller.
+
+# --- python-gate (5) ---------------------------------------------------------
+almamesh/test.yml/python-gate|Runs `uv run poe` inline in a combined test workflow; almamesh's gate spans Python + browser and has never been split.
+assay/ci.yml/python-gate|Runs `uv run poe` inline; assay has no converged examples/assay/ci.yml yet.
+edge-proc/ci.yml/python-gate|Runs `uv run poe` inline; examples/edge-proc/ci.yml already shows the python-gate.yml caller.
+edge-reco/ci.yml/python-gate|Runs `uv run poe` inline; examples/edge-reco/ci.yml already shows the python-gate.yml caller.
+edgeproc-core/ci.yml/python-gate|Runs `uv run poe` inline; edgeproc-core has no converged example yet.
+
+# --- frontend-gate (6) -------------------------------------------------------
+# Note the bar here: using the setup-playwright composite counts as adoption,
+# because for browser installs the composite IS the shared unit. Everything
+# below installs browsers or runs the gate with neither the composite nor
+# frontend-gate.yml.
+almamesh/nightly-e2e.yml/frontend-gate|Installs Playwright browsers by hand in the nightly e2e run; should use the setup-playwright composite at minimum.
+almamesh/test.yml/frontend-gate|Installs Playwright browsers by hand inside the combined test workflow.
+aml-filter/ci.yml/frontend-gate|Runs `pnpm gate` inline; examples/aml-filter/ci.yml already shows the converged shape (setup-pnpm + setup-playwright composites).
+assay/ci.yml/frontend-gate|Runs `pnpm gate` inline; assay has no converged examples/assay/ci.yml yet.
+edge-reco/ci.yml/frontend-gate|Runs `pnpm gate` inline; examples/edge-reco/ci.yml already shows the converged shape (setup-pnpm + restore-model-cache + setup-playwright).
+privacy-core/ci.yml/frontend-gate|Runs `pnpm gate` inline; examples/privacy-core/ci.yml already shows the frontend-gate.yml caller.

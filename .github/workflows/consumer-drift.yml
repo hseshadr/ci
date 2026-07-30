@@ -1,0 +1,55 @@
+# Consumer drift — does any consumer repository hand-roll a control this repo
+# already publishes?
+#
+# This repository's own CI proves its workflows are internally consistent. It
+# proved nothing about whether anyone USES them, which is how five consumers
+# each kept a bespoke Cloudflare Pages deploy while cloudflare-pages-deploy.yml
+# sat here unused — until one of those copies drifted into a fork-PR deploy
+# vulnerability. The bug was in the copy. Publishing a shared control is only
+# half the job; noticing that it is not adopted is the other half.
+#
+# On `pull_request` this guards changes to the detector itself; the daily
+# schedule is what catches a consumer drifting after the fact.
+name: Consumer drift
+
+on:
+  schedule:
+    # Daily, off the hour so it does not queue behind everyone else's midnight.
+    - cron: "23 7 * * *"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  consumer-drift:
+    name: Consumer drift detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Runs first and unconditionally: it needs no token, and a detector whose
+      # classifier is broken would otherwise report a clean sweep it never made.
+      - name: Validate the classifier in both polarities
+        run: tests/consumer-drift-cases.sh
+
+      # A workflow's default GITHUB_TOKEN is scoped to THIS repository only, so
+      # every `gh api repos/hseshadr/<consumer>/...` call 404s under it — the
+      # sweep would report a spotless portfolio it never actually looked at.
+      # Reading other repositories needs CONSUMER_DRIFT_TOKEN: a fine-grained,
+      # READ-ONLY PAT with `contents: read` on the seven consumer repositories
+      # and nothing else. Until one exists the step skips with a ::notice::,
+      # which is honest; a green run that silently inspected nothing is not.
+      - name: Scan the consumer repositories
+        env:
+          CONSUMER_DRIFT_TOKEN: ${{ secrets.CONSUMER_DRIFT_TOKEN }}
+        run: |
+          if [ -z "${CONSUMER_DRIFT_TOKEN:-}" ]; then
+            echo "::notice::consumer-drift SKIPPED — no CONSUMER_DRIFT_TOKEN secret. The default GITHUB_TOKEN cannot read other repositories, so this run inspected nothing. Add a fine-grained read-only PAT (contents: read on the consumer repos) to arm the sweep."
+            exit 0
+          fi
+          GH_TOKEN="$CONSUMER_DRIFT_TOKEN" tests/consumer-drift.sh
