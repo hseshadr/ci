@@ -2,9 +2,9 @@
 
 **TL;DR — what this is.** Every repo in the edgeproc portfolio used to copy-paste the
 same GitHub Actions setup: check out the code, install the toolchain, run the quality
-gate, scan for leaked secrets, audit dependencies, deploy the site. Six repos, six
+gate, scan for leaked secrets, audit dependencies, deploy the site. Seven repos, seven
 near-identical copies that drifted apart over time. This repo holds **one shared copy
-of each**, and every other repo calls it in a few lines. Change CI once here; all six
+of each**, and every other repo calls it in a few lines. Change CI once here; all seven
 get the change.
 
 **Why it works.** GitHub lets a workflow *call* a workflow that lives in another repo

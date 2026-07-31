@@ -1123,10 +1123,9 @@ validate_self_ci() {
 #      with `set -e` off, any non-zero command between the two skips the scrub —
 #      that is the same bug wearing a different hat, and property 1 cannot see it
 #      because the step may legitimately have no `if:` at all.
-KEY_WRITE='base64[^\n]*>[^\n]*\.key|>[^\n]*signing\.key'
-KEY_SCRUB='shred|rm -f[^\n]*\.key|rm[^\n]*signing\.key'
-
 key_scrub_is_unconditional() {
+  # The Ruby program owns its own patterns; single quotes keep the shell out of them.
+  # shellcheck disable=SC2016
   ruby -e '
     require "yaml"
 
@@ -1174,6 +1173,9 @@ validate_key_scrub_cannot_be_skipped() {
   require_inputs "key-scrub check" "$count" "$YAML_SOURCE_FLOOR"
 }
 
+# The fixtures below embed literal GitHub expression markers and $VAR text as
+# DATA for the YAML under test — never as shell to expand.
+# shellcheck disable=SC2016
 validate_key_scrub_cases() {
   local dir
   dir="$(mktemp -d)"
@@ -1239,6 +1241,9 @@ validate_no_vacuous_success() {
   require_inputs "vacuous-success check" "$count" 5
 }
 
+# The fixtures below embed literal GitHub expression markers and $VAR text as
+# DATA for the YAML under test — never as shell to expand.
+# shellcheck disable=SC2016
 validate_no_vacuous_success_cases() {
   local dir
   dir="$(mktemp -d)"
