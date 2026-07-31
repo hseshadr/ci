@@ -1109,6 +1109,69 @@ validate_self_ci() {
   fi
 }
 
+# A reusable workflow whose every job is gated on a CALLER INPUT can report
+# SUCCESS having executed nothing. security-audit.yml was exactly that shape:
+# `run-python-audit` and `run-pnpm-audit` both default to false, so a caller that
+# named the workflow and passed neither got two skipped jobs and a green check
+# from a security audit that audited nothing. A skip must never be
+# indistinguishable from a pass.
+#
+# Gating on github.event.* / github.event_name is a DIFFERENT thing and is
+# deliberately not flagged: cloudflare-pages-deploy.yml's fork-PR guard skips a
+# job precisely because it must not run, which is the control working. The
+# distinction is caller-configuration vs trust boundary.
+workflow_has_unconditional_job() {
+  ruby -e '
+    require "yaml"
+    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    exit(0) unless document.is_a?(Hash)
+    trigger = document["on"] || document[true]
+    # Only reusable workflows are in scope; an ordinary workflow has no caller.
+    exit(0) unless trigger.is_a?(Hash) && trigger.key?("workflow_call")
+    jobs = document["jobs"]
+    exit(0) unless jobs.is_a?(Hash) && !jobs.empty?
+    input_gated = jobs.values.all? do |job|
+      condition = job.is_a?(Hash) ? job["if"].to_s : ""
+      !condition.empty? && condition.include?("inputs.")
+    end
+    exit(input_gated ? 1 : 0)
+  ' "$1"
+}
+
+validate_no_vacuous_success() {
+  local count=0 file
+  while IFS= read -r file; do
+    count=$((count + 1))
+    workflow_has_unconditional_job "$file" ||
+      fail "$file gates EVERY job on a caller input — a caller that enables nothing gets a green check from a workflow that did nothing"
+  done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  require_inputs "vacuous-success check" "$count" 5
+}
+
+validate_no_vacuous_success_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  printf 'on: {workflow_call: {inputs: {a: {type: boolean}}}}\njobs:\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n  y:\n    if: ${{ inputs.b }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/all-gated.yml"
+  printf 'on: {workflow_call: {inputs: {a: {type: boolean}}}}\njobs:\n  guard:\n    runs-on: ubuntu-latest\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/has-guard.yml"
+  printf 'on: {workflow_call: null}\njobs:\n  x:\n    if: ${{ github.event_name == "push" }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/trust-gated.yml"
+  printf 'on: {push: null}\njobs:\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/not-reusable.yml"
+
+  expect_failure "vacuous-success guard passes a workflow whose every job is input-gated" \
+    workflow_has_unconditional_job "$dir/all-gated.yml"
+  expect_success "vacuous-success guard flags a workflow that keeps one unconditional job" \
+    workflow_has_unconditional_job "$dir/has-guard.yml"
+  expect_success "vacuous-success guard wrongly flags a TRUST-boundary skip (fork-PR gate)" \
+    workflow_has_unconditional_job "$dir/trust-gated.yml"
+  expect_success "vacuous-success guard wrongly flags a non-reusable workflow" \
+    workflow_has_unconditional_job "$dir/not-reusable.yml"
+}
+
 validate_pages_headers() {
   local script=".github/actions/pages-deploy-dist/apply-security-headers.sh"
   local action=".github/actions/pages-deploy-dist/action.yml"
@@ -1180,6 +1243,8 @@ run_check validate_publish_provenance_cases
 run_check validate_trusted_command_contracts
 run_check validate_argument_guards
 run_check validate_self_ci
+run_check validate_no_vacuous_success
+run_check validate_no_vacuous_success_cases
 run_check validate_pages_headers
 
 if ((failures > 0)); then
