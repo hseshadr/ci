@@ -49,9 +49,13 @@ jobs:
       # ran on whatever the runner happened to ship — an unpinned dependency, the
       # exact class this repo exists to police. .ruby-version is the single source
       # of truth so a local run and a CI run execute the same interpreter.
+      # No `ruby-version:` input on purpose — setup-ruby reads .ruby-version by
+      # default. Passing `ruby-version-file:` looks more explicit but v1.321.0
+      # does not declare that input: it warned "Unexpected input(s)" and ignored
+      # it, while the default path silently supplied the right version anyway.
+      # An input that does nothing while appearing to be the control is worse
+      # than no input.
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        with:
-          ruby-version-file: .ruby-version
       - name: Validate CI security policy
         run: |
           bash -n .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
