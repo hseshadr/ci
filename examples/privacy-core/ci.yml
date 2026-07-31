@@ -13,9 +13,9 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/frontend-gate.yml@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+    uses: hseshadr/ci/.github/workflows/frontend-gate.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
     with:
       install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
       install-playwright: true
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0

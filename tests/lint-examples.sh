@@ -56,4 +56,25 @@ actionlint "$stage_dir"/*/.github/workflows/*.yml || status=1
 echo "--- zizmor (examples, online audits on) ---"
 uvx "zizmor@${ZIZMOR_VERSION}" "$stage_dir" || status=1
 
+# actionlint and zizmor check YAML shape and workflow security. NEITHER resolves a
+# repo-relative path inside the consumer repository the example is written for, so
+# both stayed green while examples/edge-reco/ci.yml named `frontend/.node-version`
+# — a file edge-reco has never had. setup-node hard-fails on a missing version
+# file, so that example was red as drafted and this gate passed it. The fidelity
+# check is the missing half: it resolves every path, script and brick reference an
+# example makes against the consumer's committed default branch.
+#
+# ORDER IS LOAD-BEARING: this runs LAST because it is the only check here that
+# needs the network for consumer clones. A network failure should not mask a
+# lint finding that needed no network to produce.
+echo "--- example fidelity (references resolve in the consumer repo) ---"
+fidelity_args=()
+if [[ ! -d "${EXAMPLE_CONSUMER_ROOT:-$HOME/dev/oss}" ]]; then
+  # CI has no ~/dev/oss. Shallow-clone the consumers rather than skip: a skip
+  # here would be indistinguishable from a pass, which is the defect this whole
+  # guard exists to end.
+  fidelity_args+=(--clone)
+fi
+"$repo_root/tests/example-fidelity.sh" "${fidelity_args[@]+"${fidelity_args[@]}"}" || status=1
+
 exit "$status"

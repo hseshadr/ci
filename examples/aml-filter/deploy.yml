@@ -39,29 +39,75 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
           cache-dependency-path: frontend/pnpm-lock.yaml
           working-directory: frontend
 
-      # --- irreducible, repo-specific signing pipeline (illustrative) ---
-      - name: Build + sign the sanctions bundle
-        working-directory: frontend
+      # --- irreducible, repo-specific signing pipeline ---
+      #
+      # WHY THE KEY IS A FILE AT ALL: @amlfilter/publisher takes the seed as
+      # `--key <path>` and offers no stdin or env interface, so an example that
+      # piped it in would not drive the tool this repository actually ships.
+      # Given a file is required, three properties make it survivable:
+      #
+      #   1. It lives in $RUNNER_TEMP, OUTSIDE the checkout. A key written under
+      #      frontend/ is one `dist-dir` mistake away from being uploaded to a
+      #      CDN. $RUNNER_TEMP is never a deploy source.
+      #   2. `umask 077` before the write, so it is never group/world readable.
+      #   3. The shred is ITS OWN STEP with `if: always()` (below).
+      #
+      # ORDER IS LOAD-BEARING — do not fold these back into one `run:` block.
+      # Verification is fail-closed: it EXITS NON-ZERO on a bad bundle, which is
+      # the whole point of it. A trailing `shred` in the same block therefore
+      # never runs in exactly the failure the design expects, leaving a
+      # production Ed25519 seed on the runner. Split into steps, the cleanup's
+      # `if: always()` fires after a failed decode, build, sign, verify OR
+      # deploy. This portfolio has already had one committed-seed incident and a
+      # full key rotation; this is that lesson written down as YAML.
+      - name: Decode the signing key
         env:
           SIGNING_KEY_B64: ${{ secrets.SANCTIONS_SIGNING_KEY_B64 }}
         run: |
-          printf '%s' "$SIGNING_KEY_B64" | base64 -d > /tmp/signing.key
-          pnpm run build:bundle
-          pnpm run sign:bundle --key /tmp/signing.key
-          pnpm run verify:bundle   # fail-closed: aborts the deploy if verification fails
-          shred -u /tmp/signing.key
+          set -euo pipefail
+          umask 077
+          printf '%s' "$SIGNING_KEY_B64" | base64 -d > "$RUNNER_TEMP/signing.key"
+          size="$(wc -c < "$RUNNER_TEMP/signing.key")"
+          [ "$size" -eq 32 ] || { echo "::error::decoded key is $size bytes, expected 32"; exit 1; }
+
+      - name: Build + sign the sanctions bundle
+        run: |
+          set -euo pipefail
+          pnpm -C frontend --filter @amlfilter/publisher run build-real-bundle -- \
+            --key "$RUNNER_TEMP/signing.key" \
+            --out "$GITHUB_WORKSPACE/frontend/app/public/bundle/origin"
+
+      # Fail-closed: a bundle that does not verify against the pinned public key
+      # aborts the deploy rather than shipping.
+      - name: Verify the signed bundle against the pinned public key
+        run: |
+          set -euo pipefail
+          pnpm -C frontend --filter @amlfilter/publisher run verify-published-origin -- \
+            --base-url "$GITHUB_WORKSPACE/frontend/app/public/bundle/origin" \
+            --pubkey "$GITHUB_WORKSPACE/frontend/app/public/public.key"
+
+      # `if: always()` is the entire reason this step exists separately. Removing
+      # it, or folding it back into the signing step, re-creates the leak.
+      # tests/security-policy.sh asserts both properties.
+      - name: Shred the signing key
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/signing.key" ]; then
+            shred -f -n 3 -z --remove "$RUNNER_TEMP/signing.key"
+          fi
 
       # --- shared deploy half: identical wrangler step used by every Pages repo ---
-      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           project-name: aml-filter
-          dist-dir: frontend/dist
+          dist-dir: frontend/app/dist
           cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

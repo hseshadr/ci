@@ -88,7 +88,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-pnpm@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -99,7 +99,7 @@ jobs:
 
       - name: Setup Playwright (cached)
         if: ${{ inputs.install-playwright }}
-        uses: hseshadr/ci/.github/actions/setup-playwright@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-playwright@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           browsers: ${{ inputs.playwright-browsers }}
           working-directory: ${{ inputs.playwright-working-directory || inputs.working-directory }}

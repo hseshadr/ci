@@ -45,6 +45,13 @@ jobs:
           # hseshadr/ci pin against the newest ci-vX.Y.Z tag, which a shallow clone
           # cannot see.
           fetch-depth: 0
+      # 1,300+ lines of this repository's gate logic are Ruby, and until now they
+      # ran on whatever the runner happened to ship — an unpinned dependency, the
+      # exact class this repo exists to police. .ruby-version is the single source
+      # of truth so a local run and a CI run execute the same interpreter.
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version-file: .ruby-version
       - name: Validate CI security policy
         run: |
           bash -n .github/actions/*/*.sh tests/*.sh tests/lib/*.sh
@@ -58,6 +65,14 @@ jobs:
       # synthetic repositories instead.
       - name: Validate the lineage guard's exemption stays narrow
         run: tests/lineage-guard-cases.sh
+      # The example-fidelity checker is only worth its runtime if it can say NO.
+      # These cases fixture every property in both polarities against a synthetic
+      # git repo, so a checker that silently stopped resolving anything cannot
+      # look clean. Runs BEFORE the real check (below, via lint-examples.sh) —
+      # ORDER IS LOAD-BEARING: a broken checker must be reported as broken, not
+      # as a clean examples/ tree.
+      - name: Validate the example-fidelity checker in both polarities
+        run: tests/example-fidelity-cases.sh
       - name: Install actionlint
         env:
           # v1.7.7

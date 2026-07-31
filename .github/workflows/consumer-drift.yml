@@ -32,6 +32,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # The classifier is Ruby; pin the interpreter rather than inherit the
+      # runner's default (see .ruby-version).
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version-file: .ruby-version
+
       # Runs first and unconditionally: it needs no token, and a detector whose
       # classifier is broken would otherwise report a clean sweep it never made.
       - name: Validate the classifier in both polarities
@@ -42,14 +48,42 @@ jobs:
       # sweep would report a spotless portfolio it never actually looked at.
       # Reading other repositories needs CONSUMER_DRIFT_TOKEN: a fine-grained,
       # READ-ONLY PAT with `contents: read` on the seven consumer repositories
-      # and nothing else. Until one exists the step skips with a ::notice::,
-      # which is honest; a green run that silently inspected nothing is not.
+      # and nothing else.
+      #
+      # A MISSING TOKEN USED TO `exit 0` WITH A ::notice::. That made the daily
+      # scheduled run report SUCCESS while inspecting nothing, disclosed only by a
+      # log line — the job's conclusion, which is the thing anyone actually looks
+      # at, said the portfolio was clean. A skip must never be indistinguishable
+      # from a pass.
+      #
+      # The two contexts genuinely differ, so they are treated differently:
+      #   schedule / workflow_dispatch — the sweep IS the purpose of the run.
+      #     No token means the run had no purpose. FAIL, loudly.
+      #   pull_request — the purpose is guarding changes to the detector itself
+      #     (the case suite above already ran and is the real gate here), and a
+      #     fork PR legitimately cannot see secrets. WARN in the step summary,
+      #     where it is visible, and continue.
       - name: Scan the consumer repositories
         env:
           CONSUMER_DRIFT_TOKEN: ${{ secrets.CONSUMER_DRIFT_TOKEN }}
+          TRIGGER: ${{ github.event_name }}
         run: |
-          if [ -z "${CONSUMER_DRIFT_TOKEN:-}" ]; then
-            echo "::notice::consumer-drift SKIPPED — no CONSUMER_DRIFT_TOKEN secret. The default GITHUB_TOKEN cannot read other repositories, so this run inspected nothing. Add a fine-grained read-only PAT (contents: read on the consumer repos) to arm the sweep."
+          set -uo pipefail
+          if [ -n "${CONSUMER_DRIFT_TOKEN:-}" ]; then
+            GH_TOKEN="$CONSUMER_DRIFT_TOKEN" tests/consumer-drift.sh
+            exit $?
+          fi
+
+          message="consumer-drift inspected NOTHING — no CONSUMER_DRIFT_TOKEN secret. The default GITHUB_TOKEN cannot read other repositories. Add a fine-grained read-only PAT (contents: read on the consumer repos) to arm the sweep."
+          {
+            echo "### Consumer drift: NOT RUN"
+            echo ""
+            echo "$message"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TRIGGER" = "pull_request" ]; then
+            echo "::warning::$message This is a pull_request run, where the classifier case suite is the gate, so it does not fail the build."
             exit 0
           fi
-          GH_TOKEN="$CONSUMER_DRIFT_TOKEN" tests/consumer-drift.sh
+          echo "::error::$message A scheduled sweep that inspects nothing must not report success."
+          exit 1

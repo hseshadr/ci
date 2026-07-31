@@ -18,19 +18,32 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
           cache-dependency-path: frontend/pnpm-lock.yaml
           working-directory: frontend
-      - uses: hseshadr/ci/.github/actions/restore-model-cache@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+      # Weights come from a GitHub RELEASE, not a package registry, so the fetch
+      # needs GH_TOKEN. Job-level `env:` is what reaches a composite's steps —
+      # the composite deliberately takes no secret input.
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
-          cache-path: frontend/public/models
-          cache-key: model-weights-${{ runner.os }}-${{ hashFiles('frontend/scripts/fetch-weights.mjs') }}
-          fetch-command: node scripts/fetch-weights.mjs
-          working-directory: frontend
-      - uses: hseshadr/ci/.github/actions/setup-playwright@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+          cache-path: frontend/app/public/models
+          cache-key: model-weights-${{ runner.os }}-rel1-${{ hashFiles('frontend/app/scripts/download-model.mjs') }}
+          working-directory: frontend/app
+          fetch-command: |
+            dir=public/models/Xenova/all-MiniLM-L6-v2
+            mkdir -p "$dir/onnx"
+            gh release download model-weights-v1 --repo "$GITHUB_REPOSITORY" --dir "$dir" --clobber \
+              --pattern config.json --pattern tokenizer.json \
+              --pattern tokenizer_config.json --pattern special_tokens_map.json
+            gh release download model-weights-v1 --repo "$GITHUB_REPOSITORY" --dir "$dir/onnx" --clobber \
+              --pattern model_quantized.onnx
+            node scripts/download-model.mjs
+      - uses: hseshadr/ci/.github/actions/setup-playwright@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           working-directory: frontend
           cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
