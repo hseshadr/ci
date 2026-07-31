@@ -1109,6 +1109,165 @@ validate_self_ci() {
   fi
 }
 
+# A decoded private key must not be able to outlive the job that decoded it.
+#
+# examples/aml-filter/deploy.yml decoded an Ed25519 PRODUCTION signing seed and
+# shredded it on the LAST LINE of the same `run:` block — after a verification
+# step documented to abort on failure. Fail-closed verification exiting non-zero
+# is the design working, and it is exactly the path that skipped the shred,
+# leaving the seed on the runner. Two properties, both machine-checked here:
+#
+#   1. A scrub step must carry `if: always()`. Without it the scrub inherits the
+#      job's success condition and does not run on the failure that matters.
+#   2. A single `run:` block must not both WRITE a key file and SCRUB it. Even
+#      with `set -e` off, any non-zero command between the two skips the scrub —
+#      that is the same bug wearing a different hat, and property 1 cannot see it
+#      because the step may legitimately have no `if:` at all.
+key_scrub_is_unconditional() {
+  # The Ruby program owns its own patterns; single quotes keep the shell out of them.
+  # shellcheck disable=SC2016
+  ruby -e '
+    require "yaml"
+
+    def walk(value, &block)
+      yield value if value.is_a?(Hash)
+      children = value.is_a?(Hash) ? value.values : value
+      children.each { |child| walk(child, &block) } if children.is_a?(Array)
+    end
+
+    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    exit(0) unless document.is_a?(Hash)
+
+    write = /base64[^\n]*>[^\n]*\.key|>\s*"?[^\n"]*signing\.key/
+    scrub = /\bshred\b|\brm\b[^\n]*\.key/
+    violations = []
+
+    walk(document) do |node|
+      script = node["run"]
+      next unless script.is_a?(String)
+
+      writes = script.match?(write)
+      scrubs = script.match?(scrub)
+
+      # Property 2: one block that both creates and destroys the key.
+      violations << "a single run: block both writes and scrubs a key file" if writes && scrubs
+
+      # Property 1: a scrub-only step must be unconditional.
+      if scrubs && !writes && node["if"].to_s.delete(" ") !~ /always\(\)/
+        violations << "a key-scrub step is missing `if: always()`"
+      end
+    end
+
+    violations.each { |violation| warn violation }
+    exit(violations.empty? ? 0 : 1)
+  ' "$1"
+}
+
+validate_key_scrub_cannot_be_skipped() {
+  local count=0 file
+  while IFS= read -r file; do
+    count=$((count + 1))
+    key_scrub_is_unconditional "$file" ||
+      fail "$file can leave a decoded private key on the runner (see the message above)"
+  done < <(yaml_sources)
+  require_inputs "key-scrub check" "$count" "$YAML_SOURCE_FLOOR"
+}
+
+# The fixtures below embed literal GitHub expression markers and $VAR text as
+# DATA for the YAML under test — never as shell to expand.
+# shellcheck disable=SC2016
+validate_key_scrub_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  # The exact shape that shipped: decode + verify + shred in one block.
+  printf 'jobs:\n  a:\n    steps:\n      - run: |\n          printf %%s "$K" | base64 -d > /tmp/signing.key\n          pnpm run verify:bundle\n          shred -u /tmp/signing.key\n' \
+    > "$dir/one-block.yml"
+  # Split, but the scrub inherits job success — skipped on the failure that matters.
+  printf 'jobs:\n  a:\n    steps:\n      - run: printf %%s "$K" | base64 -d > /tmp/signing.key\n      - run: shred -u /tmp/signing.key\n' \
+    > "$dir/conditional-scrub.yml"
+  # The fixed shape.
+  printf 'jobs:\n  a:\n    steps:\n      - run: printf %%s "$K" | base64 -d > /tmp/signing.key\n      - if: always()\n        run: shred -u /tmp/signing.key\n' \
+    > "$dir/always-scrub.yml"
+  printf 'jobs:\n  a:\n    steps:\n      - run: echo "no keys here"\n' > "$dir/no-key.yml"
+
+  expect_failure "key-scrub guard passes decode+verify+shred in ONE run block" \
+    key_scrub_is_unconditional "$dir/one-block.yml"
+  expect_failure "key-scrub guard passes a scrub step with no \`if: always()\`" \
+    key_scrub_is_unconditional "$dir/conditional-scrub.yml"
+  expect_success "key-scrub guard rejects a correctly-split \`if: always()\` scrub" \
+    key_scrub_is_unconditional "$dir/always-scrub.yml"
+  expect_success "key-scrub guard rejects a workflow that handles no key" \
+    key_scrub_is_unconditional "$dir/no-key.yml"
+}
+
+# A reusable workflow whose every job is gated on a CALLER INPUT can report
+# SUCCESS having executed nothing. security-audit.yml was exactly that shape:
+# `run-python-audit` and `run-pnpm-audit` both default to false, so a caller that
+# named the workflow and passed neither got two skipped jobs and a green check
+# from a security audit that audited nothing. A skip must never be
+# indistinguishable from a pass.
+#
+# Gating on github.event.* / github.event_name is a DIFFERENT thing and is
+# deliberately not flagged: cloudflare-pages-deploy.yml's fork-PR guard skips a
+# job precisely because it must not run, which is the control working. The
+# distinction is caller-configuration vs trust boundary.
+workflow_has_unconditional_job() {
+  ruby -e '
+    require "yaml"
+    document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    exit(0) unless document.is_a?(Hash)
+    trigger = document["on"] || document[true]
+    # Only reusable workflows are in scope; an ordinary workflow has no caller.
+    exit(0) unless trigger.is_a?(Hash) && trigger.key?("workflow_call")
+    jobs = document["jobs"]
+    exit(0) unless jobs.is_a?(Hash) && !jobs.empty?
+    input_gated = jobs.values.all? do |job|
+      condition = job.is_a?(Hash) ? job["if"].to_s : ""
+      !condition.empty? && condition.include?("inputs.")
+    end
+    exit(input_gated ? 1 : 0)
+  ' "$1"
+}
+
+validate_no_vacuous_success() {
+  local count=0 file
+  while IFS= read -r file; do
+    count=$((count + 1))
+    workflow_has_unconditional_job "$file" ||
+      fail "$file gates EVERY job on a caller input — a caller that enables nothing gets a green check from a workflow that did nothing"
+  done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  require_inputs "vacuous-success check" "$count" 5
+}
+
+# The fixtures below embed literal GitHub expression markers and $VAR text as
+# DATA for the YAML under test — never as shell to expand.
+# shellcheck disable=SC2016
+validate_no_vacuous_success_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+
+  printf 'on: {workflow_call: {inputs: {a: {type: boolean}}}}\njobs:\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n  y:\n    if: ${{ inputs.b }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/all-gated.yml"
+  printf 'on: {workflow_call: {inputs: {a: {type: boolean}}}}\njobs:\n  guard:\n    runs-on: ubuntu-latest\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/has-guard.yml"
+  printf 'on: {workflow_call: null}\njobs:\n  x:\n    if: ${{ github.event_name == "push" }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/trust-gated.yml"
+  printf 'on: {push: null}\njobs:\n  x:\n    if: ${{ inputs.a }}\n    runs-on: ubuntu-latest\n' \
+    > "$dir/not-reusable.yml"
+
+  expect_failure "vacuous-success guard passes a workflow whose every job is input-gated" \
+    workflow_has_unconditional_job "$dir/all-gated.yml"
+  expect_success "vacuous-success guard flags a workflow that keeps one unconditional job" \
+    workflow_has_unconditional_job "$dir/has-guard.yml"
+  expect_success "vacuous-success guard wrongly flags a TRUST-boundary skip (fork-PR gate)" \
+    workflow_has_unconditional_job "$dir/trust-gated.yml"
+  expect_success "vacuous-success guard wrongly flags a non-reusable workflow" \
+    workflow_has_unconditional_job "$dir/not-reusable.yml"
+}
+
 validate_pages_headers() {
   local script=".github/actions/pages-deploy-dist/apply-security-headers.sh"
   local action=".github/actions/pages-deploy-dist/action.yml"
@@ -1180,6 +1339,10 @@ run_check validate_publish_provenance_cases
 run_check validate_trusted_command_contracts
 run_check validate_argument_guards
 run_check validate_self_ci
+run_check validate_no_vacuous_success
+run_check validate_no_vacuous_success_cases
+run_check validate_key_scrub_cannot_be_skipped
+run_check validate_key_scrub_cases
 run_check validate_pages_headers
 
 if ((failures > 0)); then

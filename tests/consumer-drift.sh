@@ -352,6 +352,31 @@ count_drift_repos() {
   printf '%s' "$total"
 }
 
+# A sweep that inspected NOTHING printed "0 hand-rolled control(s) across 0
+# repo(s)" and exited 0 — a clean bill of health from a run that never looked.
+# Every other guard in this repository already carries a vacuity floor
+# (require_inputs in tests/security-policy.sh); this one did not, and it is the
+# guard most exposed to it because its inputs live behind a network and a token.
+#
+# The calibration matters. A PARTIAL sweep still passes and warns: skipping one
+# unreachable repo out of seven is honest, disclosed, and better than nothing. A
+# TOTAL miss is exit 2 — "the detector could not do its job" — because that is
+# indistinguishable from a clean portfolio and must never be reported as one.
+assert_something_was_inspected() {
+  local requested="${#consumers[@]}" scanned="${#scanned_repos[@]}"
+
+  if [[ "$requested" -gt 0 && "$scanned" -eq 0 ]]; then
+    printf '::error::consumer-drift inspected 0 of %d requested repositories, so this run proves nothing. It is NOT a clean sweep. Check the token (CONSUMER_DRIFT_TOKEN / GH_TOKEN) and the repository names.\n' \
+      "$requested" >&2
+    exit 2
+  fi
+
+  if [[ "$scanned" -lt "$requested" ]]; then
+    printf '::warning::consumer-drift inspected %d of %d repositories; the rest are listed under "Skipped" above and were NOT checked.\n' \
+      "$scanned" "$requested" >&2
+  fi
+}
+
 main() {
   load_allowlist
   collect_workflows
@@ -360,6 +385,10 @@ main() {
   print_table
   print_skips
   print_stale_allowlist
+
+  # ORDER IS LOAD-BEARING: the floor is asserted AFTER the table prints, so a
+  # run that inspected nothing still shows its skip notes before exiting.
+  assert_something_was_inspected
 
   local allowlisted new drift repos
   allowlisted="$(count_state 'DRIFT (allowlisted)')"

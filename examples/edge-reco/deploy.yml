@@ -32,7 +32,7 @@ jobs:
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository) }}
-    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
     with:
       project-name: edge-reco
       dist-dir: frontend/app/dist
@@ -40,7 +40,7 @@ jobs:
       pre-build-run: "cd frontend/app && node scripts/download-model.mjs"
       build-command: "pnpm -C frontend -F frontend run build:pages"
       package-json-file: frontend/package.json
-      node-version-file: frontend/.node-version
+      node-version-file: frontend/.nvmrc
       cache-dependency-path: frontend/pnpm-lock.yaml
     # Name the two secrets this deploy actually needs. `secrets: inherit` would hand the
     # called workflow EVERY secret in the repo, including ones it has no business seeing.

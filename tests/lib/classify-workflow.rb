@@ -61,8 +61,17 @@ class Workflow
     @uses ||= strings_under(@document, "uses")
   end
 
+  # `run:` scripts with shell comments removed.
+  #
+  # WHY: the detectors match command names against this text, and a COMMENT is not
+  # a command. almamesh/deploy.yml's only occurrence of the word "gitleaks" is
+  # `# (gitleaks false-positives on inline keys) ...` inside an unrelated "Ping
+  # IndexNow" step, and matching raw text reported that file as hand-rolling a
+  # secret scan. It was 1 of the 30 findings in the first live sweep, and the only
+  # false one. A detector that cries wolf gets ignored, which costs more than the
+  # finding was worth.
   def runs
-    @runs ||= strings_under(@document, "run")
+    @runs ||= strings_under(@document, "run").map { |script| strip_shell_comments(script) }
   end
 
   # Every scalar under any `with:` map. cloudflare/wrangler-action carries the
@@ -105,6 +114,29 @@ class Workflow
   end
 
   private
+
+  # Cut each line at its first UNQUOTED '#' that begins a word — shell comment
+  # rules. Quote tracking is what keeps this from over-stripping: a naive cut at
+  # the first '#' would silently delete the real command in
+  # `echo "release #42" && gitleaks detect`, turning a false positive into a false
+  # negative, which is the worse of the two failures for a security detector.
+  def strip_shell_comments(script)
+    script.lines.map { |line| strip_line_comment(line) }.join
+  end
+
+  def strip_line_comment(line)
+    quote = nil
+    line.each_char.with_index do |char, index|
+      if quote
+        quote = nil if char == quote
+      elsif ["'", '"'].include?(char)
+        quote = char
+      elsif char == "#" && (index.zero? || line[index - 1].match?(/\s/))
+        return "#{line[0, index].rstrip}\n"
+      end
+    end
+    line
+  end
 
   def strings_under(root, key)
     found = []

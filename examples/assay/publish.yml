@@ -11,7 +11,7 @@
 #     (hseshadr/ci/.github/workflows/python-publish.yml) — never this repo's publish.yml,
 #     which is what the trusted publisher is registered against. Cross-repo reuse
 #     therefore ALWAYS fails with "invalid-publisher". The job below reproduces the
-#     hseshadr/ci python-publish.yml steps (ci-v2.0.3; action pins copied verbatim) so
+#     hseshadr/ci python-publish.yml steps (ci-v3.0.0; action pins copied verbatim) so
 #     `job_workflow_ref` names THIS file and the registered publisher matches.
 #   * publish-npm STAYS on the reusable workflow. npm Trusted Publishing matches the
 #     CALLER's workflow filename, not `job_workflow_ref`, so the cross-repo workflow works
@@ -46,7 +46,7 @@ permissions:
   contents: read
 jobs:
   # Python `avow` -> PyPI. Inline for the job_workflow_ref reason above; steps mirror
-  # hseshadr/ci python-publish.yml (ci-v2.0.3). Re-runs `uv run poe gate` on the tagged
+  # hseshadr/ci python-publish.yml (ci-v3.0.0). Re-runs `uv run poe gate` on the tagged
   # ref before building — nothing ships unless it passes the same gate CI enforces.
   publish-pypi:
     runs-on: ubuntu-latest
@@ -59,7 +59,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python + uv (+ sync)
-        uses: hseshadr/ci/.github/actions/setup-python-uv@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-python-uv@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           sync-args: "--frozen --all-extras"
 
@@ -121,7 +121,7 @@ jobs:
     permissions:
       id-token: write # OIDC — npm verifies this against the registered trusted publisher.
       contents: read
-    uses: hseshadr/ci/.github/workflows/ts-publish.yml@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
     with:
       working-directory: ts
       # assay has no ROOT package.json/lockfile — the TS package lives wholly in ts/.

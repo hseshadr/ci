@@ -18,6 +18,13 @@
 # Populated 2026-07-26 from the first live sweep: 30 hand-rolled controls across
 # all 7 consumers. Nothing here is new drift; new drift is what this file exists
 # to make fail.
+#
+# Corrected 2026-07-31 to 29. One entry (almamesh/deploy.yml/secret-scan) was a
+# CLASSIFIER FALSE POSITIVE — the word "gitleaks" appears there only inside a
+# shell comment — and was deleted along with the bug that produced it. Four
+# reasons asserted something untrue and were rewritten; a reason nobody can trust
+# is worse than no allowlist, because it is what people read before deciding not
+# to converge. Every reason below has been checked against the live repo.
 
 # --- pages-deploy (4) --------------------------------------------------------
 # The control this detector was built for. Each of these builds a dist dir and
@@ -28,17 +35,16 @@ edge-reco/deploy.yml/pages-deploy|Converged caller already drafted at examples/e
 almamesh/deploy.yml/pages-deploy|Bespoke: builds the Pyodide runtime + models and re-verifies deployed source identity after upload. No examples/almamesh/deploy.yml exists yet — converge after aml-filter and edge-reco land.
 aml-filter/publish-watchlist.yml/pages-deploy|Not a site deploy: signs a watchlist bundle with a decoded key, then pushes it to the same Pages project. Needs a signing-aware pre-deploy hook before it can call the reusable workflow.
 
-# --- secret-scan (8) ---------------------------------------------------------
+# --- secret-scan (7) ---------------------------------------------------------
 # gitleaks runs as a step inside an existing job rather than as a job calling
 # secret-scan.yml. Converging means splitting a job out — mechanical, but it
 # touches every consumer, so it is batched deliberately rather than forgotten.
-almamesh/deploy.yml/secret-scan|gitleaks inlined into the deploy job; converge with the almamesh CI sweep.
 almamesh/test.yml/secret-scan|Uses gitleaks/gitleaks-action directly instead of calling secret-scan.yml.
 aml-filter/security-audit.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/aml-filter/security-audit.yml already shows the converged caller.
 assay/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; assay has no converged examples/assay/ci.yml yet.
 edge-proc/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-proc/ci.yml already shows the converged caller.
 edge-reco/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-reco/ci.yml already shows the converged caller.
-edgeproc-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; edgeproc-core has no converged example yet.
+edgeproc-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edgeproc-core/ci.yml already shows the converged caller.
 privacy-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/privacy-core/ci.yml already shows the converged caller.
 
 # --- dependency-audit (7) ----------------------------------------------------
@@ -50,15 +56,15 @@ aml-filter/security-audit.yml/dependency-audit|Inline pnpm audit; examples/aml-f
 assay/security-audit.yml/dependency-audit|Inline pip-audit; assay has no converged examples/assay/security-audit.yml yet.
 edge-proc/security-audit.yml/dependency-audit|Inline pip-audit; examples/edge-proc/security-audit.yml already shows the converged caller.
 edge-reco/security-audit.yml/dependency-audit|Inline pnpm audit plus pip-audit via `uv run poe audit`; examples/edge-reco/security-audit.yml already shows the converged caller.
-edgeproc-core/security-audit.yml/dependency-audit|Inline pip-audit; edgeproc-core has no converged example yet.
+edgeproc-core/security-audit.yml/dependency-audit|Inline pip-audit; examples/edgeproc-core/security-audit.yml already shows the converged caller.
 privacy-core/security-audit.yml/dependency-audit|Inline pnpm audit; examples/privacy-core/security-audit.yml already shows the converged caller.
 
 # --- python-gate (5) ---------------------------------------------------------
-almamesh/test.yml/python-gate|Runs `uv run poe` inline in a combined test workflow; almamesh's gate spans Python + browser and has never been split.
+almamesh/test.yml/python-gate|Runs `uv run poe` inline. NOTE: an earlier reason here claimed the gate "spans Python + browser and has never been split" — that was false. test.yml already has five jobs (secret-scan, backend, frontend, exit-gate, e2e-smoke) and `backend` is an exact python-gate.yml fit (`uv sync --locked --extra dev` then `uv run poe gate`, working-directory backend). This is ready to converge; keep the caller job named "Backend Tests" so the required status check survives.
 assay/ci.yml/python-gate|Runs `uv run poe` inline; assay has no converged examples/assay/ci.yml yet.
 edge-proc/ci.yml/python-gate|Runs `uv run poe` inline; examples/edge-proc/ci.yml already shows the python-gate.yml caller.
 edge-reco/ci.yml/python-gate|Runs `uv run poe` inline; examples/edge-reco/ci.yml already shows the python-gate.yml caller.
-edgeproc-core/ci.yml/python-gate|Runs `uv run poe` inline; edgeproc-core has no converged example yet.
+edgeproc-core/ci.yml/python-gate|Runs `uv run poe` inline; examples/edgeproc-core/ci.yml already shows the python-gate.yml caller.
 
 # --- frontend-gate (6) -------------------------------------------------------
 # Note the bar here: using the setup-playwright composite counts as adoption,

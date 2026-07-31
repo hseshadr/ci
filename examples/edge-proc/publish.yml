@@ -8,7 +8,7 @@
 # names the ci repo's file (hseshadr/ci/.github/workflows/python-publish.yml) — never
 # this repo's publish.yml, which is what the trusted publisher is registered against.
 # Cross-repo reuse therefore ALWAYS fails with "invalid-publisher". The job below
-# reproduces the hseshadr/ci python-publish.yml steps (ci-v2.0.3; action pins copied
+# reproduces the hseshadr/ci python-publish.yml steps (ci-v3.0.0; action pins copied
 # verbatim) so `job_workflow_ref` names THIS file and the registered publisher matches.
 #
 # One-time bootstrap (deferred — needs a human): register the GitHub Actions trusted
@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python + uv (+ sync)
-        uses: hseshadr/ci/.github/actions/setup-python-uv@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-python-uv@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           sync-args: "--frozen --all-extras"
 

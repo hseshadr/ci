@@ -70,6 +70,32 @@ permissions:
   contents: read
 
 jobs:
+  # BOTH audit toggles default to false, so a caller that forgets them gets two
+  # skipped jobs and a SUCCESS conclusion from a workflow that audited nothing —
+  # a skip indistinguishable from a pass, in the security control most likely to
+  # be adopted by copy-paste. The defaults stay false (each consumer has exactly
+  # one relevant ecosystem, and defaulting either to true would make the other
+  # repo's audit fail on a missing lockfile), so the honest fix is to refuse the
+  # no-op rather than to guess.
+  #
+  # This job has NO `if:` on purpose — it is the one thing that must always run.
+  # tests/security-policy.sh:validate_no_vacuous_success enforces that.
+  configured:
+    name: Audit configuration
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Refuse to report success without auditing anything
+        env:
+          RUN_PYTHON: ${{ inputs.run-python-audit }}
+          RUN_PNPM: ${{ inputs.run-pnpm-audit }}
+        run: |
+          set -euo pipefail
+          if [ "$RUN_PYTHON" != "true" ] && [ "$RUN_PNPM" != "true" ]; then
+            echo "::error::security-audit was called with run-python-audit=false AND run-pnpm-audit=false. Both audit jobs would skip and this workflow would report success having audited nothing. Set at least one to true."
+            exit 1
+          fi
+          echo "Auditing: python=$RUN_PYTHON pnpm=$RUN_PNPM"
+
   pip-audit:
     if: ${{ inputs.run-python-audit }}
     name: pip-audit (backend, locked deps)
@@ -81,7 +107,7 @@ jobs:
 
       # run-sync: false — we `uv export` the lock, not build a venv.
       - name: Setup Python + uv
-        uses: hseshadr/ci/.github/actions/setup-python-uv@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-python-uv@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           working-directory: ${{ inputs.python-working-directory }}
           run-sync: "false"
@@ -137,7 +163,7 @@ jobs:
       # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
       # directly; no node_modules needed.
       - name: Setup pnpm + Node
-        uses: hseshadr/ci/.github/actions/setup-pnpm@bc68fde66f0805971e1b9aa444933b7975da80b1 # ci-v2.0.3
+        uses: hseshadr/ci/.github/actions/setup-pnpm@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
         with:
           package-json-file: ${{ inputs.frontend-working-directory }}/package.json
           node-version: ${{ inputs.node-version }}

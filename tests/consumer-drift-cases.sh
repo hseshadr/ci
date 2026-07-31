@@ -263,6 +263,27 @@ jobs:
       - run: pnpm publish --access public --no-git-checks
 YAML
 
+# A SHELL COMMENT is not a control. almamesh/deploy.yml's only occurrence of the
+# word "gitleaks" is a comment inside an unrelated "Ping IndexNow" step, and the
+# classifier's raw-text match reported it as a hand-rolled secret scan — one of
+# the 30 findings in the first live sweep was this false positive. A detector that
+# cries wolf gets ignored, so the fixture pins the distinction in both polarities:
+# the comment alone is NOT drift, and the neighbouring real-command fixture
+# (scanner/security.yml) proves the detector still fires on the real thing.
+write_fixture commented/deploy.yml <<YAML
+name: Deploy
+on: {workflow_dispatch: null}
+permissions: {contents: read}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # (gitleaks false-positives on inline keys) and rotation is automatic.
+          curl -fsS https://example.invalid/ping   # pip-audit runs elsewhere
+          echo done
+YAML
+
 write_fixture inert/label.yml <<YAML
 name: Label
 on: {issues: {types: [opened]}}
@@ -318,8 +339,29 @@ expect_verdicts playwright-drifty/ci.yml \
 expect_verdicts npm-drifty/release.yml \
   "an inline pnpm publish is drift" \
   "npm-publish DRIFT"
+expect_verdicts commented/deploy.yml \
+  "a control named only inside a shell COMMENT is not a hand-rolled control"
 expect_verdicts inert/label.yml \
   "a workflow implementing no published control produces no findings"
+
+# The other half of the same property: stripping comments must not blind the
+# detector to a command that legitimately contains a '#' character.
+write_fixture hashy/security.yml <<YAML
+name: Security
+on: {schedule: [{cron: "0 6 * * *"}]}
+permissions: {contents: read}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "release #42 audit"
+          gitleaks detect --no-banner
+YAML
+
+expect_verdicts hashy/security.yml \
+  "a '#' inside a quoted string does not hide the real gitleaks command that follows" \
+  "secret-scan DRIFT"
 
 # --- exit-code contract ------------------------------------------------------
 
@@ -346,9 +388,25 @@ expect_exit 0 "a stale allowlist entry warns instead of failing" \
   "$detector" --local "$fixtures" --consumers "adopter" --allowlist "$stale_allowlist"
 expect_output_contains "Stale allowlist entries" "a stale allowlist entry is named" \
   "$detector" --local "$fixtures" --consumers "adopter" --allowlist "$stale_allowlist"
-expect_exit 0 "an unreachable repository is skipped, not failed" \
-  "$detector" --local "$fixtures" --consumers "no-such-repo" --allowlist "$empty_allowlist"
+# THIS CASE USED TO ENCODE THE DEFECT, AND HAS BEEN INVERTED.
+#
+# It previously asserted `expect_exit 0` for --consumers "no-such-repo": a sweep
+# that reached ZERO repositories was pinned as a PASS. That is the shape that let
+# the scheduled run report success daily while inspecting nothing — the failure
+# only ever disclosed by a log line nobody reads. Inspecting nothing is
+# indistinguishable from a clean portfolio, so it is now exit 2 ("the detector
+# could not do its job"), never 0.
+#
+# The original INTENT — one unreachable repo must not fail the build — is real
+# and is preserved by the first case below. Only the vacuous-total-miss reading
+# is gone.
+expect_exit 0 "one unreachable repository among reachable ones is skipped, not failed" \
+  "$detector" --local "$fixtures" --consumers "drifty no-such-repo" --allowlist "$populated_allowlist"
 expect_output_contains "not found" "an unreachable repository is named in the report" \
+  "$detector" --local "$fixtures" --consumers "drifty no-such-repo" --allowlist "$populated_allowlist"
+expect_exit 2 "a sweep that reached NO repositories is a tool error, not a clean bill of health" \
+  "$detector" --local "$fixtures" --consumers "no-such-repo" --allowlist "$empty_allowlist"
+expect_output_contains "inspected 0 of 1" "a sweep that inspected nothing says so loudly" \
   "$detector" --local "$fixtures" --consumers "no-such-repo" --allowlist "$empty_allowlist"
 expect_exit 2 "an allowlist entry with no reason is a tool error" \
   "$detector" --local "$fixtures" --consumers "drifty" --allowlist "$reasonless_allowlist"
