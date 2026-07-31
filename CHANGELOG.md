@@ -6,11 +6,101 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
-## Unreleased (on `main`, after ci-v2.0.3)
+## Unreleased (on `main`, after ci-v3.0.0)
 
-**Composite/workflow behavior WILL change at the next release** — this section is the
-heads-up consumers re-pin against.
+**No brick changed shape** — every entry here is a guard, a test, or a fix to the
+copy-paste surface in `examples/`. Nothing below requires a re-pin; the `examples/`
+changes require a re-copy.
 
+- **A production Ed25519 signing seed could survive on the runner**
+  (`examples/aml-filter/deploy.yml`). The example decoded the seed to `/tmp` and `shred`ed
+  it on the **last line of the same `run:` block** — after a bundle-verification step whose
+  documented job is to abort a bad deploy. So the cleanup was skipped in exactly the
+  failure the design expects, leaving a live signing key on the runner. The scrub is now
+  its own step with `if: always()`; the key is written under `umask 077` into
+  `$RUNNER_TEMP`, outside the checkout, so no `dist-dir` mistake can publish it to a CDN;
+  and the decode asserts the result is exactly 32 bytes. `tests/security-policy.sh`
+  asserts the step split and the `if: always()`. This portfolio has already had one
+  committed-seed incident and a full key rotation — anyone who copied this example should
+  re-copy it.
+- **Examples are now checked against the repositories they serve**
+  (`tests/example-fidelity.sh`, `tests/lib/example-references.rb`). `consumer-drift.sh`
+  proves a consumer diverged from what this repo publishes; nothing proved the mirror —
+  that an example still converges to the consumer it names. The checker resolves every
+  path, `package.json` script, node script, poe task, brick reference **and brick input
+  name** an example uses against that consumer's committed default branch, and reports
+  three statuses: OK / MISSING / **UNVERIFIABLE**. UNVERIFIABLE is never a pass — it exits
+  2, so "could not verify" can never be read as "verified". It found **8 broken references
+  that actionlint and zizmor both passed**, including `examples/edge-reco/ci.yml` naming
+  `frontend/.node-version`, a file edge-reco has never had and that `actions/setup-node`
+  hard-fails on: the example was red as drafted and the gate shipped it. Run it as
+  `tests/example-fidelity.sh` (reads `~/dev/oss` clones) or `--clone` (shallow-clones the
+  consumers, which is what CI does). It is wired into `tests/lint-examples.sh`, so CI runs
+  it on every push and PR.
+- **Both polarities of that checker are fixtures** (`tests/example-fidelity-cases.sh`, new)
+  — a checker never shown saying NO is not evidence. CI runs it as its own step.
+- **`examples/shared-libs-python/` is now `examples/edgeproc-core/`**, following the
+  GitHub rename of that consumer repository. The old path no longer exists; update any
+  link or copy script that names it.
+- **The Ruby the test suite runs on is pinned.** `.ruby-version` (3.4.10) is the single
+  source and `ruby/setup-ruby` reads it in both `ci.yml` and `consumer-drift.yml`. The
+  guards that decide whether a workflow is safe are Ruby scripts; running them on whatever
+  Ruby a runner image happens to ship is the exact class of drift this repo exists to
+  police.
+- **`security-audit.yml` refuses to report success having audited nothing.** Called with
+  `run-python-audit: false` **and** `run-pnpm-audit: false`, both jobs skipped and the
+  workflow went green — a security audit that audited nothing, indistinguishable from one
+  that passed. A new unconditional `configured` job fails that combination with a named
+  reason.
+- **A drift sweep that inspected zero repositories was a clean bill of health.**
+  `tests/consumer-drift.sh` now exits **2** when it inspected no repository at all, and
+  `consumer-drift.yml` now **fails** a `schedule` / `workflow_dispatch` run whose token is
+  missing instead of exiting 0 with a notice. A fork `pull_request` still warns and
+  continues — a fork legitimately cannot see secrets, and the case suite is the real gate
+  there.
+
+## ci-v3.0.0 — 2026-07-30
+
+Commit `2a575cd193e2e1fc093ccd26821020538e2547b7`.
+
+**The one thing to know:** `cloudflare-pages-deploy.yml` now refuses to deploy unless the
+run that triggered it was a **push** (`github.event.workflow_run.event == 'push'`). In
+`ci-v2.0.3` that gate pinned the repository, the branch and the conclusion — but not the
+event. A fork's default branch is also called `main`, so a branch-name-only gate can run
+fork-authored code inside a job that holds `CLOUDFLARE_API_TOKEN`. **If you deploy with
+this brick, re-pin.**
+
+**Major, because defaults changed under callers who omit the input**: `ts-publish.yml`
+`provenance` went `false` → **`true`**, and `sync-args` / `install-args` became
+locked-by-default. Read those two bullets before re-pinning.
+
+**Composite behavior changed in this release, so the [residual
+gap](./README.md#the-release-commit-bootstrap) applies.** At the tagged commit all 40
+first-party refs still name `ci-v2.0.3` — a commit cannot contain its own SHA — so a
+consumer pinning `ci-v3.0.0` gets this release's *reusable workflows* with `ci-v2.0.3`
+*composites* nested inside. Concretely: `python-gate.yml@ci-v3.0.0` carries the `--locked`
+default, but the composite that **enforces** it, and that understands the
+`--allow-unlocked` opt-out sentinel, arrives at the following release. Until then, do not
+pass `--allow-unlocked` through a reusable workflow — the older composite's argument
+allowlist rejects the unknown flag.
+
+- **`cloudflare-pages-deploy.yml`'s fork-deploy gate now requires
+  `github.event.workflow_run.event == 'push'` (behavior change, security fix).** The
+  shipped brick was **weaker than all three hand-rolled deploys that copied it**: it
+  pinned the repository, the branch and the conclusion, but not the event, so a fork
+  *pull_request* workflow_run reached a job holding `CLOUDFLARE_API_TOKEN` if the
+  repository pin were ever weakened. Callers should copy the `if:` block now documented
+  at the top of that file.
+- **Provenance on by default (behavior change).** `ts-publish.yml`'s `provenance` input
+  now defaults to **`true`**. It defaulted `false` as a private-repo hangover, and that
+  was a silent trap — `--provenance` needs a public repo, so the safe-looking default
+  meant a caller who simply *forgot* the input shipped an **unsigned** release and a
+  perfectly green run. All four publishing repos went public on 2026-07-25, so signing is
+  now the default and *not* signing is the thing you ask for: a **PRIVATE** caller must
+  pass `provenance: false` explicitly or its publish will fail. Existing callers all pass
+  `provenance: true` already and are unaffected. This also closes the documentation
+  discrepancy `ci-v2.0.3` shipped with, where the README described a `main` default that
+  no released tag carried.
 - **This repo stops exempting itself.** It published `secret-scan.yml` while running no
   gitleaks step of its own, and had **zero** scheduled runs while selling zizmor's online
   audits — audits against a *moving* advisory database, so a push-only gate proves the
@@ -22,17 +112,6 @@ heads-up consumers re-pin against.
   conditional: if this repo ever gains a `pyproject.toml`/`package.json` it must also run
   its own `security-audit.yml` (it has no dependency manifest today, so calling that
   workflow now would be a permanently, vacuously green job).
-- **README: `provenance` is `true` on `main` but still `false` in `ci-v2.0.3`.** A caller
-  that followed the docs and omitted the input shipped an unsigned release with a green
-  run. The input table and the signing section now name the discrepancy; cutting
-  `ci-v3.0.0` is the real fix and is an owner action.
-- **`cloudflare-pages-deploy.yml`'s fork-deploy gate now requires
-  `github.event.workflow_run.event == 'push'` (behavior change, security fix).** The
-  shipped brick was **weaker than all three hand-rolled deploys that copied it**: it
-  pinned the repository, the branch and the conclusion, but not the event, so a fork
-  *pull_request* workflow_run reached a job holding `CLOUDFLARE_API_TOKEN` if the
-  repository pin were ever weakened. Callers should copy the `if:` block now documented
-  at the top of that file.
 - **The fork-deploy guard is a parse and a proof, not two substrings**
   (`tests/lib/workflow-run-pin.rb`). The check it replaces asked whether
   `head_repository.full_name` and `github.repository` both appeared *somewhere* in *some*
@@ -67,15 +146,7 @@ heads-up consumers re-pin against.
   *"No findings to report. Good job!"*. A new guard refuses to let a suppression cover any
   trigger beyond `workflow_run`/`workflow_dispatch`, and requires the suppressing file's
   own fork-deploy gate to be provably sound.
-- **Provenance on by default (behavior change).** `ts-publish.yml`'s `provenance` input
-  now defaults to **`true`**. It defaulted `false` as a private-repo hangover, and that
-  was a silent trap — `--provenance` needs a public repo, so the safe-looking default
-  meant a caller who simply *forgot* the input shipped an **unsigned** release and a
-  perfectly green run. All four publishing repos went public on 2026-07-25, so signing is
-  now the default and *not* signing is the thing you ask for: a **PRIVATE** caller must
-  pass `provenance: false` explicitly or its publish will fail. Existing callers all pass
-  `provenance: true` already and are unaffected.
-- **A new guard makes that unfalsifiable** (`validate_publish_provenance`, backed by
+- **A new guard makes provenance unfalsifiable** (`validate_publish_provenance`, backed by
   `tests/lib/scan-publish-provenance.rb`). It parses every workflow and example and fails
   on: a `pypa/gh-action-pypi-publish` step without `attestations: true`; an inline
   `npm publish` without `--provenance`; a caller setting `provenance: false`; a reusable
@@ -85,7 +156,8 @@ heads-up consumers re-pin against.
   `attestations: true` in a **comment** above a step that never sets it, and is rejected.
   Red-proofed four ways — flipping the reusable default back to `false`, restoring
   `provenance: false` in the privacy-core example, deleting `attestations: true` from the
-  edge-proc example, and dropping `id-token: write` from the shared-libs-python example
+  edge-proc example, and dropping `id-token: write` from the edgeproc-core example (then
+  filed under `examples/shared-libs-python/`)
   each turn the suite red with a named reason.
 - **`examples/privacy-core/publish.yml` was carrying `provenance: false`** long after the
   repo went public, alongside a stale `@gainratio/privacy-core` package name. `examples/`
@@ -197,7 +269,8 @@ what a publish or deploy run *does*, and both are marked.
   release" — which is exactly why the above survived a green suite.
 - **Verify publishes against the registry** (behavior change). `python-publish.yml` and
   `ts-publish.yml` now poll PyPI / npm for the exact `name@version` they just shipped
-  (6 attempts, ~60s) and fail if it is not served. `shared-libs-python` had six green
+  (6 attempts, ~60s) and fail if it is not served. `edgeproc-core` (then named
+  `shared-libs-python`) had six green
   publish runs sitting on a package that does not resolve on PyPI; a green upload step
   and a published package were never the same fact.
 - **Pin the deploy trigger to this repository** (behavior change).
@@ -252,7 +325,8 @@ commit predates the transitive-pin fix above; do not pin it in a publishing work
   `pypa/gh-action-pypi-publish`) and `ts-publish.yml` (npm, via `npm publish`) — that
   release from a `v*` tag with **no stored write token**: the build and the `id-token`
   OIDC identity run in one job. `ts-publish` keeps `provenance` off by default (npm
-  provenance needs a public repo). Example callers added for shared-libs-python (PyPI)
+  provenance needs a public repo). Example callers added for shared-libs-python (PyPI —
+  the repo is now `edgeproc-core`)
   and privacy-core (npm).
 - Pin every third-party action to a full commit SHA with Dependabot version comments.
 - Restrict reusable workflows and consumer examples to explicit least-privilege token
