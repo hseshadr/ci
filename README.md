@@ -12,6 +12,22 @@ get the change.
 "composite action." So the shared logic lives here exactly once, and each repo keeps
 only the one thing that is genuinely its own — its build command.
 
+**Where that stands today.** Written is not the same as adopted, so the picture shows
+both:
+
+```mermaid
+flowchart TD
+    CI["hseshadr/ci — one copy of each CI job<br/>7 reusable workflows + 5 composite actions"]
+    CI -->|"called at a pinned commit: 2a575cd = ci-v3.0.0"| USED["In use today — 6 call-sites<br/>ts-publish.yml ×3 · setup-python-uv ×3"]
+    USED --> WHO["assay · edge-proc · edgeproc-core · privacy-core<br/>their release path runs this shared copy"]
+    CI -.->|"nobody calls these yet"| IDLE["The other 10 bricks — 0 call-sites<br/>almamesh · aml-filter · edge-reco<br/>still hand-roll their own CI"]
+```
+
+The dotted branch is the point of the [consumer-drift
+guard](#consumer-drift-what-is-still-hand-rolled): publishing a shared control does
+nothing until something calls it, so this repo measures the gap instead of assuming it
+away. The counts below are that measurement.
+
 **Why it exists.** "If we are manually changing things per project per repo, nothing is
 standardized." One place to bump `actions/checkout`, one place to fix the gitleaks
 pattern, one place that defines what "run the gate" means. No drift.
