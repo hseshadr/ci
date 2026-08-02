@@ -131,6 +131,54 @@ secrets. Ready-to-copy callers for all seven consumer repos live in
 full commit SHA, never a moving `@ci-vN` tag; see
 [Version pinning](#version-pinning-full-commit-shas) for why.
 
+### Adopting a reusable workflow renames its check run
+
+**Read this before converging a repo that has branch protection.** GitHub names a
+reusable workflow's check run `<caller job name> / <called job name>`, not after the
+caller job alone. So replacing an inline job called `gitleaks` with
+
+```yaml
+  gitleaks:
+    name: Secret scan
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<sha> # ci-v3.0.0
+```
+
+produces a check named **`Secret scan / gitleaks`**. The old `gitleaks` context stops
+reporting entirely. If it was a *required* status check, every PR then blocks on a context
+that can never arrive — the repo looks broken and the obvious fix looks like "revert the
+adoption". This repo's own dogfood job shows the effect: its check run is
+`Secret scan (own brick) / gitleaks`.
+
+Update branch protection in the same move:
+
+```bash
+gh api repos/hseshadr/<repo>/branches/main/protection/required_status_checks \
+  --jq '.checks'          # see the current contexts first
+```
+
+This is a real cost of adoption and it is worth naming plainly, because it is paid by the
+person converging and invisible to the person who published the brick. It is one reason a
+hand-rolled copy keeps winning: inlining never renames anything.
+
+### Our releases are `ci-vX.Y.Z`, and that can trip a consumer's own pin guard
+
+Third-party actions tag `vN`; this repo tags `ci-vN.N.N`, so the trailing comment on a
+first-party pin reads `# ci-v3.0.0`, not `# v3.0.0`. A consumer that lints its own pinned
+`uses:` comments with a `^v\d` regex will **reject a correct `hseshadr/ci` pin** — and the
+only way to satisfy that regex is to write a comment naming a tag that does not exist.
+
+This is not hypothetical: it is what turned [aml-filter#93](https://github.com/hseshadr/aml-filter/pull/93)
+red on its first run, on the repo's own supply-chain test. The fix belongs in the guard,
+and it should *tighten*, not loosen — key the expected scheme off the ref, so neither
+naming convention is accepted for the other:
+
+```ts
+const expected = target.startsWith("hseshadr/ci/") ? /^ci-v\d/ : /^v\d/;
+```
+
+If you maintain a consumer with a pin-comment guard, expect to make this edit as part of
+adopting anything from here.
+
 ### Before → after (a real consumer)
 
 edge-proc's hand-rolled `ci.yml` + `security-audit.yml` was **~89 lines** of the same
@@ -523,11 +571,57 @@ carried their own Cloudflare Pages deploy while a reusable one sat here, and one
 five copies drifted into a fork-PR deploy hole. The bug was in the copy, not in the shared
 workflow — and nothing was comparing the two.
 
-Today's count: **29 hand-rolled controls across 7 repositories** (almamesh 6, aml-filter 5,
+Today's count: **30 hand-rolled controls across 7 repositories** (almamesh 6, aml-filter 6,
 edge-reco 5, assay 4, edge-proc 3, edgeproc-core 3, privacy-core 3). They are listed
 individually in `tests/consumer-drift-allowlist.txt`, which is a **convergence backlog, not
 an exemption list**: every entry requires a written reason, deleting one is free, and *new*
 drift with no entry fails the build.
+
+#### It caught one, and the cause was partly this repo
+
+On 2026-08-02 the scheduled sweep went red:
+[`30 … 29 allowlisted; 1 new`](https://github.com/hseshadr/ci/actions/runs/30739082151).
+The 08-01 run had read `29 … 0 new`, so the window is a day.
+
+The new control was `aml-filter/ci.yml/secret-scan`. It arrived in
+[aml-filter#89](https://github.com/hseshadr/aml-filter/pull/89), a PR that closed a genuine
+hole — aml-filter's gitleaks scan ran only in its weekly `security-audit.yml` sweep and
+never on a pull request, so a secret could merge and sit in public history for up to seven
+days. It closed that hole by inlining `gitleaks/gitleaks-action`: **the exact control this
+repo publishes as `secret-scan.yml`, at the identical pinned action SHA.** A security fix
+shipped by hand-rolling the shared brick.
+
+The brick was a genuine drop-in — `secret-scan.yml` takes no required inputs, and
+`examples/aml-filter/security-audit.yml` already showed aml-filter calling it. So part of
+the cause is habit. But two parts were ours, and both are fixed above:
+
+1. **`examples/aml-filter/ci.yml` had no secret-scan job.** The worked example this repo
+   publishes for the exact file being edited offered nothing to copy.
+2. **Nothing warned that adopting renames the check run.** aml-filter's branch protection
+   requires a context named literally `gitleaks`; adopting makes it `Secret scan / gitleaks`
+   and blocks merges until protection is updated. That cost is invisible until you try it.
+   It now has [its own section](#adopting-a-reusable-workflow-renames-its-check-run).
+3. **Our `ci-vX.Y.Z` release scheme fails a consumer pin-comment guard expecting `^v\d`.**
+   Found the hard way: it reddened the converging PR on its first run, on aml-filter's own
+   supply-chain test. Also [documented](#our-releases-are-ci-vxyz-and-that-can-trip-a-consumers-own-pin-guard).
+
+Each one is small. Together they are three separate taxes on doing the right thing, and
+none of them is charged to the person who inlines the action instead.
+
+A shared brick that only fits repos already shaped like it loses to hand-rolling forever,
+so "the consumer should have known" is not an acceptable stopping point. The consumer is
+converging to `secret-scan.yml` rather than being granted an exemption; the allowlist entry
+is a pointer to that open PR and is marked for deletion when it lands.
+
+**On the Dagger question:** a 2026-07-31 decision not to adopt dagger.io set a disconfirming
+test — *attempt the convergence sweep, and if new hand-rolled controls reappear within 60
+days, the model is the problem, not the backlog.* This episode is **not** that test firing.
+Its precondition was never met: no drafted caller had been adopted, so nothing could
+"reappear" after converging, and one new control cannot tell "the model is wrong" apart
+from "nobody has run the sweep yet". The narrower true statement is that drift accrued while
+convergence had not started. One new control out of thirty, from a PR fixing a real security
+gap, is a single data point and does not re-open Dagger on its own — it is recorded so the
+next one lands on a record instead of a blank page.
 
 Two failure modes that used to read as success are now failures: a sweep that inspected
 **zero** repositories exits `2` rather than reporting a clean bill of health, and a
@@ -576,7 +670,7 @@ everything to resolve. When the repo is public this is automatic.
 This is the **target** mapping — what each repo should call once migrated — not current
 adoption. Today only 6 call-sites exist, all on the publish path
 (see [Status](#hseshadrci--one-home-for-the-portfolios-cicd)), and the gap between this
-table and reality is measured: **29 hand-rolled controls across these 7 repos**
+table and reality is measured: **30 hand-rolled controls across these 7 repos**
 (see [Consumer drift](#consumer-drift-what-is-still-hand-rolled)). Adopted cells are in
 **bold**; everything else is still the target.
 
@@ -664,9 +758,12 @@ An honest self-assessment against a publish-readiness checklist:
   broken references that actionlint and zizmor passed. See [Guards that run in
   CI](#guards-that-run-in-ci).
 - **The gap to full adoption is measured, not guessed** — ⚠️ **6** call-sites across 4
-  repos today, all on the publish path, against **29** hand-rolled controls still standing
-  across 7 repos. Every one of the 29 is itemized with a reason in
-  `tests/consumer-drift-allowlist.txt`, and new drift fails the build.
+  repos today, all on the publish path, against **30** hand-rolled controls still standing
+  across 7 repos. Every one of the 30 is itemized with a reason in
+  `tests/consumer-drift-allowlist.txt`, and new drift fails the build — which it did, on
+  2026-08-02, catching one it had never seen before
+  ([details](#it-caught-one-and-the-cause-was-partly-this-repo)). The gap is also **growing
+  slightly faster than it is closing**: 29 on 07-31, 30 on 08-02, zero converged in between.
 - **Live-validated end-to-end** — ✅ **for the publish path** (2026-07-22): privacy-core
   [run 29886074787](https://github.com/hseshadr/privacy-core/actions/runs/29886074787)
   (npm `v0.2.1` through cross-repo `ts-publish.yml`) and assay

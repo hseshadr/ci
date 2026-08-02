@@ -1,8 +1,16 @@
-# aml-filter — .github/workflows/ci.yml   (frontend-only; STAYS bespoke)
-# The single frontend job interleaves a model-weights cache (from a GitHub release),
-# a Playwright cache, and 3 e2e lanes — all stateful `uses:` steps a reusable
-# workflow can't own. It still re-uses every bit of setup/caching from hseshadr/ci;
-# only the `pnpm run gate` line is repo-specific.
+# aml-filter — .github/workflows/ci.yml
+#
+# Two jobs: a shared secret scan, and one irreducibly bespoke frontend job.
+#
+# The frontend job interleaves a model-weights cache (from a GitHub release), a
+# Playwright cache, and 3 e2e lanes — all stateful `uses:` steps a reusable
+# workflow can't own, so it STAYS bespoke. It still re-uses every bit of
+# setup/caching from hseshadr/ci; only the `pnpm run gate` line is repo-specific.
+#
+# The gitleaks job is NOT bespoke and this example used to omit it, which is how
+# aml-filter came to hand-roll one: on 2026-08-01 it added a PR-triggered secret
+# scan by inlining `gitleaks/gitleaks-action`, and the reader who went looking for
+# the converged shape of THIS file found no secret-scan job to copy. It is here now.
 name: CI
 on:
   push:
@@ -11,6 +19,22 @@ on:
 permissions:
   contents: read
 jobs:
+  # ADOPTING THIS RENAMES THE CHECK RUN. A caller job that `uses:` a reusable
+  # workflow reports as "<caller job name> / <called job name>" — here
+  # "Secret scan / gitleaks", not "gitleaks". If a required status check is named
+  # after the old inline job, update branch protection in the same move or merges
+  # will block on a context that can no longer report. See the README section
+  # "Adopting a reusable workflow renames its check run".
+  gitleaks:
+    name: Secret scan
+    # The reusable workflow lists a PR's commits over the API, which needs
+    # pull-requests: read. A caller job may raise a scope the read-only
+    # workflow-level default withholds.
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
