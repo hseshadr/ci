@@ -160,6 +160,25 @@ This is a real cost of adoption and it is worth naming plainly, because it is pa
 person converging and invisible to the person who published the brick. It is one reason a
 hand-rolled copy keeps winning: inlining never renames anything.
 
+### Our releases are `ci-vX.Y.Z`, and that can trip a consumer's own pin guard
+
+Third-party actions tag `vN`; this repo tags `ci-vN.N.N`, so the trailing comment on a
+first-party pin reads `# ci-v3.0.0`, not `# v3.0.0`. A consumer that lints its own pinned
+`uses:` comments with a `^v\d` regex will **reject a correct `hseshadr/ci` pin** — and the
+only way to satisfy that regex is to write a comment naming a tag that does not exist.
+
+This is not hypothetical: it is what turned [aml-filter#93](https://github.com/hseshadr/aml-filter/pull/93)
+red on its first run, on the repo's own supply-chain test. The fix belongs in the guard,
+and it should *tighten*, not loosen — key the expected scheme off the ref, so neither
+naming convention is accepted for the other:
+
+```ts
+const expected = target.startsWith("hseshadr/ci/") ? /^ci-v\d/ : /^v\d/;
+```
+
+If you maintain a consumer with a pin-comment guard, expect to make this edit as part of
+adopting anything from here.
+
 ### Before → after (a real consumer)
 
 edge-proc's hand-rolled `ci.yml` + `security-audit.yml` was **~89 lines** of the same
@@ -582,6 +601,12 @@ the cause is habit. But two parts were ours, and both are fixed above:
    requires a context named literally `gitleaks`; adopting makes it `Secret scan / gitleaks`
    and blocks merges until protection is updated. That cost is invisible until you try it.
    It now has [its own section](#adopting-a-reusable-workflow-renames-its-check-run).
+3. **Our `ci-vX.Y.Z` release scheme fails a consumer pin-comment guard expecting `^v\d`.**
+   Found the hard way: it reddened the converging PR on its first run, on aml-filter's own
+   supply-chain test. Also [documented](#our-releases-are-ci-vxyz-and-that-can-trip-a-consumers-own-pin-guard).
+
+Each one is small. Together they are three separate taxes on doing the right thing, and
+none of them is charged to the person who inlines the action instead.
 
 A shared brick that only fits repos already shaped like it loses to hand-rolling forever,
 so "the consumer should have known" is not an acceptable stopping point. The consumer is

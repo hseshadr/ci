@@ -25,9 +25,15 @@ changes require a re-copy.
   copy (it does now); and **nothing warned that adopting a reusable workflow renames its
   check run** to `<caller job> / <called job>`, which silently breaks a required status
   check named after the old inline job — a cost paid by the adopter and invisible to
-  whoever published the brick. It now has its own README section. The consumer is
-  converging rather than being exempted; the allowlist entry is a pointer to that open PR
-  and is marked for deletion when it lands.
+  whoever published the brick. It now has its own README section. A **third** cause turned
+  up while converging: this repo tags `ci-vX.Y.Z` while third-party actions tag `vN`, so a
+  consumer that lints its pinned-`uses:` comments with `^v\d` **rejects a correct
+  `hseshadr/ci` pin** — that is what reddened
+  [aml-filter#93](https://github.com/hseshadr/aml-filter/pull/93) on its first run, on
+  aml-filter's own supply-chain test. Also documented, with the tightening fix (key the
+  expected scheme off the ref; do not relax the regex). The consumer is converging rather
+  than being exempted; the allowlist entry is a pointer to that open PR and is marked for
+  deletion when it lands.
 - **An allowlist entry covers one control, not the file it lives in**
   (`tests/consumer-drift-cases.sh`). Already true, now pinned — the 08-02 finding depended
   on it. `aml-filter/ci.yml/frontend-gate` had been allowlisted since 07-26; had the key
