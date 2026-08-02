@@ -78,6 +78,20 @@ expect_output_contains() {
     report "$description: report never mentioned '$needle'"
 }
 
+# One report ROW must carry both needles. Column-width-independent on purpose:
+# asserting the padded string would make a cosmetic table change read as a
+# behaviour change, and would let "control X somewhere, verdict Y somewhere else"
+# pass as "control X has verdict Y".
+expect_row() {
+  local control="$1" verdict="$2" description="$3"
+  shift 3
+  local output
+  output="$("$@" 2>&1)"
+  awk -v c="$control" -v v="$verdict" \
+    'index($0, c) && index($0, v) { hit = 1 } END { exit !hit }' <<< "$output" ||
+    report "$description: no row shows '$control' with '$verdict'"
+}
+
 # --- fixtures ---------------------------------------------------------------
 
 write_fixture drifty/deploy.yml <<YAML
@@ -137,6 +151,27 @@ jobs:
     steps:
       - run: gitleaks detect --no-banner
       - run: pip-audit --strict
+YAML
+
+# AN ALLOWLIST ENTRY COVERS ONE CONTROL, NOT THE FILE IT LIVES IN.
+#
+# This is not hypothetical. On 2026-08-02 the sweep went red on
+# aml-filter/ci.yml/secret-scan — a gitleaks job added the day before — while
+# aml-filter/ci.yml/frontend-gate had been allowlisted since 2026-07-26. Had the
+# allowlist key been read at file granularity, the older entry would have
+# swallowed the new control silently and the detector would have reported a clean
+# run on the day it was most needed. The fixture below pins the granularity so a
+# refactor of allowlist_index cannot quietly widen it.
+write_fixture halfknown/ci.yml <<YAML
+name: CI
+on: {pull_request: null}
+permissions: {contents: read}
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip-audit --strict
+      - run: gitleaks detect --no-banner
 YAML
 
 # Every consumer routes pip-audit through poe. That is a dependency audit, not a
@@ -378,6 +413,11 @@ printf 'adopter/deploy.yml/pages-deploy|converged already; this entry outlived i
 reasonless_allowlist="$fixtures/reasonless-allowlist.txt"
 printf 'drifty/deploy.yml/pages-deploy|\n' > "$reasonless_allowlist"
 
+# Covers ONE of the two controls in halfknown/ci.yml. The other must still fail.
+partial_allowlist="$fixtures/partial-allowlist.txt"
+printf 'halfknown/ci.yml/dependency-audit|known, scheduled for convergence\n' \
+  > "$partial_allowlist"
+
 expect_exit 1 "new drift fails the run" \
   "$detector" --local "$fixtures" --consumers "drifty" --allowlist "$empty_allowlist"
 expect_exit 0 "allowlisted drift passes the run" \
@@ -410,6 +450,18 @@ expect_output_contains "inspected 0 of 1" "a sweep that inspected nothing says s
   "$detector" --local "$fixtures" --consumers "no-such-repo" --allowlist "$empty_allowlist"
 expect_exit 2 "an allowlist entry with no reason is a tool error" \
   "$detector" --local "$fixtures" --consumers "drifty" --allowlist "$reasonless_allowlist"
+
+# The 2026-08-02 regression, pinned in both polarities: an entry for one control
+# in a file must not suppress a DIFFERENT control in that same file, and must
+# still suppress its own.
+expect_exit 1 "an allowlisted control does not cover a second control in the same file" \
+  "$detector" --local "$fixtures" --consumers "halfknown" --allowlist "$partial_allowlist"
+expect_row "secret-scan" "DRIFT (NEW)" \
+  "the un-allowlisted control in a partly-allowlisted file is named as NEW" \
+  "$detector" --local "$fixtures" --consumers "halfknown" --allowlist "$partial_allowlist"
+expect_row "dependency-audit" "DRIFT (allowlisted)" \
+  "the allowlisted control in that same file is still suppressed" \
+  "$detector" --local "$fixtures" --consumers "halfknown" --allowlist "$partial_allowlist"
 
 # The checked-in allowlist has to survive the same parser, mandatory reasons and
 # all — a malformed one would otherwise only surface on the day it is consulted.

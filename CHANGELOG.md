@@ -12,6 +12,34 @@ included.
 copy-paste surface in `examples/`. Nothing below requires a re-pin; the `examples/`
 changes require a re-copy.
 
+- **The drift detector caught its first new control, and the cause was partly this repo.**
+  On 2026-08-02 the scheduled sweep went red: `30 … 29 allowlisted; 1 new`
+  ([run 30739082151](https://github.com/hseshadr/ci/actions/runs/30739082151)); the day
+  before it read `29 … 0 new`. The new one was `aml-filter/ci.yml/secret-scan`, from
+  [aml-filter#89](https://github.com/hseshadr/aml-filter/pull/89) — a PR closing a real hole
+  (gitleaks ran only in a weekly sweep, so a secret could merge and sit in public history
+  for up to seven days) that closed it by **inlining `gitleaks/gitleaks-action`, the exact
+  control `secret-scan.yml` publishes, at the identical pinned SHA**. Part habit, but two
+  causes were ours and are fixed here: **`examples/aml-filter/ci.yml` carried no
+  secret-scan job**, so the worked example for the very file being edited had nothing to
+  copy (it does now); and **nothing warned that adopting a reusable workflow renames its
+  check run** to `<caller job> / <called job>`, which silently breaks a required status
+  check named after the old inline job — a cost paid by the adopter and invisible to
+  whoever published the brick. It now has its own README section. The consumer is
+  converging rather than being exempted; the allowlist entry is a pointer to that open PR
+  and is marked for deletion when it lands.
+- **An allowlist entry covers one control, not the file it lives in**
+  (`tests/consumer-drift-cases.sh`). Already true, now pinned — the 08-02 finding depended
+  on it. `aml-filter/ci.yml/frontend-gate` had been allowlisted since 07-26; had the key
+  been read at file granularity, that older entry would have swallowed the new secret-scan
+  control and reported a clean run on the day it mattered most. Proven by mutation:
+  widening `allowlist_index` to match on `<repo>/<workflow>` makes the detector report
+  `2 allowlisted; 0 new` on a fixture holding one known and one brand-new control, and the
+  new cases go red.
+- **The allowlist header no longer claims "nothing here is new drift."** That sentence was
+  true for seven days. One entry now *is* new drift, the header says so, and it records the
+  30 → 29 → 30 reconciliation (07-26 included one classifier false positive, 07-31 deleted
+  it, 08-02 added one real control) so adjacent counts stop reading as contradictory.
 - **A production Ed25519 signing seed could survive on the runner**
   (`examples/aml-filter/deploy.yml`). The example decoded the seed to `/tmp` and `shred`ed
   it on the **last line of the same `run:` block** — after a bundle-verification step whose
