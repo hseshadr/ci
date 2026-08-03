@@ -32,7 +32,7 @@ jobs:
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_repository.full_name == github.repository) }}
-    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@33c5e5fa421210e6cc91ea30cad708bce29a2407 # ci-v3.1.0
+    uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
     with:
       project-name: edge-reco
       dist-dir: frontend/app/dist
