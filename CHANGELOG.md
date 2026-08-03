@@ -8,10 +8,29 @@ included.
 
 ## Unreleased (on `main`, after ci-v3.0.0)
 
-**No brick changed shape** — every entry here is a guard, a test, or a fix to the
-copy-paste surface in `examples/`. Nothing below requires a re-pin; the `examples/`
-changes require a re-copy.
+**No brick changed shape** — no input, output or permission moved, so no caller needs
+editing. One entry below changes brick *behaviour*: the publish-verification retry bound
+in `python-publish.yml` and `ts-publish.yml`. That one needs a re-pin to reach a consumer.
+Everything else is a guard, a test, or a fix to the copy-paste surface in `examples/`,
+which needs a re-copy.
 
+- **The publish-verification bound was too tight, and it failed a release that had
+  genuinely succeeded.** The check itself is right and stays: ask the registry whether the
+  version is served, never trust the uploader, and treat a timeout as a FAILURE. Its bound
+  was wrong — 6 attempts 10s apart (~60s) against measured propagation of ~120s
+  (PyPI `edge-proc` 0.3.0) and ~200s (npm `@edgeproc/errors` 0.1.0, the first publish of a
+  brand-new name). `edgeproc-core` 0.4.0 went live on PyPI and
+  [its publish run went red anyway](https://github.com/hseshadr/edgeproc-core/actions/runs/30842985605).
+  That false negative is not harmless: a red run on a live release teaches the reader to
+  wave off red publish runs, which is exactly how the six-green-while-404 defect returns.
+  New bound: 14 attempts with backoff (5, 10, 15, 30, then 60s) — 600s of sleep, 3x the
+  slowest case measured, while the common case still verifies in ~15s. The failure message
+  now separates "STILL PROPAGATING" from "THE RELEASE NEVER HAPPENED"; it previously listed
+  only the misconfiguration causes, which is misleading now that a timeout is more often
+  propagation. The guard keeps its teeth: run the step against a version PyPI/npm does not
+  serve and it still exits **1** after the full budget. The three `examples/*/publish.yml`
+  inline copies carry the same bound, so the surface consumers copy does not ship the
+  defect.
 - **The drift detector caught its first new control, and the cause was partly this repo.**
   On 2026-08-02 the scheduled sweep went red: `30 … 29 allowlisted; 1 new`
   ([run 30739082151](https://github.com/hseshadr/ci/actions/runs/30739082151)); the day

@@ -86,15 +86,35 @@ jobs:
           echo "Verifying ${name}==${version} is served by PyPI..."
 
           # Registries have propagation delay, so retry — but a timeout is a FAILURE,
-          # never a pass. Bounded: 6 attempts, 10s apart (~60s).
-          for attempt in 1 2 3 4 5 6; do
+          # never a pass.
+          #
+          # The old bound was 6 attempts 10s apart (~60s) and it was too tight: it
+          # failed publishes that had genuinely succeeded. A red run on a live release
+          # is not harmless — it teaches the reader to wave off red publish runs, which
+          # is exactly how the six-green-while-404 defect comes back. Measured
+          # 2026-08-03, time from a green upload until the registry served the version:
+          #   PyPI edgeproc-core 0.4.0     >60s   (failed this check while genuinely live)
+          #   PyPI edge-proc 0.3.0         ~120s
+          #   npm  @edgeproc/errors 0.1.0  ~200s  (first publish of a NEW package name)
+          #   npm  @edgeproc/avow 0.3.0    ~60s
+          # The first publish of a new name is the slowest case AND the case a real
+          # trusted-publisher misconfiguration is indistinguishable from, so the budget
+          # must clear propagation by a wide margin before it is allowed to accuse.
+          # Bound: 600s of sleep, 3x the slowest measured case. Backoff (5, 10, 15, 30,
+          # then 60s) so the common case still verifies in ~15s instead of paying it.
+          delays=(5 10 15 30 60 60 60 60 60 60 60 60 60) # 13 sleeps, exactly 600s
+          attempts=$((${#delays[@]} + 1))
+
+          for ((i = 0; i < attempts; i++)); do
             if curl -fsS --max-time 15 -o /dev/null "$url"; then
               echo "Verified: ${name}==${version} is live on PyPI."
               exit 0
             fi
-            echo "Attempt ${attempt}/6: not served yet; retrying in 10s..."
-            sleep 10
+            if ((i < ${#delays[@]})); then
+              echo "Attempt $((i + 1))/${attempts}: not served yet; retrying in ${delays[i]}s..."
+              sleep "${delays[i]}"
+            fi
           done
 
-          echo "::error::PUBLISH VERIFICATION FAILED — the upload step reported success, but PyPI does not serve ${name}==${version} (${url}) after ~60s. A green upload is not proof of a release. Most likely cause: an incomplete PyPI trusted-publisher bootstrap, or a job_workflow_ref/publisher mismatch. Check the project's Publishing settings, or the account-level pending publisher, on PyPI."
+          echo "::error::PUBLISH VERIFICATION FAILED — the upload step reported success, but PyPI does not serve ${name}==${version} (${url}) after ~10 minutes of retrying. A green upload is not proof of a release. Two very different causes land here, so establish which one before touching this run: (1) STILL PROPAGATING — open ${url} yourself; the slowest propagation measured for this portfolio was ~200s, so 10 minutes should be ample, but if it loads now then the release DID happen and this is a false alarm worth reporting. (2) THE RELEASE NEVER HAPPENED — an incomplete PyPI trusted-publisher bootstrap, or a job_workflow_ref/publisher mismatch; the OIDC exchange can look fine while no project is actually registered for this repo+workflow. Check the project's Publishing settings, or the account-level pending publisher, on PyPI. Do not re-run this job merely to make it green."
           exit 1
