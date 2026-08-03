@@ -141,7 +141,7 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@33c5e5fa421210e6cc91ea30cad708bce29a2407 # ci-v3.1.0
+        uses: hseshadr/ci/.github/actions/setup-pnpm@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -201,15 +201,34 @@ jobs:
           echo "Verifying ${name}@${version} is served by ${NPM_REGISTRY_URL}..."
 
           # Retry for propagation delay, but a timeout is a FAILURE, never a pass.
-          # Bounded: 6 attempts, 10s apart (~60s).
-          for attempt in 1 2 3 4 5 6; do
+          #
+          # The old bound was 6 attempts 10s apart (~60s) and it was too tight: it
+          # failed publishes that had genuinely succeeded. A red run on a live release
+          # is not harmless — it teaches the reader to wave off red publish runs, which
+          # is exactly how the six-green-while-404 defect comes back. Measured
+          # 2026-08-03, time from a green publish until the registry served the version:
+          #   PyPI edgeproc-core 0.4.0     >60s   (failed this check while genuinely live)
+          #   PyPI edge-proc 0.3.0         ~120s
+          #   npm  @edgeproc/errors 0.1.0  ~200s  (first publish of a NEW package name)
+          #   npm  @edgeproc/avow 0.3.0    ~60s
+          # The first publish of a new name is the slowest case AND the case a real
+          # trusted-publisher misconfiguration is indistinguishable from, so the budget
+          # must clear propagation by a wide margin before it is allowed to accuse.
+          # Bound: 600s of sleep, 3x the slowest measured case. Backoff (5, 10, 15, 30,
+          # then 60s) so the common case still verifies in ~15s instead of paying it.
+          delays=(5 10 15 30 60 60 60 60 60 60 60 60 60) # 13 sleeps, exactly 600s
+          attempts=$((${#delays[@]} + 1))
+
+          for ((i = 0; i < attempts; i++)); do
             if npm view "${name}@${version}" version --registry "$NPM_REGISTRY_URL" >/dev/null 2>&1; then
               echo "Verified: ${name}@${version} is live on ${NPM_REGISTRY_URL}."
               exit 0
             fi
-            echo "Attempt ${attempt}/6: not served yet; retrying in 10s..."
-            sleep 10
+            if ((i < ${#delays[@]})); then
+              echo "Attempt $((i + 1))/${attempts}: not served yet; retrying in ${delays[i]}s..."
+              sleep "${delays[i]}"
+            fi
           done
 
-          echo "::error::PUBLISH VERIFICATION FAILED — the publish step reported success, but ${NPM_REGISTRY_URL} does not serve ${name}@${version} after ~60s. A green publish is not proof of a release. Most likely cause: an incomplete npm trusted-publisher bootstrap — npm has no 'pending publisher', so the package must already exist before a trusted publisher can be attached, and the first publish of a brand-new name must be token/OTP-based. Confirm the trusted publisher is registered for this repo + workflow filename."
+          echo "::error::PUBLISH VERIFICATION FAILED — the publish step reported success, but ${NPM_REGISTRY_URL} does not serve ${name}@${version} after ~10 minutes of retrying. A green publish is not proof of a release. Two very different causes land here, so establish which one before touching this run: (1) STILL PROPAGATING — run 'npm view ${name}@${version} version' yourself; the slowest propagation measured for this portfolio was ~200s, on the first publish of a brand-new package name, so 10 minutes should be ample — but if it resolves now then the release DID happen and this is a false alarm worth reporting. (2) THE RELEASE NEVER HAPPENED — an incomplete npm trusted-publisher bootstrap; npm has no 'pending publisher', so the package must already exist before a trusted publisher can be attached, and the first publish of a brand-new name must be token/OTP-based. Confirm the trusted publisher is registered for this repo + workflow filename. Do not re-run this job merely to make it green."
           exit 1

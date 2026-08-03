@@ -12,8 +12,8 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@33c5e5fa421210e6cc91ea30cad708bce29a2407 # ci-v3.1.0
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
     with:
       sync-args: "--frozen --all-extras"
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@33c5e5fa421210e6cc91ea30cad708bce29a2407 # ci-v3.1.0
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
