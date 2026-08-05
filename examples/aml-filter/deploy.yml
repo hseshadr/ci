@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
@@ -105,7 +105,7 @@ jobs:
           fi
 
       # --- shared deploy half: identical wrangler step used by every Pages repo ---
-      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
+      - uses: hseshadr/ci/.github/actions/pages-deploy-dist@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
         with:
           project-name: aml-filter
           dist-dir: frontend/app/dist
