@@ -6,13 +6,21 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
-## Unreleased (on `main`, after ci-v3.0.0)
+## ci-v3.2.1 — 2026-08-04
 
-**No brick changed shape** — no input, output or permission moved, so no caller needs
-editing. One entry below changes brick *behaviour*: the publish-verification retry bound
-in `python-publish.yml` and `ts-publish.yml`. That one needs a re-pin to reach a consumer.
-Everything else is a guard, a test, or a fix to the copy-paste surface in `examples/`,
-which needs a re-copy.
+Commit `605e51cbc86f452b56edcf1c9660921da797cbfe`.
+
+**No brick changed shape** — no input, output or permission moved, so re-pinning from
+`ci-v3.2.0` is a drop-in. One entry, and it changes brick *behaviour*: the
+publish-verification retry bound in `python-publish.yml` and `ts-publish.yml`. **Re-pin
+only if you publish** through those workflows or copied one of the `examples/*/publish.yml`
+inline jobs; nothing else in this release reaches a consumer.
+
+**No composite behavior changed**, so the [release-commit
+bootstrap](./README.md#the-release-commit-bootstrap) gap does not apply to this release.
+All 41 first-party refs at this commit (9 in `.github/`, 32 in `examples/`) already name
+`ci-v3.2.0`, and every composite reached through them is byte-identical to the one in this
+tree.
 
 - **The publish-verification bound was too tight, and it failed a release that had
   genuinely succeeded.** The check itself is right and stays: ask the registry whether the
@@ -31,6 +39,42 @@ which needs a re-copy.
   serve and it still exits **1** after the full budget. The three `examples/*/publish.yml`
   inline copies carry the same bound, so the surface consumers copy does not ship the
   defect.
+
+## ci-v3.2.0 — 2026-08-03
+
+Commit `7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790`.
+
+**This is the release that made `ci-v3.1.0`'s `setup-uv` v9 upgrade actually run.** Its
+only change over `ci-v3.1.0` is the first-party re-pin: 41 refs across 23 files move from
+`ci-v3.0.0` to `ci-v3.1.0`, and nothing else — verify with
+
+```bash
+git diff ci-v3.1.0 ci-v3.2.0 | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+  | grep -vE 'hseshadr/ci/'
+```
+
+which prints nothing. This is the `ci-v3.x` tag to pin if you are not taking `ci-v3.2.1`.
+
+## ci-v3.1.0 — 2026-08-03
+
+Commit `33c5e5fa421210e6cc91ea30cad708bce29a2407`.
+
+**Do not pin this tag — take `ci-v3.2.0` or newer.** This is the
+[release-commit bootstrap](./README.md#the-release-commit-bootstrap) in its worst shape:
+the composite in this tree runs `setup-uv` v9.0.0, but the tree's own first-party refs
+still name `ci-v3.0.0`, so a consumer pinning `ci-v3.1.0` executes the **v8.3.2**
+composite — the exact thing this release set out to fix. `ci-v3.2.0` is the re-pin.
+
+Everything below first shipped here, in the six PRs (#9–#14) between `ci-v3.0.0` and this
+commit. Apart from the `setup-uv` bump, none of it changes a brick's shape: each entry is
+a guard, a test, or a fix to the copy-paste surface in `examples/`, which needs a re-copy
+rather than a re-pin.
+
+- **`setup-python-uv` runs `astral-sh/setup-uv` v9.0.0** (behavior change). `ci-v3.0.0`'s
+  tree carried v8.3.2, so every consumer calling `python-gate`, `python-publish` or
+  `security-audit` executed v8.3.2 on its gate and publish path while its own `ci.yml`
+  ran v9.0.0 — a split nobody could see from either side. Reaches consumers at
+  `ci-v3.2.0`, per the note above.
 - **The drift detector caught its first new control, and the cause was partly this repo.**
   On 2026-08-02 the scheduled sweep went red: `30 … 29 allowlisted; 1 new`
   ([run 30739082151](https://github.com/hseshadr/ci/actions/runs/30739082151)); the day

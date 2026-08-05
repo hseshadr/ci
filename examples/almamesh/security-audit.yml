@@ -12,7 +12,7 @@ permissions:
   contents: read
 jobs:
   audit:
-    uses: hseshadr/ci/.github/workflows/security-audit.yml@7226072bd02e7aecc5b065b3eaf0bfbf4b3e1790 # ci-v3.2.0
+    uses: hseshadr/ci/.github/workflows/security-audit.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
     with:
       run-python-audit: true
       python-working-directory: backend
