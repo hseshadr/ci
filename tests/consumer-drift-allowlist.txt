@@ -25,12 +25,17 @@
 # is worse than no allowlist, because it is what people read before deciding not
 # to converge. Every reason below has been checked against the live repo.
 #
-# 30 again on 2026-08-02, and this time the extra one IS new drift:
+# 30 again on 2026-08-02, and this time the extra one WAS new drift:
 # aml-filter/ci.yml/secret-scan. Until then this header said "nothing here is new
 # drift", which was true for exactly seven days and is the kind of sentence that
 # quietly stops being true. It is not claimed any more — read each entry instead.
+#
+# Back to 29 on 2026-08-06: aml-filter#93 merged on 08-02, aml-filter/ci.yml now
+# calls secret-scan.yml (run 31051313153, "Secret scan / gitleaks" SUCCESS on
+# main), and its entry is deleted. That is the first entry ever deleted by an
+# actual convergence rather than by a bug fix.
 # The count went 30 (07-26, one of them bogus) -> 29 (07-31, bogus one deleted)
-# -> 30 (08-02, one genuinely new). Only the last step is real drift.
+# -> 30 (08-02, one genuinely new) -> 29 (08-06, that one converged).
 #
 # Still 30 entries on 2026-08-15: the converged edge-proc/ci.yml/secret-scan row
 # was removed, and edge-proc/publish.yml/secret-scan now records a shared control
@@ -53,19 +58,12 @@ edge-reco/deploy.yml/pages-deploy|Converged caller already drafted at examples/e
 almamesh/deploy.yml/pages-deploy|Bespoke: builds the Pyodide runtime + models and re-verifies deployed source identity after upload. No examples/almamesh/deploy.yml exists yet — converge after aml-filter and edge-reco land.
 aml-filter/publish-watchlist.yml/pages-deploy|Not a site deploy: signs a watchlist bundle with a decoded key, then pushes it to the same Pages project. Needs a signing-aware pre-deploy hook before it can call the reusable workflow.
 
-# --- secret-scan (8) ---------------------------------------------------------
+# --- secret-scan (7) ---------------------------------------------------------
 # gitleaks runs as a step inside an existing job rather than as a job calling
 # secret-scan.yml. Converging means splitting a job out — mechanical, but it
 # touches every consumer, so it is batched deliberately rather than forgotten.
 almamesh/test.yml/secret-scan|Uses gitleaks/gitleaks-action directly instead of calling secret-scan.yml.
 aml-filter/security-audit.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/aml-filter/security-audit.yml already shows the converged caller.
-# THE ONLY ENTRY HERE THAT IS NOT FROM THE ORIGINAL 2026-07-26 SWEEP, and the one
-# most likely to be read as this file doing the thing it says it never does.
-# Added 2026-08-02 as a POINTER TO AN OPEN PR, not as an exemption: the fix is
-# already written and cannot be merged from the same change that records it.
-# Delete this line when that PR lands — the detector reports a stale entry as a
-# warning, never a failure, so deleting it early costs nothing.
-aml-filter/ci.yml/secret-scan|NEW on 2026-08-02, and being converged, not exempted — see aml-filter#93. Origin: aml-filter#89 (2026-08-01) closed a real hole (gitleaks ran only in the weekly security-audit.yml sweep, never on a PR, so a secret could merge and sit in public history for up to seven days) and closed it by inlining gitleaks/gitleaks-action at the same pinned SHA secret-scan.yml already uses. Three causes on OUR side, all addressed: examples/aml-filter/ci.yml carried no secret-scan job, so the worked example for the exact file being edited had nothing to copy; nothing warned that adopting renames the check run to "Secret scan / gitleaks", which breaks a required status check named "gitleaks"; and our ci-vX.Y.Z release scheme fails a consumer pin-comment guard that expects ^v\d, which is what actually reddened aml-filter#93 on its first run. DELETE THIS ENTRY when aml-filter#93 merges.
 assay/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; assay has no converged examples/assay/ci.yml yet.
 edge-proc/publish.yml/secret-scan|Tag-release preflight runs the canonical gitleaks CLI over --all because gitleaks-action derives its range from the tag-push event and may inspect zero commits; keep until a shared control can prove full-history scanning on tag pushes.
 edge-reco/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-reco/ci.yml already shows the converged caller.
