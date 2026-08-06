@@ -24,14 +24,35 @@ jobs:
   # portfolio and this repo — the one that publishes it — was the only repo not running
   # it. A local `./` ref is used deliberately: it always names THIS commit, so the
   # workflow is proven against the version being changed rather than a released SHA.
+  #
+  # TWO callers, because one job cannot answer both questions. gitleaks-action
+  # derives its scan range from the EVENT: on push/pull_request it scans only the
+  # commits that event introduced; on schedule/workflow_dispatch it scans every
+  # commit. Measured here — run 31051347230 (push to main) scanned 0 commits and
+  # still reported success; run 30793713570 (schedule) scanned 41.
   secret-scan:
-    name: Secret scan (own brick)
+    name: Secret scan (own brick) # required status check — do not rename
+    # Skipped on the sweep events so the full-history job below is not duplicated.
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     # The reusable workflow needs pull-requests: read to list a PR's commits via the API;
     # a caller job may raise a scope the read-only top level does not grant.
     permissions:
       contents: read
       pull-requests: read
     uses: ./.github/workflows/secret-scan.yml
+
+  # The half that actually reads history. `full-history: true` is not a switch that
+  # widens the scan — nothing can widen it from inside a reusable workflow — it is an
+  # assertion: if this job ever runs on an event that scans a partial range, it fails
+  # instead of reporting a partial scan as clean.
+  secret-scan-sweep:
+    name: Full-history secret sweep (own brick)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/secret-scan.yml
+    with:
+      full-history: true
 
   security-policy:
     name: Security policy

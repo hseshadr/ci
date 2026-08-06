@@ -11,3 +11,12 @@ jobs:
     uses: hseshadr/ci/.github/workflows/security-audit.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
     with:
       run-python-audit: true
+  # THIS is where history gets swept. The same workflow called from ci.yml scans
+  # only the commits a push/PR introduced; called here, on a schedule, gitleaks
+  # gets no --log-opts and reads every commit. `full-history: true` makes that
+  # expectation machine-checked — the job fails if the event cannot deliver it.
+  gitleaks:
+    name: Secret scan
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    with:
+      full-history: true

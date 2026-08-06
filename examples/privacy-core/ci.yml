@@ -17,5 +17,14 @@ jobs:
     with:
       install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
       install-playwright: true
+  # ADOPTING THIS RENAMES THE CHECK RUN. A caller job that `uses:` a reusable
+  # workflow reports as "<caller job name> / <called job name>" — with the name
+  # below that is "Secret scan / gitleaks", not "gitleaks". If a required status
+  # check is named after an old inline job, update branch protection in the same
+  # move or merges block on a context that will never report again.
+  #
+  # This scan sees ONLY the commits this push/PR introduced. The full-history
+  # sweep is the scheduled caller in security-audit.yml, not this one.
   gitleaks:
+    name: Secret scan
     uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
