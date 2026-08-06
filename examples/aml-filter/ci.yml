@@ -25,6 +25,10 @@ jobs:
   # after the old inline job, update branch protection in the same move or merges
   # will block on a context that can no longer report. See the README section
   # "Adopting a reusable workflow renames its check run".
+  #
+  # This scan sees ONLY the commits this push/PR introduced — gitleaks-action
+  # derives its range from the event. The full-history sweep is the scheduled
+  # caller in security-audit.yml, not this one.
   gitleaks:
     name: Secret scan
     # The reusable workflow lists a PR's commits over the API, which needs
