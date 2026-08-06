@@ -6,6 +6,63 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
+## Unreleased
+
+**A brick changed shape**: `secret-scan.yml` gains one optional input, `full-history`
+(boolean, default `false`). Re-pinning without setting it is a drop-in — the default is
+the existing behaviour, so no current caller changes verdict.
+
+- **The secret scan never read history, and said it did.** `secret-scan.yml` opened with
+  "gitleaks over the FULL git history" and "a credential committed five commits ago is
+  exactly as leaked as one committed at HEAD". Neither described what it ran.
+  `gitleaks-action` derives its scan range from the **event**, not from `fetch-depth`
+  (`gitleaks-action@e0c47f4`, `src/gitleaks.js:103-115`, `src/index.js:176`): on `push`
+  and `pull_request` it appends `--log-opts=--no-merges --first-parent BASE^..HEAD`, and
+  only on `schedule`/`workflow_dispatch` does it omit `--log-opts` and read every commit.
+  `fetch-depth: 0` makes `BASE^` resolvable; it does not widen the scan. Measured on this
+  repository through this very workflow: run
+  [31051347230](https://github.com/hseshadr/ci/actions/runs/31051347230) (push to `main`)
+  scanned **0 commits** and reported success; run
+  [30978634362](https://github.com/hseshadr/ci/actions/runs/30978634362) (pull_request)
+  scanned **1**; run
+  [30793713570](https://github.com/hseshadr/ci/actions/runs/30793713570) (schedule)
+  scanned **41**. The workflow is `workflow_call`-only and every caller in `examples/` but
+  one ran on push/PR, so no consumer's pre-existing history had ever been scanned by CI.
+- **The caller owns the schedule.** A `workflow_call` workflow cannot carry its own
+  `schedule:`, so the fix is not inside the brick. Every consumer already has
+  `security-audit.yml` on a weekly cron; each `examples/*/security-audit.yml` now calls
+  `secret-scan.yml` from it with `full-history: true`.
+- **`full-history` asserts, it does not widen.** Nothing can widen the range from inside a
+  reusable workflow. The input makes the expectation machine-checked: on any event that
+  scans a partial range the job fails instead of reporting a clean partial scan as clean.
+  Every run also now prints what it actually covered, because "No leaks detected" over 0
+  commits and over 41 commits are the same three words.
+- **Every secret-scan caller job is named.** An unnamed one reports as `gitleaks /
+  gitleaks` instead of the documented `Secret scan / gitleaks`, silently orphaning an
+  adopter's required status check. Five of the six callers shipped in `examples/` omitted
+  the `name:`, as did the README's canonical copy-paste snippet.
+- **Two guards, both shown failing.** `validate_secret_scan_history_sweep` refuses an
+  `examples/` tree where a repo calls `secret-scan.yml` but never from a scheduled
+  workflow, and refuses an unnamed caller job; it carries a vacuity floor.
+  `validate_secret_scan_coverage_cases` executes the workflow's real coverage script under
+  both event families instead of grepping for its error string.
+- **README: 16 false claims fixed or deleted.** The file had never been updated past
+  `ci-v3.0.0` while three releases and one consumer adoption landed. Corrected: the current
+  release and every `2a575cd` pin (now `605e51c` / `ci-v3.2.1`), the adoption count (7
+  call-sites across 5 repos, not 6 across 4), the drift count (29, not three different
+  numbers), the third-party pin table (exact versions — a `# v6` comment on a SHA is the
+  defect commit `ae644d7` fixed), the publish-verification bound (14 attempts / 600s, not
+  6 / 60s), the "these repos are private" setup section (all eight are public), and the
+  repository-settings gap (branch protection and secret scanning are both on). Deleted:
+  the `--allow-unlocked` "live gap" callout, closed at `ci-v3.2.1`, and two completed
+  owner actions. The one genuinely open owner action is now stated: `ci-v3` still points
+  at `72521e7`, 21 commits behind `ci-v3.2.1`.
+- **`aml-filter/ci.yml/secret-scan` deleted from the drift allowlist.** aml-filter#93
+  merged on 2026-08-02 and the consumer now calls the brick
+  ([run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
+  `Secret scan / gitleaks` SUCCESS on `main`). First entry ever removed by an actual
+  convergence rather than by a bug fix. 30 -> 29.
+
 ## ci-v3.2.1 — 2026-08-04
 
 Commit `605e51cbc86f452b56edcf1c9660921da797cbfe`.

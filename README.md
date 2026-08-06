@@ -18,9 +18,9 @@ both:
 ```mermaid
 flowchart TD
     CI["hseshadr/ci — one copy of each CI job<br/>7 reusable workflows + 5 composite actions"]
-    CI -->|"called at a pinned commit: 2a575cd = ci-v3.0.0"| USED["In use today — 6 call-sites<br/>ts-publish.yml ×3 · setup-python-uv ×3"]
-    USED --> WHO["assay · edge-proc · edgeproc-core · privacy-core<br/>their release path runs this shared copy"]
-    CI -.->|"nobody calls these yet"| IDLE["The other 10 bricks — 0 call-sites<br/>almamesh · aml-filter · edge-reco<br/>still hand-roll their own CI"]
+    CI -->|"called at a pinned commit: 605e51c = ci-v3.2.1"| USED["In use today — 7 call-sites<br/>ts-publish.yml ×3 · setup-python-uv ×3 · secret-scan.yml ×1"]
+    USED --> WHO["assay · edge-proc · edgeproc-core · privacy-core · aml-filter<br/>their release path (and aml-filter's CI) runs this shared copy"]
+    CI -.->|"nobody calls these yet"| IDLE["The other 9 bricks — 0 call-sites<br/>almamesh · edge-reco<br/>still hand-roll their own CI"]
 ```
 
 The dotted branch is the point of the [consumer-drift
@@ -32,8 +32,8 @@ away. The counts below are that measurement.
 standardized." One place to bump `actions/checkout`, one place to fix the gitleaks
 pattern, one place that defines what "run the gate" means. No drift.
 
-**Status.** Current release: **`ci-v3.0.0`** (commit
-`2a575cd193e2e1fc093ccd26821020538e2547b7`, 2026-07-30). Templates written and statically
+**Status.** Current release: **`ci-v3.2.1`** (commit
+`605e51cbc86f452b56edcf1c9660921da797cbfe`, 2026-08-04). Templates written and statically
 validated — all 32 YAML files parse, and `actionlint` plus `zizmor` run in CI over the
 workflows *and* over `examples/` (the examples need staging into a `.github/workflows/`
 layout first, which `tests/lint-examples.sh` does; a plain repo-root scan reaches none of
@@ -41,22 +41,23 @@ them). Both are clean. Every example is additionally resolved against the reposi
 written for — see [Guards that run in CI](#guards-that-run-in-ci). The cross-repo [access
 flip](#required-setup-read-this-first) is done, so callers resolve.
 
-**Adopted in code by four repos — six call-sites, all of them on the publish path.**
-Counted by grepping every consumer's `.github/workflows/` on 2026-07-31:
+**Adopted in code by five repos — seven call-sites, six of them on the publish path.**
+Counted by grepping every consumer's `.github/workflows/` on 2026-08-06:
 
 | Brick | Call-sites | Where |
 |---|---|---|
 | `setup-python-uv` (composite) | 3 | assay, edge-proc, edgeproc-core |
 | `ts-publish.yml` (reusable workflow) | 3 | assay (×2), privacy-core |
-| the other 4 composites and 6 reusable workflows | **0** | nowhere |
+| `secret-scan.yml` (reusable workflow) | 1 | aml-filter (`ci.yml` — the first non-publish adoption) |
+| the other 4 composites and 5 reusable workflows | **0** | nowhere |
 
 `privacy-core` calls `ts-publish.yml` cross-repo; `assay` calls `ts-publish.yml` cross-repo
 **and** carries an inline PyPI job that composes this repo's `setup-python-uv` composite;
 `edge-proc` and `edgeproc-core` carry the same inline PyPI job (cross-repo PyPI is
-structurally impossible — see the warning below). All six call-sites pin the `ci-v3.0.0`
-commit SHA `2a575cd…`; five of the six still carry a stale `# ci-v2.0.3` label comment
-beside it, which is a Dependabot-readability nit, not a wrong pin. `almamesh`, `aml-filter`
-and `edge-reco` have zero call-sites of any kind.
+structurally impossible — see the warning below). All seven call-sites pin the `ci-v3.2.1`
+commit SHA `605e51c…`, each with a matching `# ci-v3.2.1` comment — verified against every
+consumer's default branch on 2026-08-06. `almamesh` and `edge-reco` have zero call-sites of
+any kind.
 
 **The publish path is LIVE-VALIDATED end-to-end — two consumer releases have run
 through it green (2026-07-22):**
@@ -71,10 +72,15 @@ through it green (2026-07-22):**
   `setup-python-uv` composite at the pinned SHA) and `publish-npm` through cross-repo
   `ts-publish.yml`.
 
-Still unproven: the gate, secret-scan, security-audit, frontend, and deploy templates
+`secret-scan.yml` is live-validated too, and it is the first non-publish brick to get
+there: aml-filter
+[run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153) on
+`main`, job `Secret scan / gitleaks` SUCCESS, at the `ci-v3.2.1` SHA.
+
+Still unproven: the gate, security-audit, frontend, and deploy templates
 have **no consumer runs** — those repos still run their own inline `ci.yml` and
 `security-audit.yml`. A daily sweep counts exactly how much of that is left: **29
-hand-rolled controls across 7 consumer repositories** as of 2026-07-31 (see
+hand-rolled controls across 7 consumer repositories** as of 2026-08-06 (see
 [Consumer drift](#consumer-drift-what-is-still-hand-rolled)). And `edgeproc-core`'s six
 older green publish runs (when it was still named `shared-libs-python`) predate the
 migration *and* its PyPI trusted-publisher bootstrap, which is why the package never
@@ -117,19 +123,80 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
     with: { sync-args: "--frozen --all-extras" }
   gitleaks:
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
+    name: Secret scan
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
 ```
 
 That is the *whole file*, and it is copy-pasteable as written: the SHA above **is**
-`ci-v3.0.0`, the current release. `gate` runs the repo's `poe gate` (lint, format-check,
-types, complexity, tests + coverage floor); `gitleaks` scans the full git history for
-secrets. Ready-to-copy callers for all seven consumer repos live in
-[`examples/`](./examples), carrying the same SHA. Every `hseshadr/ci/...` ref must be a
+`ci-v3.2.1`, the current release. `gate` runs the repo's `poe gate` (lint, format-check,
+types, complexity, tests + coverage floor); `gitleaks` scans **the commits this push or
+pull request introduced** — not the repository's history. Sweeping history needs a second
+caller on a `schedule`; see [What the secret scan actually
+covers](#what-the-secret-scan-actually-covers). The `name: Secret scan` is not decoration:
+without it the check reports as `gitleaks / gitleaks`, which is the wrong context for
+branch protection — see the next section. Ready-to-copy callers for all seven consumer
+repos live in [`examples/`](./examples), carrying the same SHA. Every `hseshadr/ci/...` ref must be a
 full commit SHA, never a moving `@ci-vN` tag; see
 [Version pinning](#version-pinning-full-commit-shas) for why.
+
+### What the secret scan actually covers
+
+**A green secret scan is not evidence unless you know how many commits it read.**
+
+`gitleaks-action` derives its scan range from the **event**, not from `fetch-depth`
+(`gitleaks-action@e0c47f4`, `src/gitleaks.js:103-115` and `src/index.js:176`):
+
+| Event | What the action passes to gitleaks | What gets scanned |
+|---|---|---|
+| `push`, `pull_request` | `--log-opts=--no-merges --first-parent BASE^..HEAD` | **only the commits that event introduced** |
+| `schedule`, `workflow_dispatch` | nothing | **every commit in the repository** |
+
+`fetch-depth: 0` is still mandatory — it makes `BASE^` resolvable and is what lets the
+scheduled sweep reach every commit — but on its own it does **not** widen the range.
+
+Measured on this repository, through `secret-scan.yml` itself:
+
+| Event | Run | Commits scanned | Verdict |
+|---|---|---|---|
+| `schedule` | [30793713570](https://github.com/hseshadr/ci/actions/runs/30793713570) | **41** | No leaks detected |
+| `pull_request` | [30978634362](https://github.com/hseshadr/ci/actions/runs/30978634362) | **1** | No leaks detected |
+| `push` to `main` | [31051347230](https://github.com/hseshadr/ci/actions/runs/31051347230) | **0** | No leaks detected |
+
+A push whose base is already an ancestor of head scans **zero commits** and still reports
+success. Until 2026-08-06 this file claimed the opposite — "gitleaks over the FULL git
+history", "a credential committed five commits ago is exactly as leaked as one committed
+at HEAD" — and every consumer's only caller was on `push`/`pull_request`. So no repo's
+pre-existing history had ever been scanned by CI.
+
+**The caller owns the schedule.** A `workflow_call` workflow cannot carry its own
+`schedule:`, so the fix is not inside `secret-scan.yml`. Every consumer already has a
+`security-audit.yml` on a weekly cron; add a second caller job there:
+
+```yaml
+# security-audit.yml  —  on: schedule
+jobs:
+  gitleaks:
+    name: Secret scan
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    with:
+      full-history: true
+```
+
+`full-history: true` does **not** widen the scan — nothing can, from inside a reusable
+workflow. It makes the expectation *machine-checked*: on any event that scans a partial
+range the job fails loudly instead of reporting a clean partial scan as clean. It defaults
+to `false` so adopting this release cannot redden an existing push/PR caller.
+
+Every run now also prints what it covered ("gitleaks swept FULL HISTORY: all N commits" or
+"gitleaks scanned ONLY the push event's commit range, out of N commits in history"),
+because "No leaks detected" over 0 commits and over 41 commits are the same three words.
+
+`tests/security-policy.sh` refuses an `examples/` tree where a repo calls
+`secret-scan.yml` but never from a scheduled workflow, and executes the coverage step
+under both event families rather than grepping for its error string.
 
 ### Adopting a reusable workflow renames its check run
 
@@ -140,7 +207,7 @@ caller job alone. So replacing an inline job called `gitleaks` with
 ```yaml
   gitleaks:
     name: Secret scan
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<sha> # ci-v3.0.0
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<sha> # ci-v3.2.1
 ```
 
 produces a check named **`Secret scan / gitleaks`**. The old `gitleaks` context stops
@@ -160,10 +227,24 @@ This is a real cost of adoption and it is worth naming plainly, because it is pa
 person converging and invisible to the person who published the brick. It is one reason a
 hand-rolled copy keeps winning: inlining never renames anything.
 
+**It applies to every caller job, not just the secret scan.** The quickstart's `gate:` job
+is unnamed, so it reports as `gate / gate`. Name it after whatever context your branch
+protection already requires.
+
+| Brick | Check context an adopter gets | Observed in a real run? |
+|---|---|---|
+| `secret-scan.yml` called by `gitleaks:` with `name: Secret scan` | `Secret scan / gitleaks` | ✅ aml-filter [run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153) |
+| `secret-scan.yml` called by `gitleaks:` with **no** `name:` | `gitleaks / gitleaks` | ✅ this is the mismatch that reached five repos |
+| `secret-scan.yml` called by `secret-scan:` with `name: Secret scan (own brick)` | `Secret scan (own brick) / gitleaks` | ✅ this repo's own CI, and a required context on `main` |
+| `python-gate.yml` called by an unnamed `gate:` job | `gate / gate` | ⚠️ **unverified** — no consumer calls `python-gate.yml` yet, so this string is derived from the rule above and has never been emitted by a run |
+
+The last row is deliberately marked rather than stated. Documenting an unobserved context
+name as fact is precisely how the `gitleaks` mismatch got copied into five repos.
+
 ### Our releases are `ci-vX.Y.Z`, and that can trip a consumer's own pin guard
 
 Third-party actions tag `vN`; this repo tags `ci-vN.N.N`, so the trailing comment on a
-first-party pin reads `# ci-v3.0.0`, not `# v3.0.0`. A consumer that lints its own pinned
+first-party pin reads `# ci-v3.2.1`, not `# v3.2.1`. A consumer that lints its own pinned
 `uses:` comments with a `^v\d` regex will **reject a correct `hseshadr/ci` pin** — and the
 only way to satisfy that regex is to write a comment naming a tag that does not exist.
 
@@ -227,7 +308,7 @@ it is broken.
 |---|---|---|
 | `python-gate.yml` (workflow) | your Python repo runs `uv run poe gate` | — |
 | `frontend-gate.yml` (workflow) | your JS repo runs `pnpm gate`, optionally with Playwright | — |
-| `secret-scan.yml` (workflow) | any repo — gitleaks over the full git history | — |
+| `secret-scan.yml` (workflow) | any repo — gitleaks over the calling event's commits; add a scheduled caller with `full-history: true` to sweep history | aml-filter |
 | `security-audit.yml` (workflow) | you want `pip-audit` and/or `pnpm audit` (at least one must be on) | — |
 | `cloudflare-pages-deploy.yml` (workflow) | you deploy a built site to Cloudflare Pages | — |
 | `ts-publish.yml` (workflow) | you release an npm package from a `v*` tag, token-free via OIDC | assay (×2), privacy-core |
@@ -248,7 +329,7 @@ it is broken.
     ci.yml                        #   validates this repo's CI security policy
     python-gate.yml               #   checkout → setup → uv run poe gate → (opt) codecov
     frontend-gate.yml             #   checkout → pnpm setup → (opt) Playwright → pnpm gate
-    secret-scan.yml               #   gitleaks over full history
+    secret-scan.yml               #   gitleaks over the calling event's commit range
     security-audit.yml            #   pip-audit and/or pnpm audit (each bool-gated)
     cloudflare-pages-deploy.yml   #   preflight → build → wrangler pages deploy
     python-publish.yml            #   gate → uv build → PyPI via OIDC → verify on PyPI (SAME-REPO only)
@@ -302,20 +383,11 @@ composite (details below).
 |---|---|---|---|
 | `python-gate.yml` | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked` (must carry `--frozen`/`--locked`; opt out only via `--allow-unlocked`), `gate-task` `gate`, `upload-coverage` `false`, `coverage-file` `coverage.xml` | `CODECOV_TOKEN` (optional) | checkout → **setup-python-uv** → `uv run poe <gate-task>` → optional Codecov upload |
 | `frontend-gate.yml` | `working-directory` `.`, `package-json-file`, `node-version` `24` / `node-version-file`, `cache-dependency-path` `pnpm-lock.yaml`, `install-args` `--frozen-lockfile`, `gate-command` `pnpm gate`, `install-playwright` `false`, `playwright-browsers` `chromium` | — | checkout → **setup-pnpm** → optional **setup-playwright** → `gate-command` |
-| `secret-scan.yml` | `runs-on` | uses `GITHUB_TOKEN` | checkout `fetch-depth:0` → `gitleaks-action` over full history |
+| `secret-scan.yml` | `runs-on`, `full-history` `false` | uses `GITHUB_TOKEN` | checkout `fetch-depth:0` → `gitleaks-action` over the calling event's commit range (whole history only on `schedule`/`workflow_dispatch`) → report what was covered |
 | `security-audit.yml` | `run-python-audit` `false`, `run-pnpm-audit` `false`, `python-working-directory` `.`, allowlisted `pip-audit-export-args`, `frontend-working-directory` `frontend`, `pnpm-audit-level` `low` | — | `pip-audit` job (validated export args → `pip-audit`) and/or `pnpm-audit` job (validated severity) |
 | `cloudflare-pages-deploy.yml` | `project-name`*, `dist-dir`*, `build-command`*, `install-working-directory` `.`, `pre-build-run` `""`, `node-version(-file)`, `cache-dependency-path`, `branch` `main`, `wrangler-version` `4.110.0` | `CLOUDFLARE_API_TOKEN`*, `CLOUDFLARE_ACCOUNT_ID`* | preflight (skip-clean if secrets absent) → guard → **setup-pnpm** → pre-build → build → **pages-deploy-dist** |
 | `python-publish.yml` (**same-repo only** — cross-repo consumers inline it) | `working-directory` `.`, `python-version` `3.13`, `sync-args` `--locked`, `gate-task` `gate`, `run-gate` `true`, `packages-dir` `dist`, `attestations` `true`, `environment` `""` | — (OIDC, token-free) | checkout → **setup-python-uv** → reuse gate → `uv build` → `gh-action-pypi-publish` (PyPI **OIDC Trusted Publishing**) |
 | `ts-publish.yml` | `working-directory` `.`, `node-version` `24`, `gate-command` `pnpm gate`, `build-command` `pnpm build`, `run-gate` `true`, `provenance` `true` (a **private** caller must pass `false` explicitly), `registry-url` `…npmjs.org`, `environment` `""` | `NPM_READ_TOKEN` (optional, private-dep installs only) | checkout → **setup-node** (registry for OIDC) → **setup-pnpm** → gate → build → `npm publish` (npm **OIDC Trusted Publishing**) |
-
-> ⚠️ **One live gap at `ci-v3.0.0`: `--allow-unlocked` does not work through a reusable
-> workflow yet.** The `sync-args` / `install-args` lock requirement is enforced by the
-> *composites*, and by the arithmetic explained in [The release-commit
-> bootstrap](#the-release-commit-bootstrap) the composites nested inside `ci-v3.0.0`'s
-> reusable workflows are the `ci-v2.0.3` copies, which do not know that opt-out sentinel
-> and will reject it as an unknown flag. Pass a lockfile flag (`--frozen` / `--locked` /
-> `--frozen-lockfile`), which is what every example does, or call the composite directly.
-> The gap closes at the next release.
 
 \* required. Every other input has a documented default — no version or path is a magic
 literal buried in a step; the gate's coverage floor is deliberately **not** an input (it
@@ -334,7 +406,7 @@ for each brand-new npm name before OIDC can take over.
 
 **Signing is the default; not signing is what you ask for.** `ts-publish`'s `provenance`
 and `python-publish`'s `attestations` both default **true** — `provenance` since
-`ci-v3.0.0`, which is the current release — and
+`ci-v3.0.0` — and
 `tests/security-policy.sh` **rejects** any workflow or example that publishes without
 them — a PyPI upload missing `attestations: true`, an inline `npm`/`pnpm`/`yarn publish`
 missing `--provenance` (in a workflow *or* a composite action), a `ts-publish` caller
@@ -387,7 +459,7 @@ Consumers pin a **full 40-character commit SHA**, with the release name in a tra
 comment so Dependabot can bump it:
 
 ```yaml
-uses: hseshadr/ci/.github/workflows/python-gate.yml@2a575cd193e2e1fc093ccd26821020538e2547b7 # ci-v3.0.0
+uses: hseshadr/ci/.github/workflows/python-gate.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
 ```
 
 Moving tags are **not** a supported pin, not even for first-party refs.
@@ -410,18 +482,25 @@ deliberate, reviewable commit rather than a tag someone else can move under you.
 ### Immutable third-party action pins
 
 Every executable third-party `uses:` reference is pinned to the full 40-character
-commit behind the selected release. The trailing release comment is intentional:
-Dependabot updates both the SHA and its readable `# v…` label.
+commit behind the selected release. The trailing comment must name the **exact** version
+that SHA is, never a floating major: a `# v6` comment goes silently wrong the moment
+upstream moves the `v6` tag, and the comment is what a human reads to decide whether the
+pin is current. Commit `ae644d7` fixed exactly that. Dependabot updates both the SHA and
+its label.
+
+Two actions are pinned at different versions on different surfaces — `.github/` runs the
+newer one, `examples/` still shows the release consumers copied. Both are listed.
 
 | Action | Release comment | Pin policy |
 |---|---|---|
-| `actions/checkout` | `# v7` | full commit SHA |
-| `actions/setup-node` | `# v6` | full commit SHA |
-| `actions/cache` | `# v6` | full commit SHA |
-| `pnpm/action-setup` | `# v6` | full commit SHA |
-| `astral-sh/setup-uv` | `# v8.3.2` | full commit SHA |
-| `codecov/codecov-action` | `# v7` | full commit SHA |
-| `gitleaks/gitleaks-action` | `# v3` | full commit SHA |
+| `actions/checkout` | `# v7.0.1` (`.github/`), `# v7.0.0` (`examples/`) | full commit SHA |
+| `actions/setup-node` | `# v6.4.0` (setup-pnpm composite), `# v7.0.0` (ts-publish) | full commit SHA |
+| `actions/cache` | `# v6.1.0` | full commit SHA |
+| `pnpm/action-setup` | `# v6.0.9` | full commit SHA |
+| `astral-sh/setup-uv` | `# v9.0.0` | full commit SHA |
+| `codecov/codecov-action` | `# v7.0.0` | full commit SHA |
+| `gitleaks/gitleaks-action` | `# v3.0.0` | full commit SHA |
+| `ruby/setup-ruby` | `# v1.321.0` | full commit SHA |
 
 First-party `hseshadr/ci/...` references get the **same** treatment — full commit SHA,
 no exceptions. First-party is not a synonym for trustworthy: a moving tag is a moving
@@ -503,9 +582,11 @@ Both publish workflows ask the registry whether the release actually landed, ins
 trusting the upload step's exit code. After `pypa/gh-action-pypi-publish` (or
 `npm publish`), the job derives the exact `name` + `version` it just shipped — from the
 sdist filename for PyPI, from `npm pkg get` for npm — and polls
-`https://pypi.org/pypi/<name>/<version>/json` or `npm view <name>@<version>`. Six
-attempts, ten seconds apart, roughly a minute. Propagation delay gets retries; a timeout
-is a **failure**, never a pass.
+`https://pypi.org/pypi/<name>/<version>/json` or `npm view <name>@<version>`. Fourteen
+attempts on a 5/10/15/30/60s backoff — 600 seconds of sleep, about 3× the slowest
+propagation actually measured. Propagation delay gets retries; a timeout is a **failure**,
+never a pass. (The bound was six attempts ten seconds apart until `ci-v3.2.1`, which is
+the release that widened it after a real publish lost that race.)
 
 This exists because a green upload and a published package turned out to be different
 facts. `edgeproc-core` (then named `shared-libs-python`) collected six green
@@ -571,7 +652,7 @@ carried their own Cloudflare Pages deploy while a reusable one sat here, and one
 five copies drifted into a fork-PR deploy hole. The bug was in the copy, not in the shared
 workflow — and nothing was comparing the two.
 
-Today's count: **30 hand-rolled controls across 7 repositories** (almamesh 6, aml-filter 6,
+Today's count: **29 hand-rolled controls across 7 repositories** (almamesh 6, aml-filter 5,
 edge-reco 5, assay 4, edge-proc 3, edgeproc-core 3, privacy-core 3). They are listed
 individually in `tests/consumer-drift-allowlist.txt`, which is a **convergence backlog, not
 an exemption list**: every entry requires a written reason, deleting one is free, and *new*
@@ -610,8 +691,11 @@ none of them is charged to the person who inlines the action instead.
 
 A shared brick that only fits repos already shaped like it loses to hand-rolling forever,
 so "the consumer should have known" is not an acceptable stopping point. The consumer is
-converging to `secret-scan.yml` rather than being granted an exemption; the allowlist entry
-is a pointer to that open PR and is marked for deletion when it lands.
+converged to `secret-scan.yml` rather than being granted an exemption: aml-filter#93 merged
+on 2026-08-02, `aml-filter/ci.yml` now calls the brick
+([run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
+`Secret scan / gitleaks` SUCCESS on `main`), and the allowlist entry has been deleted —
+the first entry ever removed by an actual convergence rather than by a bug fix.
 
 **On the Dagger question:** a 2026-07-31 decision not to adopt dagger.io set a disconfirming
 test — *attempt the convergence sweep, and if new hand-rolled controls reappear within 60
@@ -647,8 +731,11 @@ permissions; Dependabot waits seven days before adopting new action releases.
 
 ### Required setup (read this first)
 
-**These repos are private, so callers 404 with "workflow was not found" until this repo
-allows them.** One time, on `hseshadr/ci`:
+**All eight repos are public, so cross-repo callers resolve with no access configuration
+at all** — verified 2026-08-06 (`gh api repos/hseshadr/<repo> --jq .private` returns
+`false` for `ci`, assay, edge-proc, edgeproc-core, privacy-core, almamesh, aml-filter,
+edge-reco). Nothing below is required today. It is kept only because it becomes required
+again the moment `hseshadr/ci` is made private:
 
 > **Settings → Actions → General → Access →** select **"Accessible from repositories
 > owned by the user"** → **Save.**
@@ -660,8 +747,8 @@ gh api -X PUT repos/hseshadr/ci/actions/permissions/access -f access_level=user
 ```
 
 This governs both the reusable workflows *and* the composite actions in this repo (the
-workflows pull the composites from here at a pinned SHA), so it must be set once for
-everything to resolve. When the repo is public this is automatic.
+workflows pull the composites from here at a pinned SHA), so it would have to be set once
+for everything to resolve. While the repo is public it is automatic.
 
 ---
 
@@ -684,7 +771,7 @@ Bespoke = the irreducible repo-specific build, which still composes the shared c
 | **assay** | python-gate, frontend-gate, secret-scan, security-audit, **ts-publish** (npm OIDC — adopted, ×2) | **setup-python-uv** (inside its inline PyPI publish job — adopted) | none |
 | **privacy-core** | frontend-gate (+Playwright), **ts-publish** (npm OIDC — adopted), secret-scan, security-audit | — | none |
 | **edge-reco** | secret-scan, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
-| **aml-filter** | secret-scan, security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
+| **aml-filter** | **secret-scan** (adopted in `ci.yml`), security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
 | **almamesh** | security-audit (python) | (optional) setup-python-uv | Bun + Pyodide `test.yml`, `deploy.yml`, `nightly-e2e.yml`; key-custody gitleaks |
 | **ci** (this repo) | **secret-scan** (via a local `./` ref, so it runs against the commit being changed) | — | its own policy suite + actionlint + zizmor + example-fidelity + the daily consumer-drift sweep, weekly on a `schedule` as well as on push/PR |
 
@@ -695,20 +782,21 @@ step, so there is one deploy half across edge-reco, aml-filter, and almamesh.
 **This repo is on that list too, and for a while it wasn't.** `ci` published
 `secret-scan.yml` while running no gitleaks step of its own, and had no scheduled run at
 all — so its zizmor **online** audits, which check a *moving* advisory database, only ever
-told you the tree was clean the last time someone pushed. Both are fixed above. One gap
-remains and it is not fixable from a workflow file: **`ci` has no branch protection and no
-repository secret scanning**, which are repository settings. See
-[Owner actions](#owner-actions).
+told you the tree was clean the last time someone pushed. Both are fixed above, and so are
+the two repository settings that a workflow file cannot reach: `main` requires
+`Security policy`, `Secret scan (own brick) / gitleaks` and `Consumer drift detector`,
+force-push is off, and GitHub secret scanning **and** push protection are enabled
+(verified 2026-08-06).
 
 ### Owner actions
 
 Settings this repository cannot configure for itself:
 
-| Setting | Why it matters here |
-|---|---|
-| **Branch protection on `main`** (require the CI check, no force-push, no deletion) | Every consumer pins a commit SHA from this repo's history. An unprotected `main` means the branch those SHAs descend from can be rewritten. |
-| **Repository secret scanning + push protection** | Complements the gitleaks job: gitleaks catches what is already committed, push protection stops the commit. |
-| **Cut the release after `ci-v3.0.0`** | The re-pin commit on `main` after the `ci-v3.0.0` tag is what makes this release's *composites* reachable through its reusable workflows. Until a tag exists at or after that commit, `ci-v3.0.0` callers keep getting `ci-v2.0.3` composites — see [The release-commit bootstrap](#the-release-commit-bootstrap). |
+| Setting | State | Why it matters here |
+|---|---|---|
+| **Branch protection on `main`** | ✅ done — required contexts `Security policy`, `Secret scan (own brick) / gitleaks`, `Consumer drift detector`; force-push off | Every consumer pins a commit SHA from this repo's history. An unprotected `main` means the branch those SHAs descend from can be rewritten. |
+| **Repository secret scanning + push protection** | ✅ both enabled | Complements the gitleaks job: gitleaks catches what is already committed, push protection stops the commit. |
+| **Move the `ci-v3` pointer** | ⛔ **open** — `ci-v3` still points at `72521e7`, a Dependabot merge **21 commits behind** `ci-v3.2.1`. Nothing pins it (every ref is a full SHA), so it misleads readers rather than breaking builds. Fix: `git tag -f ci-v3 ci-v3.2.1^{}` `&& git push -f origin ci-v3` | The moving major pointer is documented as "the newest release in that major". It is not. |
 
 ## Limits — where standardization genuinely can't reach
 
@@ -741,8 +829,8 @@ An honest self-assessment against a publish-readiness checklist:
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
 - **Status matches reality / tags match the story** — ✅ CHANGELOG top release =
-  `ci-v3.0.0` (`2a575cd…`, 2026-07-30), and every release lists the SHA consumers actually
-  pin. All **40** first-party refs in this tree pin `ci-v3.0.0`, and
+  `ci-v3.2.1` (`605e51c…`, 2026-08-04), and every release lists the SHA consumers actually
+  pin. All **45** first-party refs in this tree pin `ci-v3.2.1`, and
   `validate_first_party_release_lineage` fails the build if one drifts off it. `main` sits
   ahead of the tag, and at least the first commit of that gap is structural rather than
   drift: the re-pin cannot be *in* the commit it names, because a commit cannot contain
@@ -757,13 +845,14 @@ An honest self-assessment against a publish-readiness checklist:
   consumer's committed default branch; UNVERIFIABLE is a failure, not a pass. It caught 8
   broken references that actionlint and zizmor passed. See [Guards that run in
   CI](#guards-that-run-in-ci).
-- **The gap to full adoption is measured, not guessed** — ⚠️ **6** call-sites across 4
-  repos today, all on the publish path, against **30** hand-rolled controls still standing
-  across 7 repos. Every one of the 30 is itemized with a reason in
+- **The gap to full adoption is measured, not guessed** — ⚠️ **7** call-sites across 5
+  repos today, six of them on the publish path, against **29** hand-rolled controls still
+  standing across 7 repos. Every one of the 29 is itemized with a reason in
   `tests/consumer-drift-allowlist.txt`, and new drift fails the build — which it did, on
   2026-08-02, catching one it had never seen before
-  ([details](#it-caught-one-and-the-cause-was-partly-this-repo)). The gap is also **growing
-  slightly faster than it is closing**: 29 on 07-31, 30 on 08-02, zero converged in between.
+  ([details](#it-caught-one-and-the-cause-was-partly-this-repo)). That one has since
+  converged: 29 on 07-31, 30 on 08-02, **29 on 08-06** — the first entry ever deleted
+  because a consumer adopted the brick.
 - **Live-validated end-to-end** — ✅ **for the publish path** (2026-07-22): privacy-core
   [run 29886074787](https://github.com/hseshadr/privacy-core/actions/runs/29886074787)
   (npm `v0.2.1` through cross-repo `ts-publish.yml`) and assay
@@ -771,9 +860,11 @@ An honest self-assessment against a publish-readiness checklist:
   (`v0.1.1`: PyPI through the inline job composing `setup-python-uv`, plus npm through
   cross-repo `ts-publish.yml`) — both SUCCESS, both executing this repo's code inside real
   consumer releases at the SHA pinned that day, `ci-v2.0.3`. Those callers have since been
-  re-pinned to `ci-v3.0.0`; whether a consumer release has run through **that** SHA is
-  **unverified** here. ⛔ **Still open:** the gate,
-  secret-scan, security-audit, frontend, and deploy templates have zero consumer runs,
+  re-pinned to `ci-v3.2.1`; whether a consumer *release* has run through **that** SHA is
+  **unverified** here — though `secret-scan.yml` has: aml-filter
+  [run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
+  `Secret scan / gitleaks` SUCCESS on `main` at the `ci-v3.2.1` SHA. ⛔ **Still open:** the gate,
+  security-audit, frontend, and deploy templates have zero consumer runs,
   and cross-repo PyPI through `python-publish.yml` is structurally **impossible**
   (`job_workflow_ref` mismatch — documented above), not merely unverified; consumers
   inline that job instead.
