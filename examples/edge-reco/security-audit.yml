@@ -20,6 +20,13 @@ jobs:
   # expectation machine-checked — the job fails if the event cannot deliver it.
   gitleaks:
     name: Secret scan
+    # Required, and not optional: secret-scan.yml declares `pull-requests: read`,
+    # the top level above grants only `contents: read`, and a caller that grants
+    # less than its callee makes GitHub refuse the ENTIRE run — `startup_failure`,
+    # zero check runs, so the gate is ABSENT from the PR rather than red.
+    permissions:
+      contents: read
+      pull-requests: read
     uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
     with:
       full-history: true
