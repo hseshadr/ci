@@ -62,6 +62,10 @@ yaml_sources() {
 YAML_SOURCE_FLOOR=20
 PERMISSION_SOURCE_FLOOR=15
 USES_LINE_FLOOR=30
+# Caller job -> reusable workflow pairs whose callee this repository can actually
+# read. 24 resolve today; a scanner that quietly stopped resolving refs would
+# print "no violations" and look identical to a clean tree.
+CALLER_PERMISSION_PAIR_FLOOR=20
 
 inputs_are_sufficient() {
   local count="$1" minimum="${2:-1}"
@@ -1109,6 +1113,192 @@ validate_self_ci() {
   fi
 }
 
+# --- a caller that under-grants does not go red, it goes ABSENT ---------------
+#
+# If a caller job's `permissions:` are narrower than the reusable workflow it
+# calls, GitHub refuses the whole run before any job starts:
+#
+#   requesting 'pull-requests: read', but is only allowed 'pull-requests: none'
+#
+# The conclusion is `startup_failure` and it emits ZERO check runs. Measured on
+# this repository: run 31127046921 reported `jobs: 0`, and the check-runs API for
+# its head SHA listed only the checks from other workflows — `Security policy`
+# and `Secret scan (own brick) / gitleaks` were not red, they were NOT THERE.
+# Branch protection reads a missing required check as "pending", never "failed",
+# so an un-skippable gate is skipped in silence.
+#
+# That is why this guard is static. Nothing about the failure can be learned from
+# a run, because the failure is the absence of a run.
+#
+# The trap that produced it: a job-level `permissions:` block REPLACES the
+# top-level one. ci.yml's top level was already `contents: read`, and adding
+# `permissions: {contents: read}` to the sweep job looked like a restatement
+# while actually dropping `pull-requests` from whatever it was to `none`.
+validate_caller_permission_sufficiency() {
+  local findings resolved
+  local yaml_files=()
+
+  while IFS= read -r file; do
+    yaml_files+=("$file")
+  done < <(yaml_sources)
+
+  require_inputs "caller-permission scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
+
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" \
+    --ci-root "$repo_root" --count "${yaml_files[@]}")" || {
+    fail "caller-permission scan failed to execute"
+    return
+  }
+  require_inputs "caller-permission scan (resolved callees)" \
+    "$resolved" "$CALLER_PERMISSION_PAIR_FLOOR"
+
+  findings="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" \
+    --ci-root "$repo_root" "${yaml_files[@]}")" || {
+    fail "caller-permission scan failed to execute"
+    return
+  }
+
+  while IFS=$'\t' read -r file reason; do
+    [[ -z "$file" ]] || fail "$file: $reason"
+  done <<< "$findings"
+}
+
+# True (exit 0) when the scanner reports at least one finding for the file.
+scanner_reports_caller_permission_finding() {
+  local findings
+  findings="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$2" "$1")" || return 2
+  [[ -n "$findings" ]]
+}
+
+# Break the property, not the form. Every fixture below is a workflow that parses,
+# lints and reviews clean — the PERMISSION ARITHMETIC is the only thing that
+# differs. The two load-bearing cases are `narrowed-by-job` (a job-level block
+# that looks like a restatement of a sufficient top level and is not — the exact
+# shape of the bug) and `undeclared` (no grant anywhere, so the answer lives in a
+# repository setting this tree cannot see and "clean" would be a guess).
+validate_caller_permission_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+  mkdir -p "$dir/.github/workflows"
+
+  # The synthetic brick every fixture calls.
+  cat > "$dir/.github/workflows/brick.yml" <<'YAML'
+on: {workflow_call: {}}
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+  cat > "$dir/.github/workflows/writer.yml" <<'YAML'
+on: {workflow_call: {}}
+permissions: {contents: write}
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+  cat > "$dir/.github/workflows/silent.yml" <<'YAML'
+on: {workflow_call: {}}
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+
+  local brick="hseshadr/ci/.github/workflows/brick.yml@0000000000000000000000000000000000000000"
+
+  # The bug: a job-level block narrower than the callee.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/narrowed-by-job.yml"
+  # Same file, one line added — the fix.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n      pull-requests: read\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/job-sufficient.yml"
+  # No job-level block: the sufficient top level is what the callee gets.
+  printf 'permissions:\n  contents: read\n  pull-requests: read\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/top-sufficient.yml"
+  # No job-level block and an insufficient top level — the examples/ shape.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/top-narrow.yml"
+  # read does not satisfy write. Presence is not sufficiency.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/read-vs-write.yml"
+  printf 'permissions:\n  contents: write\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/write-vs-write.yml"
+  # Shorthand grants.
+  printf 'permissions: read-all\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/read-all.yml"
+  printf 'permissions: read-all\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/read-all-vs-write.yml"
+  printf 'permissions: write-all\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/write-all.yml"
+  # No grant anywhere: the repository default is not in this tree.
+  printf 'jobs:\n  sweep:\n    uses: %s\n' "$brick" > "$dir/.github/workflows/undeclared.yml"
+  # A callee that asks for nothing cannot be under-granted.
+  printf 'jobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/silent.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/silent-callee.yml"
+  # The `./` spelling ci.yml uses — same arithmetic, different ref syntax.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n    uses: ./.github/workflows/brick.yml\n' \
+    > "$dir/.github/workflows/local-narrowed.yml"
+  # A workflow this repository cannot read is neither blamed nor counted.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: someone/else/.github/workflows/x.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/third-party.yml"
+  # The alias form that walked a top-level write past this suite once already.
+  printf 'x-perms: &perms\n  contents: read\npermissions: *perms\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/aliased-narrow.yml"
+  # A step-based job has no callee; it must not be counted or blamed.
+  printf 'permissions:\n  contents: read\njobs:\n  work:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
+    > "$dir/.github/workflows/no-caller.yml"
+
+  expect_success "caller-permission guard misses a job-level block narrower than its callee" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/narrowed-by-job.yml" "$dir"
+  expect_failure "caller-permission guard flags a job-level block that grants exactly what the callee needs" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/job-sufficient.yml" "$dir"
+  expect_failure "caller-permission guard flags a job inheriting a SUFFICIENT top level" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/top-sufficient.yml" "$dir"
+  expect_success "caller-permission guard misses a job inheriting an INSUFFICIENT top level" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/top-narrow.yml" "$dir"
+  expect_success "caller-permission guard treats a granted 'read' as satisfying a required 'write'" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags a write granted against a write required" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/write-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags 'read-all' against read-only requirements" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-all.yml" "$dir"
+  expect_success "caller-permission guard treats 'read-all' as satisfying a required write" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-all-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags 'write-all' against a required write" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/write-all.yml" "$dir"
+  expect_success "caller-permission guard passes a caller with NO permissions declared anywhere" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/undeclared.yml" "$dir"
+  expect_failure "caller-permission guard flags a callee that declares no permissions at all" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/silent-callee.yml" "$dir"
+  expect_success "caller-permission guard misses the './' local-ref spelling ci.yml uses" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/local-narrowed.yml" "$dir"
+  expect_failure "caller-permission guard blames a third-party workflow it cannot read" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/third-party.yml" "$dir"
+  expect_success "caller-permission guard misses an insufficient grant supplied through a YAML ALIAS" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/aliased-narrow.yml" "$dir"
+  expect_failure "caller-permission guard flags a job that calls no reusable workflow" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/no-caller.yml" "$dir"
+
+  # The non-vacuity half: the scanner must actually RESOLVE the callees it is
+  # judging. `third-party.yml` and `no-caller.yml` contribute nothing, so a
+  # scanner whose ref resolution broke would report 0 here while still printing
+  # "no violations" above.
+  local resolved
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$dir" --count \
+    "$dir/.github/workflows/narrowed-by-job.yml" "$dir/.github/workflows/local-narrowed.yml")"
+  [[ "$resolved" == "2" ]] ||
+    fail "caller-permission scanner resolved $resolved of 2 fixture callees — ref resolution has drifted"
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$dir" --count \
+    "$dir/.github/workflows/third-party.yml" "$dir/.github/workflows/no-caller.yml")"
+  [[ "$resolved" == "0" ]] ||
+    fail "caller-permission scanner counted $resolved unreadable callees as resolved"
+}
+
 # --- the secret scan's range is a property of the EVENT, not of fetch-depth ----
 #
 # gitleaks-action@e0c47f4 appends `--log-opts=--no-merges --first-parent BASE^..HEAD`
@@ -1470,6 +1660,8 @@ run_check validate_publish_provenance_cases
 run_check validate_trusted_command_contracts
 run_check validate_argument_guards
 run_check validate_self_ci
+run_check validate_caller_permission_sufficiency
+run_check validate_caller_permission_cases
 run_check validate_secret_scan_history_sweep
 run_check validate_secret_scan_coverage_cases
 run_check validate_no_vacuous_success

@@ -48,8 +48,21 @@ jobs:
   secret-scan-sweep:
     name: Full-history secret sweep (own brick)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Must match the callee, exactly as the job above does. A job-level block
+    # REPLACES the top-level one, it does not add to it, so granting only
+    # `contents: read` here left `pull-requests` at `none` while secret-scan.yml
+    # declares it needs `read`. GitHub refused the whole run: `startup_failure`,
+    # ZERO check runs — `Security policy` and `Secret scan (own brick) / gitleaks`
+    # were absent from the PR rather than red, and branch protection reads absent
+    # as "pending", never "failed". `if:` does not save you: permissions are
+    # checked before any condition is evaluated, so the run died on pull_request
+    # events where this job would never have started.
+    # tests/security-policy.sh::validate_caller_permission_sufficiency compares
+    # every caller against its callee statically, because a run that cannot start
+    # reports nothing to learn from.
     permissions:
       contents: read
+      pull-requests: read
     uses: ./.github/workflows/secret-scan.yml
     with:
       full-history: true

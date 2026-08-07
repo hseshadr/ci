@@ -358,6 +358,9 @@ tests/
   lib/
     scan-run-interpolation.rb     #   finds attacker-controllable ${{ }} inside run: blocks
     scan-publish-provenance.rb    #   proves every publish path is signed
+    scan-caller-permissions.rb    #   proves no caller grants a reusable workflow LESS
+                                  #   than it needs (that run cannot start, and a run
+                                  #   that cannot start emits ZERO check runs)
     workflow-run-pin.rb           #   parses fork-deploy gates into a boolean AST
     classify-workflow.rb          #   classifies a consumer workflow by behavior
     example-references.rb         #   resolves an example's references inside a consumer repo
@@ -603,13 +606,55 @@ never been shown saying NO is decoration.
 
 | Suite | Question it answers | Runs |
 |---|---|---|
-| `tests/security-policy.sh` | is *this repo's* YAML safe — pins, pin provenance, permissions, shell injection, signed publishes? | push / PR / weekly |
+| `tests/security-policy.sh` | is *this repo's* YAML safe — pins, pin provenance, permissions (including [callers that under-grant](#a-caller-that-under-grants-does-not-go-red-it-goes-absent)), shell injection, signed publishes? | push / PR / weekly |
 | `tests/lint-examples.sh` | do the files consumers copy pass `actionlint` + `zizmor`, and do they still resolve? | push / PR / weekly |
 | `tests/consumer-drift.sh` | is a consumer hand-rolling a control we already publish? | daily + PR |
 
 Everything above is Ruby or Bash, and `.ruby-version` (3.4.10) pins the Ruby they run on —
 in CI too, via `ruby/setup-ruby`. Guards that decide whether a workflow is safe should not
 run on whatever Ruby a runner image happens to ship.
+
+#### A caller that under-grants does not go red, it goes ABSENT
+
+If a caller job grants a reusable workflow less than that workflow declares it needs,
+GitHub refuses the run before any job starts:
+
+```
+requesting 'pull-requests: read', but is only allowed 'pull-requests: none'
+```
+
+The conclusion is `startup_failure`, and it emits **zero check runs**. Not one red check.
+Nothing. Measured here on
+[run 31127046921](https://github.com/hseshadr/ci/actions/runs/31127046921): `jobs: 0`, and
+the check-runs API for that head SHA listed only the checks from *other* workflows.
+`Security policy` and `Secret scan (own brick) / gitleaks` were not failing — they were not
+there.
+
+That is the dangerous part. Branch protection cannot distinguish a required check that is
+**missing** from one that has not reported **yet**, so the PR sits pending instead of going
+red, and a gate you made un-skippable is skipped in silence.
+
+The trap that produces it: **a job-level `permissions:` block replaces the top-level one, it
+does not add to it.** Restating `contents: read` on a job looks harmless and silently drops
+every other scope to `none`.
+
+```yaml
+permissions:
+  contents: read          # workflow level
+
+jobs:
+  sweep:
+    permissions:
+      contents: read      # looks like a restatement — it is a REPLACEMENT.
+      pull-requests: read # without this line the run never starts.
+    uses: ./.github/workflows/secret-scan.yml
+```
+
+`validate_caller_permission_sufficiency` in `tests/security-policy.sh` compares every caller
+in `.github/workflows/` **and** `examples/` against the callee it names, statically. It has
+to be static: there is no run to read, because the failure *is* the absence of a run. It
+also asserts it resolved at least 20 caller→callee pairs, so a scanner that quietly stopped
+resolving refs cannot look like a clean tree.
 
 #### Example fidelity: do the examples still fit their repos?
 

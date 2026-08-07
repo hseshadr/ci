@@ -12,6 +12,37 @@ included.
 (boolean, default `false`). Re-pinning without setting it is a drop-in — the default is
 the existing behaviour, so no current caller changes verdict.
 
+**Action required if you copied `examples/<repo>/security-audit.yml`**: its `gitleaks` job
+now carries its own `permissions:` block. Without it that job cannot start — see below.
+
+- **A caller that under-granted did not go red, it went ABSENT.** `secret-scan.yml`
+  declares `pull-requests: read` (gitleaks-action lists a PR's commits through the API).
+  Five `examples/*/security-audit.yml` called it from a workflow whose only grant was a
+  top-level `contents: read`, and so did `ci.yml`'s own `secret-scan-sweep` job — whose
+  job-level `permissions: {contents: read}` *replaced* the top level rather than adding to
+  it, dropping `pull-requests` to `none`. GitHub refuses such a run before any job starts:
+  `requesting 'pull-requests: read', but is only allowed 'pull-requests: none'`. The
+  conclusion is `startup_failure` and it emits **zero check runs** — measured on run
+  [31127046921](https://github.com/hseshadr/ci/actions/runs/31127046921), which reported
+  `jobs: 0` while the check-runs API for its head SHA listed only the checks from other
+  workflows. `Security policy` and `Secret scan (own brick) / gitleaks` were not red, they
+  were missing, and **branch protection reads a missing required check as "pending", never
+  "failed"** — the same shape as the bug this release exists to fix, where a secret scan
+  that scanned 0 commits reported success. An `if:` guard does not help: permissions are
+  checked before any condition is evaluated, so `ci.yml` died on `pull_request` events
+  where the offending job would never have run at all.
+- **New guard: `tests/lib/scan-caller-permissions.rb`**, driven by
+  `validate_caller_permission_sufficiency` in `tests/security-policy.sh`. It parses every
+  caller job's effective grant (job-level block, else workflow-level) and compares it
+  scope-by-scope against the callee's declared `permissions:`, across
+  `.github/workflows/` **and** `examples/`. It is static by necessity — there is no run to
+  inspect, because the failure *is* the absence of a run. 15 both-polarity fixtures pin the
+  property (`validate_caller_permission_cases`), including the job-level-replacement trap,
+  a granted `read` against a required `write`, `read-all`/`write-all` shorthands, a grant
+  supplied through a YAML alias, and a caller that declares no permissions anywhere. The
+  scanner also reports how many caller→callee pairs it resolved (25 today) against a floor
+  of 20, so ref resolution that quietly broke cannot masquerade as a clean tree.
+
 - **The secret scan never read history, and said it did.** `secret-scan.yml` opened with
   "gitleaks over the FULL git history" and "a credential committed five commits ago is
   exactly as leaked as one committed at HEAD". Neither described what it ran.
