@@ -577,6 +577,11 @@ individually in `tests/consumer-drift-allowlist.txt`, which is a **convergence b
 an exemption list**: every entry requires a written reason, deleting one is free, and *new*
 drift with no entry fails the build.
 
+One entry records a gap in the shared control itself: `edge-proc/publish.yml` runs an
+explicit `gitleaks detect --log-opts=--all` tag-release preflight because the action derives
+its range from the tag-push event and can inspect zero commits. Keep that exact-key entry
+until the shared secret-scan control can prove full-history behavior on tag pushes.
+
 #### It caught one, and the cause was partly this repo
 
 On 2026-08-02 the scheduled sweep went red:

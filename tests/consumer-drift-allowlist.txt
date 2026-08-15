@@ -32,6 +32,12 @@
 # The count went 30 (07-26, one of them bogus) -> 29 (07-31, bogus one deleted)
 # -> 30 (08-02, one genuinely new). Only the last step is real drift.
 #
+# Still 30 entries on 2026-08-15: the converged edge-proc/ci.yml/secret-scan row
+# was removed, and edge-proc/publish.yml/secret-scan now records a shared control
+# gap rather than pretending the release preflight is ordinary CI. Its tag-triggered
+# action range may be empty, so the release also runs one explicit full-history CLI
+# sweep. Delete the entry when the shared control can prove the same tag behavior.
+#
 # A NEW ENTRY IS A CONFESSION, NOT A DECISION. It records that a control got
 # hand-rolled and says what is being done about it. If you are adding one, the
 # reason has to survive a stranger asking "why didn't you just adopt the brick?" —
@@ -61,7 +67,7 @@ aml-filter/security-audit.yml/secret-scan|Uses gitleaks/gitleaks-action directly
 # warning, never a failure, so deleting it early costs nothing.
 aml-filter/ci.yml/secret-scan|NEW on 2026-08-02, and being converged, not exempted — see aml-filter#93. Origin: aml-filter#89 (2026-08-01) closed a real hole (gitleaks ran only in the weekly security-audit.yml sweep, never on a PR, so a secret could merge and sit in public history for up to seven days) and closed it by inlining gitleaks/gitleaks-action at the same pinned SHA secret-scan.yml already uses. Three causes on OUR side, all addressed: examples/aml-filter/ci.yml carried no secret-scan job, so the worked example for the exact file being edited had nothing to copy; nothing warned that adopting renames the check run to "Secret scan / gitleaks", which breaks a required status check named "gitleaks"; and our ci-vX.Y.Z release scheme fails a consumer pin-comment guard that expects ^v\d, which is what actually reddened aml-filter#93 on its first run. DELETE THIS ENTRY when aml-filter#93 merges.
 assay/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; assay has no converged examples/assay/ci.yml yet.
-edge-proc/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-proc/ci.yml already shows the converged caller.
+edge-proc/publish.yml/secret-scan|Tag-release preflight runs the canonical gitleaks CLI over --all because gitleaks-action derives its range from the tag-push event and may inspect zero commits; keep until a shared control can prove full-history scanning on tag pushes.
 edge-reco/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edge-reco/ci.yml already shows the converged caller.
 edgeproc-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/edgeproc-core/ci.yml already shows the converged caller.
 privacy-core/ci.yml/secret-scan|Uses gitleaks/gitleaks-action directly; examples/privacy-core/ci.yml already shows the converged caller.
