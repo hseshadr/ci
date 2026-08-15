@@ -233,6 +233,31 @@ jobs:
         with: {packages-dir: dist, password: "\${{ secrets.PYPI_TOKEN }}"}
 YAML
 
+# edge-proc's tag-release preflight deliberately adds a canonical CLI sweep of
+# all fetched commits. The action's tag-push range can be empty, so replacing
+# this with secret-scan.yml would weaken the release check today. This fixture
+# pins the exact repo/workflow/control key used by the convergence backlog.
+write_fixture edge-proc/publish.yml <<YAML
+name: Publish
+on: {push: {tags: ["v*"]}}
+permissions: {contents: read}
+jobs:
+  release-eligibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0}
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+      - run: gitleaks detect --redact --no-banner --source . --log-opts="--all"
+  publish:
+    needs: [release-eligibility]
+    runs-on: ubuntu-latest
+    permissions: {contents: read, id-token: write}
+    steps:
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+        with: {attestations: true}
+YAML
+
 write_fixture gater/ci.yml <<YAML
 name: CI
 on: {pull_request: null}
@@ -359,6 +384,9 @@ expect_verdicts pypi-good/publish.yml \
 expect_verdicts pypi-bad/publish.yml \
   "inline PyPI with a token and no attestations is drift" \
   "pypi-publish DRIFT"
+expect_verdicts edge-proc/publish.yml \
+  "edge-proc's full-history tag-release preflight remains visible as exact-key drift" \
+  "secret-scan DRIFT" "pypi-publish ADOPTED-BY-PATTERN"
 expect_verdicts gater/ci.yml \
   "hand-rolled python and frontend gates in an ordinary ci.yml are drift" \
   "python-gate DRIFT" "frontend-gate DRIFT"
@@ -462,6 +490,35 @@ expect_row "secret-scan" "DRIFT (NEW)" \
 expect_row "dependency-audit" "DRIFT (allowlisted)" \
   "the allowlisted control in that same file is still suppressed" \
   "$detector" --local "$fixtures" --consumers "halfknown" --allowlist "$partial_allowlist"
+
+# This release preflight is the one precise, reasoned backlog entry added by
+# this change. Prove the checked-in key suppresses only this row; changing the
+# repository, workflow, or control leaves the real finding NEW.
+expect_exit 0 "the checked-in EdgeProc release-scan key is allowlisted" \
+  "$detector" --local "$fixtures" --consumers "edge-proc" --allowlist "$real_allowlist"
+expect_row "secret-scan" "DRIFT (allowlisted)" \
+  "the EdgeProc release scan is visibly allowlisted, not reclassified" \
+  "$detector" --local "$fixtures" --consumers "edge-proc" --allowlist "$real_allowlist"
+
+wrong_repo_allowlist="$fixtures/wrong-repo-allowlist.txt"
+printf 'edge-proc-neighbor/publish.yml/secret-scan|adjacent repo must not match\n' \
+  > "$wrong_repo_allowlist"
+wrong_workflow_allowlist="$fixtures/wrong-workflow-allowlist.txt"
+printf 'edge-proc/release.yml/secret-scan|adjacent workflow must not match\n' \
+  > "$wrong_workflow_allowlist"
+wrong_control_allowlist="$fixtures/wrong-control-allowlist.txt"
+printf 'edge-proc/publish.yml/dependency-audit|adjacent control must not match\n' \
+  > "$wrong_control_allowlist"
+
+expect_row "secret-scan" "DRIFT (NEW)" \
+  "an adjacent repository key does not allowlist the EdgeProc release scan" \
+  "$detector" --local "$fixtures" --consumers "edge-proc" --allowlist "$wrong_repo_allowlist"
+expect_row "secret-scan" "DRIFT (NEW)" \
+  "an adjacent workflow key does not allowlist the EdgeProc release scan" \
+  "$detector" --local "$fixtures" --consumers "edge-proc" --allowlist "$wrong_workflow_allowlist"
+expect_row "secret-scan" "DRIFT (NEW)" \
+  "an adjacent control key does not allowlist the EdgeProc release scan" \
+  "$detector" --local "$fixtures" --consumers "edge-proc" --allowlist "$wrong_control_allowlist"
 
 # The checked-in allowlist has to survive the same parser, mandatory reasons and
 # all — a malformed one would otherwise only surface on the day it is consulted.
