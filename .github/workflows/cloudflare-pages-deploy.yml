@@ -213,7 +213,7 @@ jobs:
         run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@dbae0a612749cbc024961c4ed3499622a8370b59 # ci-v3.2.1
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}
