@@ -107,7 +107,7 @@ jobs:
 
       # run-sync: false — we `uv export` the lock, not build a venv.
       - name: Setup Python + uv
-        uses: hseshadr/ci/.github/actions/setup-python-uv@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/setup-python-uv@dbae0a612749cbc024961c4ed3499622a8370b59 # ci-v3.2.1
         with:
           working-directory: ${{ inputs.python-working-directory }}
           run-sync: "false"
