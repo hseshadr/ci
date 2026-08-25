@@ -24,14 +24,45 @@ jobs:
   # portfolio and this repo — the one that publishes it — was the only repo not running
   # it. A local `./` ref is used deliberately: it always names THIS commit, so the
   # workflow is proven against the version being changed rather than a released SHA.
+  #
+  # TWO callers, because they answer different questions. The ordinary action
+  # scans the event range; the scheduled caller requests the explicit `--all`
+  # pass. Measured here before that pass existed: run 31051347230 (push to main)
+  # scanned 0 commits and still reported success.
   secret-scan:
-    name: Secret scan (own brick)
+    name: Secret scan (own brick) # required status check — do not rename
+    # Skipped on the sweep events so the full-history job below is not duplicated.
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     # The reusable workflow needs pull-requests: read to list a PR's commits via the API;
     # a caller job may raise a scope the read-only top level does not grant.
     permissions:
       contents: read
       pull-requests: read
     uses: ./.github/workflows/secret-scan.yml
+
+  # The half that actually reads history. `full-history: true` runs an explicit
+  # `gitleaks git --log-opts=--all` pass after the action's event-range scan.
+  secret-scan-sweep:
+    name: Full-history secret sweep (own brick)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Must match the callee, exactly as the job above does. A job-level block
+    # REPLACES the top-level one, it does not add to it, so granting only
+    # `contents: read` here left `pull-requests` at `none` while secret-scan.yml
+    # declares it needs `read`. GitHub refused the whole run: `startup_failure`,
+    # ZERO check runs — `Security policy` and `Secret scan (own brick) / gitleaks`
+    # were absent from the PR rather than red, and branch protection reads absent
+    # as "pending", never "failed". `if:` does not save you: permissions are
+    # checked before any condition is evaluated, so the run died on pull_request
+    # events where this job would never have started.
+    # tests/security-policy.sh::validate_caller_permission_sufficiency compares
+    # every caller against its callee statically, because a run that cannot start
+    # reports nothing to learn from.
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/secret-scan.yml
+    with:
+      full-history: true
 
   security-policy:
     name: Security policy

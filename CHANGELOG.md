@@ -6,6 +6,96 @@ All notable changes to the shared CI/CD templates. Each release is cut as an imm
 listed below. `tests/security-policy.sh` rejects a moving `@ci-vN` ref, first-party
 included.
 
+## Unreleased
+
+**A brick changed shape**: `secret-scan.yml` gains one optional input, `full-history`
+(boolean, default `false`). Re-pinning without setting it is a drop-in — the default is
+the existing event-range behaviour. Setting it runs an explicit
+`gitleaks git --log-opts=--all` pass on any event, including tag pushes.
+
+**Action required if you copied `examples/<repo>/security-audit.yml`**: its `gitleaks` job
+now carries its own `permissions:` block. Without it that job cannot start — see below.
+
+- **A caller that under-granted did not go red, it went ABSENT.** `secret-scan.yml`
+  declares `pull-requests: read` (gitleaks-action lists a PR's commits through the API).
+  Five `examples/*/security-audit.yml` called it from a workflow whose only grant was a
+  top-level `contents: read`, and so did `ci.yml`'s own `secret-scan-sweep` job — whose
+  job-level `permissions: {contents: read}` *replaced* the top level rather than adding to
+  it, dropping `pull-requests` to `none`. GitHub refuses such a run before any job starts:
+  `requesting 'pull-requests: read', but is only allowed 'pull-requests: none'`. The
+  conclusion is `startup_failure` and it emits **zero check runs** — measured on run
+  [31127046921](https://github.com/hseshadr/ci/actions/runs/31127046921), which reported
+  `jobs: 0` while the check-runs API for its head SHA listed only the checks from other
+  workflows. `Security policy` and `Secret scan (own brick) / gitleaks` were not red, they
+  were missing, and **branch protection reads a missing required check as "pending", never
+  "failed"** — the same shape as the bug this release exists to fix, where a secret scan
+  that scanned 0 commits reported success. An `if:` guard does not help: permissions are
+  checked before any condition is evaluated, so `ci.yml` died on `pull_request` events
+  where the offending job would never have run at all.
+- **New guard: `tests/lib/scan-caller-permissions.rb`**, driven by
+  `validate_caller_permission_sufficiency` in `tests/security-policy.sh`. It parses every
+  caller job's effective grant (job-level block, else workflow-level) and compares it
+  scope-by-scope against the callee's declared `permissions:`, across
+  `.github/workflows/` **and** `examples/`. It is static by necessity — there is no run to
+  inspect, because the failure *is* the absence of a run. 15 both-polarity fixtures pin the
+  property (`validate_caller_permission_cases`), including the job-level-replacement trap,
+  a granted `read` against a required `write`, `read-all`/`write-all` shorthands, a grant
+  supplied through a YAML alias, and a caller that declares no permissions anywhere. The
+  scanner also reports how many caller→callee pairs it resolved (25 today) against a floor
+  of 20, so ref resolution that quietly broke cannot masquerade as a clean tree.
+
+- **The secret scan never read history, and said it did.** `secret-scan.yml` opened with
+  "gitleaks over the FULL git history" and "a credential committed five commits ago is
+  exactly as leaked as one committed at HEAD". Neither described what it ran.
+  `gitleaks-action` derives its scan range from the **event**, not from `fetch-depth`
+  (`gitleaks-action@e0c47f4`, `src/gitleaks.js:103-115`, `src/index.js:176`): on `push`
+  and `pull_request` it appends `--log-opts=--no-merges --first-parent BASE^..HEAD`, and
+  only on `schedule`/`workflow_dispatch` does it omit `--log-opts` and read every commit.
+  `fetch-depth: 0` makes `BASE^` resolvable; it does not widen the scan. Measured on this
+  repository through this very workflow: run
+  [31051347230](https://github.com/hseshadr/ci/actions/runs/31051347230) (push to `main`)
+  scanned **0 commits** and reported success; run
+  [30978634362](https://github.com/hseshadr/ci/actions/runs/30978634362) (pull_request)
+  scanned **1**; run
+  [30793713570](https://github.com/hseshadr/ci/actions/runs/30793713570) (schedule)
+  scanned **41**. The workflow is `workflow_call`-only and every caller in `examples/` but
+  one ran on push/PR, so no consumer's pre-existing history had ever been scanned by CI.
+- **The caller owns the schedule; the brick owns the sweep.** A `workflow_call` workflow
+  cannot carry its own `schedule:`, so each `examples/*/security-audit.yml` invokes it
+  weekly with `full-history: true`. The shared workflow now executes the explicit `--all`
+  scan itself, so release callers can request the same guarantee on tag pushes whose
+  action-derived range may be empty.
+- **Secret findings cannot become collaboration or artifact data.** The action's comment,
+  summary, and SARIF upload features are all disabled, the CLI version is fixed, and both
+  passes redact findings. A failed scan may name the file/rule in its job log; it cannot
+  copy the detected credential into a PR, summary, or downloadable artifact.
+- **Every secret-scan caller job is named.** An unnamed one reports as `gitleaks /
+  gitleaks` instead of the documented `Secret scan / gitleaks`, silently orphaning an
+  adopter's required status check. Five of the six callers shipped in `examples/` omitted
+  the `name:`, as did the README's canonical copy-paste snippet.
+- **Two guards, both shown failing.** `validate_secret_scan_history_sweep` refuses an
+  `examples/` tree where a repo calls `secret-scan.yml` but never from a scheduled
+  workflow, and refuses an unnamed caller job; it carries a vacuity floor.
+  `validate_secret_scan_coverage_cases` executes the workflow's real coverage script with
+  a recording gitleaks double, proving `--all` is passed under both event families and the
+  CLI is not invoked for range-only mode.
+- **README: 16 false claims fixed or deleted.** The file had never been updated past
+  `ci-v3.0.0` while three releases and one consumer adoption landed. Corrected: the current
+  release and every `2a575cd` pin (now `605e51c` / `ci-v3.2.1`), the adoption count (7
+  call-sites across 5 repos, not 6 across 4), the drift count (29, not three different
+  numbers), the third-party pin table (exact versions — a `# v6` comment on a SHA is the
+  defect commit `ae644d7` fixed), the publish-verification bound (14 attempts / 600s, not
+  6 / 60s), the "these repos are private" setup section (all eight are public), and the
+  repository-settings gap (branch protection and secret scanning are both on). Deleted:
+  the `--allow-unlocked` "live gap" callout, closed at `ci-v3.2.1`, and two completed
+  owner actions. The one genuinely open owner action is now stated: `ci-v3` still points
+  at `72521e7`, 21 commits behind `ci-v3.2.1`.
+- **`aml-filter/ci.yml/secret-scan` deleted from the drift allowlist.** aml-filter#93
+  merged on 2026-08-02 and the consumer now calls the brick
+  ([run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
+  `Secret scan / gitleaks` SUCCESS on `main`). First entry ever removed by an actual
+  convergence rather than by a bug fix. 30 -> 29.
+
 ## ci-v3.2.1 — 2026-08-04
 
 Commit `605e51cbc86f452b56edcf1c9660921da797cbfe`.

@@ -62,6 +62,10 @@ yaml_sources() {
 YAML_SOURCE_FLOOR=20
 PERMISSION_SOURCE_FLOOR=15
 USES_LINE_FLOOR=30
+# Caller job -> reusable workflow pairs whose callee this repository can actually
+# read. 24 resolve today; a scanner that quietly stopped resolving refs would
+# print "no violations" and look identical to a clean tree.
+CALLER_PERMISSION_PAIR_FLOOR=20
 
 inputs_are_sufficient() {
   local count="$1" minimum="${2:-1}"
@@ -1109,6 +1113,361 @@ validate_self_ci() {
   fi
 }
 
+# --- a caller that under-grants does not go red, it goes ABSENT ---------------
+#
+# If a caller job's `permissions:` are narrower than the reusable workflow it
+# calls, GitHub refuses the whole run before any job starts:
+#
+#   requesting 'pull-requests: read', but is only allowed 'pull-requests: none'
+#
+# The conclusion is `startup_failure` and it emits ZERO check runs. Measured on
+# this repository: run 31127046921 reported `jobs: 0`, and the check-runs API for
+# its head SHA listed only the checks from other workflows — `Security policy`
+# and `Secret scan (own brick) / gitleaks` were not red, they were NOT THERE.
+# Branch protection reads a missing required check as "pending", never "failed",
+# so an un-skippable gate is skipped in silence.
+#
+# That is why this guard is static. Nothing about the failure can be learned from
+# a run, because the failure is the absence of a run.
+#
+# The trap that produced it: a job-level `permissions:` block REPLACES the
+# top-level one. ci.yml's top level was already `contents: read`, and adding
+# `permissions: {contents: read}` to the sweep job looked like a restatement
+# while actually dropping `pull-requests` from whatever it was to `none`.
+validate_caller_permission_sufficiency() {
+  local findings resolved
+  local yaml_files=()
+
+  while IFS= read -r file; do
+    yaml_files+=("$file")
+  done < <(yaml_sources)
+
+  require_inputs "caller-permission scan" "${#yaml_files[@]}" "$YAML_SOURCE_FLOOR"
+
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" \
+    --ci-root "$repo_root" --count "${yaml_files[@]}")" || {
+    fail "caller-permission scan failed to execute"
+    return
+  }
+  require_inputs "caller-permission scan (resolved callees)" \
+    "$resolved" "$CALLER_PERMISSION_PAIR_FLOOR"
+
+  findings="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" \
+    --ci-root "$repo_root" "${yaml_files[@]}")" || {
+    fail "caller-permission scan failed to execute"
+    return
+  }
+
+  while IFS=$'\t' read -r file reason; do
+    [[ -z "$file" ]] || fail "$file: $reason"
+  done <<< "$findings"
+}
+
+# True (exit 0) when the scanner reports at least one finding for the file.
+scanner_reports_caller_permission_finding() {
+  local findings
+  findings="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$2" "$1")" || return 2
+  [[ -n "$findings" ]]
+}
+
+# Break the property, not the form. Every fixture below is a workflow that parses,
+# lints and reviews clean — the PERMISSION ARITHMETIC is the only thing that
+# differs. The two load-bearing cases are `narrowed-by-job` (a job-level block
+# that looks like a restatement of a sufficient top level and is not — the exact
+# shape of the bug) and `undeclared` (no grant anywhere, so the answer lives in a
+# repository setting this tree cannot see and "clean" would be a guess).
+validate_caller_permission_cases() {
+  local dir
+  dir="$(mktemp -d)"
+  trap 'rm -rf "${dir:-}"' RETURN
+  mkdir -p "$dir/.github/workflows"
+
+  # The synthetic brick every fixture calls.
+  cat > "$dir/.github/workflows/brick.yml" <<'YAML'
+on: {workflow_call: {}}
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+  cat > "$dir/.github/workflows/writer.yml" <<'YAML'
+on: {workflow_call: {}}
+permissions: {contents: write}
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+  cat > "$dir/.github/workflows/silent.yml" <<'YAML'
+on: {workflow_call: {}}
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+YAML
+
+  local brick="hseshadr/ci/.github/workflows/brick.yml@0000000000000000000000000000000000000000"
+
+  # The bug: a job-level block narrower than the callee.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/narrowed-by-job.yml"
+  # Same file, one line added — the fix.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n      pull-requests: read\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/job-sufficient.yml"
+  # No job-level block: the sufficient top level is what the callee gets.
+  printf 'permissions:\n  contents: read\n  pull-requests: read\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/top-sufficient.yml"
+  # No job-level block and an insufficient top level — the examples/ shape.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/top-narrow.yml"
+  # read does not satisfy write. Presence is not sufficiency.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/read-vs-write.yml"
+  printf 'permissions:\n  contents: write\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/write-vs-write.yml"
+  # Shorthand grants.
+  printf 'permissions: read-all\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/read-all.yml"
+  printf 'permissions: read-all\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/read-all-vs-write.yml"
+  printf 'permissions: write-all\njobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/writer.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/write-all.yml"
+  # No grant anywhere: the repository default is not in this tree.
+  printf 'jobs:\n  sweep:\n    uses: %s\n' "$brick" > "$dir/.github/workflows/undeclared.yml"
+  # A callee that asks for nothing cannot be under-granted.
+  printf 'jobs:\n  sweep:\n    uses: hseshadr/ci/.github/workflows/silent.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/silent-callee.yml"
+  # The `./` spelling ci.yml uses — same arithmetic, different ref syntax.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    permissions:\n      contents: read\n    uses: ./.github/workflows/brick.yml\n' \
+    > "$dir/.github/workflows/local-narrowed.yml"
+  # A workflow this repository cannot read is neither blamed nor counted.
+  printf 'permissions:\n  contents: read\njobs:\n  sweep:\n    uses: someone/else/.github/workflows/x.yml@0000000000000000000000000000000000000000\n' \
+    > "$dir/.github/workflows/third-party.yml"
+  # The alias form that walked a top-level write past this suite once already.
+  printf 'x-perms: &perms\n  contents: read\npermissions: *perms\njobs:\n  sweep:\n    uses: %s\n' \
+    "$brick" > "$dir/.github/workflows/aliased-narrow.yml"
+  # A step-based job has no callee; it must not be counted or blamed.
+  printf 'permissions:\n  contents: read\njobs:\n  work:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
+    > "$dir/.github/workflows/no-caller.yml"
+
+  expect_success "caller-permission guard misses a job-level block narrower than its callee" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/narrowed-by-job.yml" "$dir"
+  expect_failure "caller-permission guard flags a job-level block that grants exactly what the callee needs" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/job-sufficient.yml" "$dir"
+  expect_failure "caller-permission guard flags a job inheriting a SUFFICIENT top level" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/top-sufficient.yml" "$dir"
+  expect_success "caller-permission guard misses a job inheriting an INSUFFICIENT top level" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/top-narrow.yml" "$dir"
+  expect_success "caller-permission guard treats a granted 'read' as satisfying a required 'write'" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags a write granted against a write required" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/write-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags 'read-all' against read-only requirements" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-all.yml" "$dir"
+  expect_success "caller-permission guard treats 'read-all' as satisfying a required write" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/read-all-vs-write.yml" "$dir"
+  expect_failure "caller-permission guard flags 'write-all' against a required write" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/write-all.yml" "$dir"
+  expect_success "caller-permission guard passes a caller with NO permissions declared anywhere" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/undeclared.yml" "$dir"
+  expect_failure "caller-permission guard flags a callee that declares no permissions at all" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/silent-callee.yml" "$dir"
+  expect_success "caller-permission guard misses the './' local-ref spelling ci.yml uses" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/local-narrowed.yml" "$dir"
+  expect_failure "caller-permission guard blames a third-party workflow it cannot read" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/third-party.yml" "$dir"
+  expect_success "caller-permission guard misses an insufficient grant supplied through a YAML ALIAS" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/aliased-narrow.yml" "$dir"
+  expect_failure "caller-permission guard flags a job that calls no reusable workflow" \
+    scanner_reports_caller_permission_finding "$dir/.github/workflows/no-caller.yml" "$dir"
+
+  # The non-vacuity half: the scanner must actually RESOLVE the callees it is
+  # judging. `third-party.yml` and `no-caller.yml` contribute nothing, so a
+  # scanner whose ref resolution broke would report 0 here while still printing
+  # "no violations" above.
+  local resolved
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$dir" --count \
+    "$dir/.github/workflows/narrowed-by-job.yml" "$dir/.github/workflows/local-narrowed.yml")"
+  [[ "$resolved" == "2" ]] ||
+    fail "caller-permission scanner resolved $resolved of 2 fixture callees — ref resolution has drifted"
+  resolved="$(ruby "$repo_root/tests/lib/scan-caller-permissions.rb" --ci-root "$dir" --count \
+    "$dir/.github/workflows/third-party.yml" "$dir/.github/workflows/no-caller.yml")"
+  [[ "$resolved" == "0" ]] ||
+    fail "caller-permission scanner counted $resolved unreadable callees as resolved"
+}
+
+# --- the secret scan's range is a property of the EVENT, not of fetch-depth ----
+#
+# gitleaks-action@e0c47f4 appends `--log-opts=--no-merges --first-parent BASE^..HEAD`
+# on push and pull_request (src/gitleaks.js:103-115) and omits --log-opts only on
+# schedule / workflow_dispatch (src/index.js:176). `fetch-depth: 0` makes BASE^
+# RESOLVABLE; it does not widen the range. Measured on this repository, through
+# secret-scan.yml itself:
+#
+#   run 31051347230  push to main   0 commits scanned   reported success
+#   run 30978634362  pull_request   1 commit  scanned   reported success
+#   run 30793713570  schedule      41 commits scanned   reported success
+#
+# A repo whose only range scan runs on push/PR has therefore NEVER had its history
+# scanned by CI, while every comment and README line said it had. Two properties
+# are asserted, neither of which a comment alone can satisfy:
+#
+#   1. Every examples/ repo that calls secret-scan.yml at all also calls it from a
+#      workflow carrying an `on: schedule:` trigger, with `full-history: true`.
+#      And every caller job is NAMED — an unnamed one reports as
+#      "gitleaks / gitleaks", silently orphaning a required "Secret scan /
+#      gitleaks" status check for whoever copy-pastes it.
+#   2. The workflow's coverage step actually RUNS an explicit `--all` scan when
+#      `full-history` is requested, including on tag pushes whose action-derived
+#      range can be empty. Its real `run:` script is executed rather than grepped.
+
+# "<repo> <path> <job> <scheduled|event-range> <named|unnamed> <full-history|range-only>"
+# for every job in examples/ that calls secret-scan.yml, one per line.
+secret_scan_callers() {
+  # The Ruby program owns its own patterns; single quotes keep the shell out of them.
+  # shellcheck disable=SC2016
+  ruby -r yaml -e '
+    Dir.glob("examples/*/*.yml").sort.each do |path|
+      doc = begin
+        YAML.safe_load(File.read(path), aliases: true)
+      rescue StandardError
+        next
+      end
+      next unless doc.is_a?(Hash)
+      jobs = doc["jobs"]
+      next unless jobs.is_a?(Hash)
+      # `on:` is a YAML 1.1 boolean, so Psych keys it as true, not "on".
+      triggers = doc["on"] || doc[true]
+      scheduled = triggers.is_a?(Hash) && triggers.key?("schedule")
+      jobs.each do |job_id, job|
+        next unless job.is_a?(Hash)
+        uses = job["uses"]
+        next unless uses.is_a?(String) && uses.include?("workflows/secret-scan.yml")
+        with = job["with"]
+        puts [
+          File.basename(File.dirname(path)),
+          path,
+          job_id,
+          scheduled ? "scheduled" : "event-range",
+          (job["name"].is_a?(String) && !job["name"].strip.empty?) ? "named" : "unnamed",
+          (with.is_a?(Hash) && with["full-history"] == true) ? "full-history" : "range-only",
+        ].join(" ")
+      end
+    end
+  '
+}
+
+validate_secret_scan_history_sweep() {
+  local report repo path job scheduled named full repos
+
+  report="$(secret_scan_callers)" || {
+    fail "could not enumerate secret-scan callers in examples/"
+    return 1
+  }
+  # Vacuity floor: an empty report and a clean report are indistinguishable.
+  [[ -n "$report" ]] || {
+    fail "no examples/ workflow calls secret-scan.yml — this guard is scanning nothing"
+    return 1
+  }
+
+  while read -r repo path job scheduled named full; do
+    [[ "$named" == "named" ]] ||
+      fail "$path job '$job' calls secret-scan.yml with no name: — it reports as '$job / gitleaks', not 'Secret scan / gitleaks'"
+    if [[ "$scheduled" == "scheduled" ]]; then
+      [[ "$full" == "full-history" ]] ||
+        fail "$path job '$job' is the scheduled caller but omits full-history: true — it would scan only the event range"
+    fi
+  done <<< "$report"
+
+  repos="$(awk '{ print $1 }' <<< "$report" | sort -u)"
+  for repo in $repos; do
+    awk -v r="$repo" '$1 == r && $4 == "scheduled" && $6 == "full-history" { found = 1 }
+                      END { exit found ? 0 : 1 }' <<< "$report" ||
+      fail "examples/$repo calls secret-scan.yml but never from a scheduled workflow — its history is never swept, only each push's own commits"
+  done
+}
+
+# Execute secret-scan.yml's real coverage script the way the runner would. A
+# recording gitleaks double keeps the test offline while proving the exact CLI
+# arguments; git itself stays real and falls back to "?" outside a repository.
+run_scan_coverage_step() {
+  local event="$1" full="$2" expected_scan="$3" script workdir status=0
+  script="$(extract_run_script_by_env .github/workflows/secret-scan.yml SCAN_FULL_HISTORY)" || return 2
+  workdir="$(mktemp -d)"
+  mkdir -p "$workdir/bin"
+  cat > "$workdir/bin/gitleaks" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$GITLEAKS_ARGS_FILE"
+SH
+  chmod +x "$workdir/bin/gitleaks"
+  (
+    cd "$workdir" &&
+      env GITHUB_EVENT_NAME="$event" SCAN_FULL_HISTORY="$full" \
+        GITLEAKS_ARGS_FILE="$workdir/gitleaks.args" PATH="$workdir/bin:$PATH" \
+        bash -e -u -o pipefail -c "$script"
+  ) >/dev/null 2>&1 || status=$?
+
+  if [[ "$status" -eq 0 && "$expected_scan" == "full" ]]; then
+    diff -u <(printf '%s\n' git --redact --no-banner '--log-opts=--all' .) \
+      "$workdir/gitleaks.args" >/dev/null 2>&1 || status=1
+  elif [[ "$status" -eq 0 && -e "$workdir/gitleaks.args" ]]; then
+    status=1
+  fi
+  rm -rf "$workdir"
+  return "$status"
+}
+
+validate_secret_scan_action_is_non_exfiltrating() {
+  ruby -e '
+    require "yaml"
+
+    workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    steps = workflow.fetch("jobs").fetch("gitleaks").fetch("steps")
+    action = steps.find { |step| step.fetch("uses", "").start_with?("gitleaks/gitleaks-action@") }
+    abort "secret-scan.yml has no gitleaks action" if action.nil?
+
+    env = action.fetch("env", {})
+    %w[
+      GITLEAKS_ENABLE_COMMENTS
+      GITLEAKS_ENABLE_SUMMARY
+      GITLEAKS_ENABLE_UPLOAD_ARTIFACT
+    ].each do |name|
+      abort "#{name} must be false so findings never leave the job" unless env[name] == "false"
+    end
+
+    version = env.fetch("GITLEAKS_VERSION", "")
+    abort "GITLEAKS_VERSION must be an exact release" unless version.match?(/\A\d+\.\d+\.\d+\z/)
+  ' .github/workflows/secret-scan.yml
+}
+
+validate_secret_scan_coverage_cases() {
+  # Both polarities on purpose. If extraction ever breaks — step renamed, env var
+  # dropped — the expect_success cases go red rather than the expect_failure cases
+  # passing vacuously on a script that was never found.
+  expect_success "secret-scan refuses a scheduled full-history sweep" \
+    run_scan_coverage_step schedule true full
+  expect_success "secret-scan refuses a workflow_dispatch full-history sweep" \
+    run_scan_coverage_step workflow_dispatch true full
+  expect_success "secret-scan refuses an ordinary push caller that made no full-history claim" \
+    run_scan_coverage_step push false range
+  expect_success "secret-scan refuses an ordinary pull_request caller" \
+    run_scan_coverage_step pull_request false range
+
+  # `full-history` is an execution mode, not an event assertion. Release workflows
+  # run on tag pushes, whose action-derived range can be empty; the explicit CLI
+  # scan must therefore run with --all on every event family.
+  expect_success "secret-scan fails to sweep full history on a tag-style push" \
+    run_scan_coverage_step push true full
+  expect_success "secret-scan fails to sweep full history on pull_request" \
+    run_scan_coverage_step pull_request true full
+
+  expect_success "secret-scan action may upload or comment secret findings" \
+    validate_secret_scan_action_is_non_exfiltrating
+}
+
 # A decoded private key must not be able to outlive the job that decoded it.
 #
 # examples/aml-filter/deploy.yml decoded an Ed25519 PRODUCTION signing seed and
@@ -1339,6 +1698,10 @@ run_check validate_publish_provenance_cases
 run_check validate_trusted_command_contracts
 run_check validate_argument_guards
 run_check validate_self_ci
+run_check validate_caller_permission_sufficiency
+run_check validate_caller_permission_cases
+run_check validate_secret_scan_history_sweep
+run_check validate_secret_scan_coverage_cases
 run_check validate_no_vacuous_success
 run_check validate_no_vacuous_success_cases
 run_check validate_key_scrub_cannot_be_skipped
