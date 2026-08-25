@@ -12,7 +12,7 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
     with:
       sync-args: "--frozen --all-extras"
   # ADOPTING THIS RENAMES THE CHECK RUN. A caller job that `uses:` a reusable
@@ -25,4 +25,4 @@ jobs:
   # sweep is the scheduled caller in security-audit.yml, not this one.
   gitleaks:
     name: Secret scan
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0

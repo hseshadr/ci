@@ -12,7 +12,7 @@
 # PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
 # `@ci-vN`, first-party included. Copy the release SHA from CHANGELOG.md and keep the
 # trailing version comment for Dependabot. Usage:
-#   - uses: hseshadr/ci/.github/actions/pages-deploy-dist@<40-char-sha> # ci-v2.0.1
+#   - uses: hseshadr/ci/.github/actions/pages-deploy-dist@<40-char-sha> # ci-v3.3.0
 #     with:
 #       project-name: aml-filter
 #       dist-dir: frontend/dist

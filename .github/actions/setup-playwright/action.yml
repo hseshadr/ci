@@ -12,9 +12,9 @@
 # PIN TO A COMMIT SHA, NOT A TAG — tests/security-policy.sh rejects a moving
 # `@ci-vN`, first-party included. Copy the release SHA from CHANGELOG.md and keep the
 # trailing version comment for Dependabot. Usage:
-#   - uses: hseshadr/ci/.github/actions/setup-pnpm@<40-char-sha> # ci-v2.0.1
+#   - uses: hseshadr/ci/.github/actions/setup-pnpm@<40-char-sha> # ci-v3.3.0
 #     with: { working-directory: frontend }
-#   - uses: hseshadr/ci/.github/actions/setup-playwright@<40-char-sha> # ci-v2.0.1
+#   - uses: hseshadr/ci/.github/actions/setup-playwright@<40-char-sha> # ci-v3.3.0
 #     with:
 #       working-directory: frontend
 #       cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}

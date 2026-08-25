@@ -42,7 +42,7 @@
 #          github.event.workflow_run.conclusion == 'success' &&
 #          github.event.workflow_run.head_branch == 'main' &&
 #          github.event.workflow_run.head_repository.full_name == github.repository) }}
-#       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@<40-char-sha> # ci-v2.0.1
+#       uses: hseshadr/ci/.github/workflows/cloudflare-pages-deploy.yml@<40-char-sha> # ci-v3.3.0
 #       with:
 #         project-name: edge-reco
 #         dist-dir: frontend/app/dist
@@ -192,7 +192,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup pnpm + Node (+ install)
-        uses: hseshadr/ci/.github/actions/setup-pnpm@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/setup-pnpm@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           package-json-file: ${{ inputs.package-json-file }}
           node-version: ${{ inputs.node-version }}
@@ -213,7 +213,7 @@ jobs:
         run: bash --noprofile --norc -euo pipefail -c "$TRUSTED_COMMAND"
 
       - name: Deploy to Cloudflare Pages
-        uses: hseshadr/ci/.github/actions/pages-deploy-dist@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/pages-deploy-dist@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           project-name: ${{ inputs.project-name }}
           dist-dir: ${{ inputs.dist-dir }}

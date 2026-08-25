@@ -8,6 +8,12 @@ included.
 
 ## Unreleased
 
+No changes yet.
+
+## ci-v3.3.0 — 2026-08-25
+
+Commit `8166345c9355dde54c12fa95d0457c4ea97d3e64`.
+
 **A brick changed shape**: `secret-scan.yml` gains one optional input, `full-history`
 (boolean, default `false`). Re-pinning without setting it is a drop-in — the default is
 the existing event-range behaviour. Setting it runs an explicit
@@ -95,6 +101,15 @@ now carries its own `permissions:` block. Without it that job cannot start — s
   ([run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
   `Secret scan / gitleaks` SUCCESS on `main`). First entry ever removed by an actual
   convergence rather than by a bug fix. 30 -> 29.
+- **The post-release re-pin closes the release-commit bootstrap.** All 49 current
+  first-party `uses:` refs in `.github/`, `examples/`, and the README now execute the
+  immutable `ci-v3.3.0` commit, and current placeholder comments name that exact release.
+  `validate_current_first_party_release` resolves the tag and fails if either surface
+  falls behind again; CHANGELOG history is deliberately excluded.
+- **The drift backlog is reconciled against the live repositories.** Fifteen entries
+  that the detector now reports stale were deleted, taking the active backlog from 32 to
+  17 with `0 new`. EdgeReco's `dagger.yml` and both Assay full-history callers now adopt
+  the hardened shared secret scan; no temporary bootstrap entry remains.
 
 ## ci-v3.2.1 — 2026-08-04
 

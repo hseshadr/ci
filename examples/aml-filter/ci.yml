@@ -37,7 +37,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
 
   frontend:
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: hseshadr/ci/.github/actions/setup-pnpm@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+      - uses: hseshadr/ci/.github/actions/setup-pnpm@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           package-json-file: frontend/package.json
           node-version-file: frontend/.nvmrc
@@ -55,7 +55,7 @@ jobs:
       # Weights come from a GitHub RELEASE, not a package registry, so the fetch
       # needs GH_TOKEN. Job-level `env:` is what reaches a composite's steps —
       # the composite deliberately takes no secret input.
-      - uses: hseshadr/ci/.github/actions/restore-model-cache@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+      - uses: hseshadr/ci/.github/actions/restore-model-cache@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         env:
           GH_TOKEN: ${{ github.token }}
         with:
@@ -71,7 +71,7 @@ jobs:
             gh release download model-weights-v1 --repo "$GITHUB_REPOSITORY" --dir "$dir/onnx" --clobber \
               --pattern model_quantized.onnx
             node scripts/download-model.mjs
-      - uses: hseshadr/ci/.github/actions/setup-playwright@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+      - uses: hseshadr/ci/.github/actions/setup-playwright@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           working-directory: frontend
           cache-key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
