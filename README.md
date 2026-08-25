@@ -1,16 +1,59 @@
 # hseshadr/ci — one home for the portfolio's CI/CD
 
-**TL;DR — what this is.** Every repo in the edgeproc portfolio used to copy-paste the
-same GitHub Actions setup: check out the code, install the toolchain, run the quality
-gate, scan for leaked secrets, audit dependencies, deploy the site. Seven repos, seven
-near-identical copies that drifted apart over time. This repo holds **one shared copy
-of each**, and every other repo calls it in a few lines. Change CI once here; all seven
-get the change.
+**TL;DR — what this is.** GitHub delivers an event; a two-step workflow checks out one
+immutable source snapshot and invokes Dagger; Dagger owns every repository-authored
+check, build, release, and deploy after that. `dagger check` is the same command locally
+and in GitHub. Reusable workflows and composite actions in this repository are migration
+artifacts, not the target architecture.
+
+**Where the migration stands.** Phase 0 adds a central Dagger policy module and a live,
+fail-new fleet detector. It records 75 existing violations by repository, workflow, job,
+and semantic digest through 2026-10-01. A comment can change without invalidating an
+entry; a changed command, action, permission, trigger, module boundary, required context,
+or external check cannot. Existing required contexts remain during migration, so this
+control lands without turning a current gate off.
+
+Run the exact central policy locally:
+
+```bash
+dagger check
+tests/dagger-control-plane.sh --today "$(date +%F)"
+```
+
+The second command needs an authenticated `gh` session that can read branch protection
+and CodeQL settings across the public fleet. A missing repository or unreadable metadata
+is an error, never an empty green sweep.
 
 **Why it works.** GitHub lets a workflow *call* a workflow that lives in another repo
 (`uses: hseshadr/ci/...@<commit-sha>`), and lets a job *reuse* a bundle of steps called a
 "composite action." So the shared logic lives here exactly once, and each repo keeps
 only the one thing that is genuinely its own — its build command.
+
+## The Dagger-only execution contract
+
+A repository-authored execution job has exactly two pinned actions: `actions/checkout`
+with `persist-credentials: false`, then `dagger/dagger-for-github` with a numeric engine
+version. Pull-request ingress is read-only and receives no secrets. A Dagger module takes
+an explicit typed `Directory` or `Workspace`; credential arguments use Dagger `Secret`,
+never strings; `currentWorkspace` and `current_workspace` are rejected because their
+implicit source is absent from the function cache key.
+
+There are two narrow exceptions, both enumerated centrally and bound to Dagger with
+`needs`:
+
+- A source-free privileged publisher may only download Dagger-produced artifacts and
+  invoke the pinned OIDC publisher inside a protected environment.
+- A metadata projection may translate Dagger's result into GitHub metadata; it may not
+  execute source or reproduce a quality/deploy command.
+
+GitHub events are ingress, so GitHub necessarily starts the thin Dagger job. Dependabot
+is also a GitHub service that opens dependency-update pull requests; it is not an
+execution gate and cannot meaningfully be "started by Dagger." CodeQL analysis can and
+should run inside Dagger, after disabling GitHub's independent default setup. GitGuardian
+may remain a non-required, non-mutating external observer; the detector reports it as
+`external-advisory` and fails if it becomes a required context. Cloudflare Git deployment
+is execution authority, so replace it with Wrangler inside Dagger and disable the app
+deployment. Cloudflare deployment itself remains fully supported through that path.
 
 **Where that stands today.** Written is not the same as adopted, so the picture shows
 both:

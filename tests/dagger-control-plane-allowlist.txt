@@ -1,0 +1,79 @@
+# Phase-0 migration debt. Each entry binds one repository/file/job to its
+# canonical behavior digest and expires on 2026-10-01. Comments and formatting
+# do not change a digest; any execution or permission change does.
+almamesh/<metadata>/branch-protection|97d7565d3dc8880f0fcb3fccf259be0df1d73d219ab3010c8d5d2da8f84eff64|2026-10-01|migrate legacy branch contexts to Dagger
+almamesh/dagger.json/<module>|4f52b621838717e39d28b74f4eaa4c29a3b2de3c955c89f1fc9d4a9fc5141ad0|2026-10-01|replace implicit workspace access with an explicit source
+almamesh/dagger.yml/dagger|d6c39de8c8255b10ff5fa09c473cca383f4ee3b23cef677f9b0ed413336526ef|2026-10-01|harden the existing Dagger bootstrap
+almamesh/deploy.yml/deploy|81247127495937d648263c0e78b12b263307d17db78508511f711e7699e209d6|2026-10-01|move this execution into Dagger
+almamesh/deploy.yml/preflight|2b6c14ea1bff8982580aa520ad50e43ce6e5064b0f714f1527ad685c601e5396|2026-10-01|move this execution into Dagger
+almamesh/nightly-e2e.yml/nightly-e2e|92e98ab3b7f366d2b9b3438485e7dfa035d5d1606a457e9b1f4fb8d0ba4a1b11|2026-10-01|move this execution into Dagger
+almamesh/security-audit.yml/bun-audit|8016cd41495a3141bf2cad4ab262d073e6c8e7607e51c95ca44b1b5dcebe47dc|2026-10-01|move this execution into Dagger
+almamesh/security-audit.yml/pip-audit|52682c463734801bc9ccb24c4ab088fbe05e74382935e180847735ec822ea3be|2026-10-01|move this execution into Dagger
+almamesh/test.yml/secret-scan|cc01ef5af4e60b1d90ef27ab210a65940f5ce9dcfba7819a5cb78a232f1ec917|2026-10-01|move this execution into Dagger
+aml-filter/<metadata>/branch-protection|60fc0b4a51333587d72edc75b88887ce55df3eebafadbd9e37beba2e7b8b4aef|2026-10-01|migrate legacy branch contexts to Dagger
+aml-filter/ci.yml/frontend|5e6f69196a6c5d5ccd8e1f673e86378b8b7de93fb83ffb7b18f95e59d4f428bc|2026-10-01|move this execution into Dagger
+aml-filter/ci.yml/gitleaks|0eb50d56fb38cf2d681d792d27d9a18e57aefab89f78445316a7edefa8c03941|2026-10-01|move this execution into Dagger
+aml-filter/dagger.yml/check|ace46c4c340e8ce9334fc0578c097baf1b3dac6617b8e67d6a54996e2eff4011|2026-10-01|harden the existing Dagger bootstrap
+aml-filter/deploy.yml/deploy|3dd1882c78112b0bca72d6e33746d9780adaaf6849a8137de606a28c81ea1c03|2026-10-01|move this execution into Dagger
+aml-filter/deploy.yml/preflight|80f201b928fd8e746e79b5f3e7f9ca3517c1e2199d079dff7f1d65701fc54797|2026-10-01|move this execution into Dagger
+aml-filter/publish-watchlist.yml/publish|e668d4fe9bc1978fa5ed827913158640925c1dca29da10571124eaeb066ad3b1|2026-10-01|move this execution into Dagger
+aml-filter/security-audit.yml/audit|99c7dd70d719cc7f1f1607f0f4939e6b682c46418b241b35f561572d70785672|2026-10-01|move this execution into Dagger
+aml-filter/security-audit.yml/secrets|948a982271e3cbf5366f4d82f77ddba66ee7161e97d96e1c1f64cd70bb5b28f2|2026-10-01|move this execution into Dagger
+aml-filter/watchlist-freshness.yml/freshness|22a3bde6fa18c8d2da66cf2d0ef406512c7caf995451cc99b4838e7674474267|2026-10-01|move this execution into Dagger
+assay/<metadata>/branch-protection|1ee0e35bacb5ef724b44d61d85618779f9a4ac0bce63630fee240f1171320323|2026-10-01|migrate legacy branch contexts to Dagger
+assay/dagger.yml/dagger|f487d1950fc745ce16bdda0895e150eedc6127d49364362b8a9cc1a6b91eeb2d|2026-10-01|make the existing workflow an exact Dagger bootstrap
+assay/publish.yml/build|826047ce09d8a692274bc0f99f083aa1e4a3cda2b0f1b201614c310fa36614cc|2026-10-01|move this execution into Dagger
+assay/publish.yml/preflight-npm|7c7320447d6315a13cd9bbd7702fdbaaaf45d389ee4fc6a43a8a0f041f5a962e|2026-10-01|move this execution into Dagger
+assay/publish.yml/preflight-python|9cadece1af45cd6e3d1c84c9bbf76f8671d5b523631ffff4f011c06f8f377c92|2026-10-01|move this execution into Dagger
+assay/publish.yml/publish-github|57fb6cfd56ede7f1d2bb8f8d1b46d9e115373ba4900b95b53e6106411e9f246b|2026-10-01|move this execution into Dagger
+assay/publish.yml/publish-npm|f8bb3e22f6bfec3dfa4ab9f8425697896dc1e29f7a4cd4506a94b2adfa626a19|2026-10-01|move this execution into Dagger
+assay/publish.yml/publish-python|2a6b0431d524b50cd74a6044b500daaf811b7b88bd2480a587801666e21b005d|2026-10-01|replace with a source-free publisher bridge
+assay/publish.yml/recover-dev2|5a88444828e402e2beff81c9884302455a2312035befd5a760c434afe61afb25|2026-10-01|move this execution into Dagger
+assay/publish.yml/secret-scan|4d75028b6e4c8597286b7b214bb35a10babec26da03c330e661e1b346246472b|2026-10-01|move this execution into Dagger
+assay/publish.yml/verify-published|fd3cab4e44b9176258f63988b77f067ba23ac315ddcfecc78ae74253bef005c1|2026-10-01|move this execution into Dagger
+assay/security-audit.yml/secrets|c8edbae2eedbed69c2f4dc24f571d7648e4a1dcb0f0eae684dd1e75c55d9f557|2026-10-01|move this execution into Dagger
+assay/security-audit.yml/shared-secrets|fde95d4fac247ff06cac7cc6cc4333d0278d78606a5a18cc8bac05cbf8269d0d|2026-10-01|move this execution into Dagger
+ci/<metadata>/branch-protection|dc0251b6a9d74679c33829f94ec8fa232395b200d9c93b945b356555d8515d30|2026-10-01|migrate legacy branch contexts to Dagger
+ci/ci.yml/secret-scan-sweep|9320a4602dd9b4c021935e432c5d9f25924a4df89bda1d249f6d73f6deaf6468|2026-10-01|move this execution into Dagger
+ci/ci.yml/secret-scan|ed99df1bcd026e7acb7fbbb6aab71ce747b723071be71b6634b52ed0c29da2bd|2026-10-01|move this execution into Dagger
+ci/ci.yml/security-policy|eac3b10285732dd876d38a4e6aab142be0b8bfc4f9496641ba8bfb330dbea462|2026-10-01|move this execution into Dagger
+ci/cloudflare-pages-deploy.yml/deploy|1c4c0a5f6714062b722b22582784ffe430b55a8507030c6ebb2f569d58d61cb2|2026-10-01|move this execution into Dagger
+ci/cloudflare-pages-deploy.yml/preflight|71da252dad4df918bcc3722c6c1a4f056932f238ac515bf56308a43025a50e9d|2026-10-01|move this execution into Dagger
+ci/consumer-drift.yml/consumer-drift|9a3487e18264ff621739f792878db78b6099b704c43ab17b25ca25c642100653|2026-10-01|pre-merge digest for the legacy detector job
+ci/consumer-drift.yml/consumer-drift|7c10bece5b10f47b03edfe479319975f8612ff9ece6cbb0578b334d18c799512|2026-10-01|replace the legacy detector job with Dagger
+ci/dagger.json/<module>|4b62d186290abd5651b6ca8a99670b9e820692e11ed5ff8b5e786d6c59475917|2026-10-01|pre-merge repository has no Dagger module
+ci/frontend-gate.yml/gate|c72b2769c84c6288772cfd0c1ee72d5c78b752ed73827acbbe2259fa59030eae|2026-10-01|move this execution into Dagger
+ci/python-gate.yml/gate|c0b50bdc385b15559d5d089983e4b87d59f975cfa862147e3709bfafbb3fa115|2026-10-01|move this execution into Dagger
+ci/python-publish.yml/publish|1b21116fcfe3dd3271d1f00c086915e5b9d92099b5311ca8e858f5565c0010a6|2026-10-01|move this execution into Dagger
+ci/secret-scan.yml/gitleaks|21147be2a56b50543e743d0773878375e07540e12beeda914adbd8aca14720f5|2026-10-01|move this execution into Dagger
+ci/security-audit.yml/configured|985d6c3803e38d470314daa170742e2f73ce725fb6607cf56a3b9d54a553865e|2026-10-01|move this execution into Dagger
+ci/security-audit.yml/pip-audit|c36267502876d8bbe8ad749bf464de4a82264025ad8636ee5b596557f4d8c1d4|2026-10-01|move this execution into Dagger
+ci/security-audit.yml/pnpm-audit|419583e27bbad91f97cfab7e9ce9cec2b4e5cd5cc4ae93618ef9ab6284079a9c|2026-10-01|move this execution into Dagger
+ci/ts-publish.yml/publish|73768d1c4db1f63b322f92290382ed2c30fa3e77b65f344d7cd880e4aec9a45b|2026-10-01|move this execution into Dagger
+edge-proc/<metadata>/branch-protection|045af5ee29520a667a669de85f588a09787daff82a9eebb11471a1b102f22752|2026-10-01|migrate legacy branch contexts to Dagger
+edge-proc/ci.yml/gate|868c08cecb09e527a18f219f6c44f193ef61e10e35de69f49c301fbf9f0faea8|2026-10-01|move this execution into Dagger
+edge-proc/ci.yml/gitleaks|0eb50d56fb38cf2d681d792d27d9a18e57aefab89f78445316a7edefa8c03941|2026-10-01|move this execution into Dagger
+edge-proc/dagger.json/<module>|4b62d186290abd5651b6ca8a99670b9e820692e11ed5ff8b5e786d6c59475917|2026-10-01|add an explicit-source Dagger module
+edge-proc/publish.yml/dependency-audit|098c0247ff864e3e912b04d81ff121dfac07d2004fc836b0991c8ea6060fe2e3|2026-10-01|move this execution into Dagger
+edge-proc/publish.yml/publish|3ff82235e8cee757d21c98b18c2f02d8cf3e9c8c53aa8954377549cf54d64fd4|2026-10-01|move this execution into Dagger
+edge-proc/publish.yml/release-eligibility|0c2ec3d5214277b7fd4437fb543e45d919c5e431d6ec40146fad9973bbdf1e44|2026-10-01|move this execution into Dagger
+edge-proc/publish.yml/verify-published|18583b9b034b9593b35cff77ec466515d6816d5b8f987cc354908a180ab0358c|2026-10-01|move this execution into Dagger
+edge-proc/security-audit.yml/pip-audit|aa0f02d5728f725ec9ec2397f57801b223aaca73016584a0b12769024321ade2|2026-10-01|move this execution into Dagger
+edge-reco/<metadata>/branch-protection|1b71b0fe1cb45e8a4160ce674d9db6d9d557a65c93581f188ab8ad7db8574abe|2026-10-01|migrate legacy branch contexts to Dagger
+edge-reco/<metadata>/check-apps|4aa4706ef4e278dd21dd02f8b610ea91e22493a9ae6ae350ba1c764299ca3a6e|2026-10-01|remove independent Cloudflare check execution
+edge-reco/<metadata>/codeql-default|693b226f2236f38b9c264b8f9b138378cc0dc6c15ed273eb1b990a0c693581a5|2026-10-01|move CodeQL execution into Dagger
+edge-reco/dagger.json/<module>|8726a4a78e6d7ec2a0aeb16589780a9b417d439535aa7fa41543c6e69bc54edb|2026-10-01|replace implicit workspace access with an explicit source
+edge-reco/dagger.yml/gitleaks|20961acf009abea3c946829b3368f65f6724eb39e85787ae9ef67152b061b6e9|2026-10-01|move this execution into Dagger
+edge-reco/deploy.yml/deploy|f830954a7a3c64cc1d915fe2d551f9af673c8303d67e239edf02bbb3676ac12f|2026-10-01|move this execution into Dagger
+edgeproc-core/<metadata>/branch-protection|045af5ee29520a667a669de85f588a09787daff82a9eebb11471a1b102f22752|2026-10-01|migrate legacy branch contexts to Dagger
+edgeproc-core/ci.yml/gate|559592a749bda8a0b65169ac60e176203d99beee2a655b493f0edc9e94b37f6c|2026-10-01|move this execution into Dagger
+edgeproc-core/ci.yml/gitleaks|1fa3454ad3ac89147cddea66edfe617742827e050e780b00090021379e96d712|2026-10-01|move this execution into Dagger
+edgeproc-core/dagger.json/<module>|4b62d186290abd5651b6ca8a99670b9e820692e11ed5ff8b5e786d6c59475917|2026-10-01|add an explicit-source Dagger module
+edgeproc-core/publish.yml/publish|b12ea82acc6e02d378cf7c3028ed1cafea0e0ea346c0783a858723e7d4daee3a|2026-10-01|move this execution into Dagger
+edgeproc-core/security-audit.yml/pip-audit|aa0f02d5728f725ec9ec2397f57801b223aaca73016584a0b12769024321ade2|2026-10-01|move this execution into Dagger
+privacy-core/<metadata>/branch-protection|045af5ee29520a667a669de85f588a09787daff82a9eebb11471a1b102f22752|2026-10-01|migrate legacy branch contexts to Dagger
+privacy-core/ci.yml/gate|a273d5922a8f9e0b15697378517bd54d065359d7dff949fe9c43e9760376db73|2026-10-01|move this execution into Dagger
+privacy-core/ci.yml/gitleaks|1fa3454ad3ac89147cddea66edfe617742827e050e780b00090021379e96d712|2026-10-01|move this execution into Dagger
+privacy-core/dagger.json/<module>|4b62d186290abd5651b6ca8a99670b9e820692e11ed5ff8b5e786d6c59475917|2026-10-01|add an explicit-source Dagger module
+privacy-core/publish.yml/publish|cf10a2491a4da2299bf4b3fecfa1a0a3b04b00373a8eb89c15b5aeb6bbecbac9|2026-10-01|move this execution into Dagger
+privacy-core/security-audit.yml/audit|3b5a05af4c53834a0ebddac6700d5ae88781f61a88853331d06beae8b9f6b910|2026-10-01|move this execution into Dagger

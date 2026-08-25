@@ -8,6 +8,23 @@ included.
 
 ## Unreleased
 
+- **Phase 0 of Dagger-only CI/CD is enforceable.** A new modern Dagger 0.21.8 module
+  exposes one credential-free `policy` check from an explicit typed `Directory` source.
+  The new `Dagger` workflow is only immutable checkout with credential persistence off,
+  followed by the pinned Dagger action. Existing required contexts remain during the
+  migration.
+- **A semantic fleet detector now fails new execution drift.** It parses workflow YAML,
+  Python module ASTs, guarded `workflow_run` expressions, branch protection, CodeQL
+  default setup, and check-run app ownership. It rejects reusable or helper jobs,
+  arbitrary steps, mutable refs, implicit workspace access, string credentials, unsafe
+  pull-request permissions, zero-workflow vacuity, legacy required contexts, and
+  unenumerated publisher bridges. It discovers GitGuardian on open-PR heads but classifies
+  that non-required, non-mutating observer as `external-advisory`; Cloudflare Git deploy
+  and managed CodeQL remain violations. Both-polarity fixtures prove the behavior.
+- **The bootstrap is exact and expires.** The live sweep found 75 existing violations
+  across the eight repositories. Each grandfathered repository/file/job is bound to its
+  canonical behavior digest through 2026-10-01, so changing old debt or adding new debt
+  fails while deletion-first migrations proceed.
 - **The stale moving-major pointer is repaired.** Lightweight `ci-v3` moved from
   `72521e7` to the commit peeled from annotated `ci-v3.3.0`, `8166345`. A live scan of
   all 34 first-party workflow refs found zero `@ci-v3` consumers, so the documentation
