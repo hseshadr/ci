@@ -25,7 +25,7 @@
 #     workflow_dispatch:
 #   jobs:
 #     audit:
-#       uses: hseshadr/ci/.github/workflows/security-audit.yml@<40-char-sha> # ci-v2.0.1
+#       uses: hseshadr/ci/.github/workflows/security-audit.yml@<40-char-sha> # ci-v3.3.0
 #       with: { run-python-audit: true }
 name: Security audit (reusable)
 
@@ -107,7 +107,7 @@ jobs:
 
       # run-sync: false — we `uv export` the lock, not build a venv.
       - name: Setup Python + uv
-        uses: hseshadr/ci/.github/actions/setup-python-uv@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/setup-python-uv@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           working-directory: ${{ inputs.python-working-directory }}
           run-sync: "false"
@@ -163,7 +163,7 @@ jobs:
       # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
       # directly; no node_modules needed.
       - name: Setup pnpm + Node
-        uses: hseshadr/ci/.github/actions/setup-pnpm@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+        uses: hseshadr/ci/.github/actions/setup-pnpm@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
           package-json-file: ${{ inputs.frontend-working-directory }}/package.json
           node-version: ${{ inputs.node-version }}

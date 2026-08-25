@@ -680,6 +680,59 @@ validate_first_party_pins() {
     "${yaml_files[@]}" || true)
 }
 
+# A release is not actually adopted by this repository while its nested actions,
+# reusable-workflow examples, and copy-paste snippets still execute the previous
+# release. Resolve the immutable tag instead of duplicating its SHA here, then
+# require every current first-party ref and versioned placeholder to agree with it.
+# CHANGELOG.md is deliberately out of scope: its older refs are release history.
+validate_current_first_party_release() {
+  local current_tag
+  local current_sha actual_refs placeholder_refs
+  local release_sources=() placeholder_sources=()
+
+  while IFS= read -r file; do
+    release_sources+=("$file")
+  done < <(yaml_sources)
+  release_sources+=(README.md)
+  while IFS= read -r file; do
+    placeholder_sources+=("$file")
+  done < <(find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+  placeholder_sources+=(README.md)
+
+  current_tag="$(git tag --list 'ci-v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+  [[ -n "$current_tag" ]] || {
+    fail "current release tag could not be discovered"
+    return
+  }
+  current_sha="$(git rev-parse "${current_tag}^{}")" || {
+    fail "current release tag $current_tag does not resolve"
+    return
+  }
+  actual_refs="$(grep -HInE \
+    'uses:[[:space:]]+hseshadr/ci/[^[:space:]]+@[0-9a-f]{40}[[:space:]]+# ci-v[0-9]+\.[0-9]+\.[0-9]+' \
+    "${release_sources[@]}" || true)"
+  require_inputs "current first-party release scan" \
+    "$(grep -c . <<< "$actual_refs")" "$USES_LINE_FLOOR"
+
+  while IFS=: read -r file line_number line; do
+    [[ -z "$file" ]] && continue
+    [[ "$line" == *"@$current_sha # $current_tag"* ]] ||
+      fail "$file:$line_number first-party ref does not execute $current_tag ($current_sha)"
+  done <<< "$actual_refs"
+
+  placeholder_refs="$(grep -HInE \
+    'uses:[[:space:]]+hseshadr/ci/[^[:space:]]+@<(40-char-sha|sha)>[[:space:]]+# ci-v[0-9]+\.[0-9]+\.[0-9]+' \
+    "${placeholder_sources[@]}" || true)"
+  require_inputs "current first-party placeholder scan" \
+    "$(grep -c . <<< "$placeholder_refs")" 10
+
+  while IFS=: read -r file line_number line; do
+    [[ -z "$file" ]] && continue
+    [[ "$line" == *"# $current_tag"* ]] ||
+      fail "$file:$line_number first-party placeholder does not name $current_tag"
+  done <<< "$placeholder_refs"
+}
+
 # validate_first_party_release_lineage lives in tests/lib/ so the scenario suite in
 # tests/lineage-guard-cases.sh can drive the same code against synthetic repos —
 # the release-commit bootstrap it has to tolerate is not reproducible in this repo
@@ -1692,6 +1745,7 @@ run_check validate_dangerous_trigger_suppressions
 run_check validate_dangerous_trigger_suppression_cases
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
+run_check validate_current_first_party_release
 run_check validate_first_party_release_lineage
 run_check validate_publish_provenance
 run_check validate_publish_provenance_cases

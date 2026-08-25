@@ -18,9 +18,9 @@ both:
 ```mermaid
 flowchart TD
     CI["hseshadr/ci — one copy of each CI job<br/>7 reusable workflows + 5 composite actions"]
-    CI -->|"called at a pinned commit: 605e51c = ci-v3.2.1"| USED["In use today — 7 call-sites<br/>ts-publish.yml ×3 · setup-python-uv ×3 · secret-scan.yml ×1"]
-    USED --> WHO["assay · edge-proc · edgeproc-core · privacy-core · aml-filter<br/>their release path (and aml-filter's CI) runs this shared copy"]
-    CI -.->|"nobody calls these yet"| IDLE["The other 9 bricks — 0 call-sites<br/>almamesh · edge-reco<br/>still hand-roll their own CI"]
+    CI -->|"called at immutable ci-v3.2.1 / ci-v3.3.0 SHAs"| USED["In use today — 11 call-sites<br/>secret-scan.yml ×7 · setup-python-uv ×2 · security-audit.yml ×1 · ts-publish.yml ×1"]
+    USED --> WHO["assay · edge-proc · edgeproc-core · privacy-core · aml-filter · edge-reco<br/>six repos now execute a shared control"]
+    CI -.->|"no shared call yet"| IDLE["almamesh<br/>its current workflows remain bespoke"]
 ```
 
 The dotted branch is the point of the [consumer-drift
@@ -32,8 +32,8 @@ away. The counts below are that measurement.
 standardized." One place to bump `actions/checkout`, one place to fix the gitleaks
 pattern, one place that defines what "run the gate" means. No drift.
 
-**Status.** Current release: **`ci-v3.2.1`** (commit
-`605e51cbc86f452b56edcf1c9660921da797cbfe`, 2026-08-04). Templates written and statically
+**Status.** Current release: **`ci-v3.3.0`** (commit
+`8166345c9355dde54c12fa95d0457c4ea97d3e64`, 2026-08-25). Templates written and statically
 validated — all 32 YAML files parse, and `actionlint` plus `zizmor` run in CI over the
 workflows *and* over `examples/` (the examples need staging into a `.github/workflows/`
 layout first, which `tests/lint-examples.sh` does; a plain repo-root scan reaches none of
@@ -41,23 +41,22 @@ them). Both are clean. Every example is additionally resolved against the reposi
 written for — see [Guards that run in CI](#guards-that-run-in-ci). The cross-repo [access
 flip](#required-setup-read-this-first) is done, so callers resolve.
 
-**Adopted in code by five repos — seven call-sites, six of them on the publish path.**
-Counted by grepping every consumer's `.github/workflows/` on 2026-08-06:
+**Adopted in code by six repos — eleven call-sites.** Counted by the live consumer sweep on
+2026-08-25:
 
 | Brick | Call-sites | Where |
 |---|---|---|
-| `setup-python-uv` (composite) | 3 | assay, edge-proc, edgeproc-core |
-| `ts-publish.yml` (reusable workflow) | 3 | assay (×2), privacy-core |
-| `secret-scan.yml` (reusable workflow) | 1 | aml-filter (`ci.yml` — the first non-publish adoption) |
-| the other 4 composites and 5 reusable workflows | **0** | nowhere |
+| `secret-scan.yml` (reusable workflow) | 7 | assay (×2), aml-filter, edge-proc, edge-reco, edgeproc-core, privacy-core |
+| `setup-python-uv` (composite) | 2 | edge-proc, edgeproc-core |
+| `security-audit.yml` (reusable workflow) | 1 | edge-proc |
+| `ts-publish.yml` (reusable workflow) | 1 | privacy-core |
+| the other 4 composites and 4 reusable workflows | **0** | nowhere |
 
-`privacy-core` calls `ts-publish.yml` cross-repo; `assay` calls `ts-publish.yml` cross-repo
-**and** carries an inline PyPI job that composes this repo's `setup-python-uv` composite;
-`edge-proc` and `edgeproc-core` carry the same inline PyPI job (cross-repo PyPI is
-structurally impossible — see the warning below). All seven call-sites pin the `ci-v3.2.1`
-commit SHA `605e51c…`, each with a matching `# ci-v3.2.1` comment — verified against every
-consumer's default branch on 2026-08-06. `almamesh` and `edge-reco` have zero call-sites of
-any kind.
+`privacy-core` calls `ts-publish.yml` cross-repo; `edge-proc` and `edgeproc-core` compose
+`setup-python-uv` inside their inline PyPI jobs (cross-repo PyPI is structurally
+impossible — see the warning below). Eight existing calls still pin `ci-v3.2.1`; the new
+EdgeReco scan and Assay's two full-history scans pin `ci-v3.3.0`, whose explicit
+full-history mode is safe on tag pushes. `almamesh` currently has zero shared call-sites.
 
 **The publish path is LIVE-VALIDATED end-to-end — two consumer releases have run
 through it green (2026-07-22):**
@@ -77,10 +76,9 @@ there: aml-filter
 [run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153) on
 `main`, job `Secret scan / gitleaks` SUCCESS, at the `ci-v3.2.1` SHA.
 
-Still unproven: the gate, security-audit, frontend, and deploy templates
-have **no consumer runs** — those repos still run their own inline `ci.yml` and
-`security-audit.yml`. A daily sweep counts exactly how much of that is left: **29
-hand-rolled controls across 7 consumer repositories** as of 2026-08-06 (see
+Still unproven: the gate, frontend, and deploy templates have **no consumer runs** — those
+repos still run their own inline jobs. A daily sweep counts exactly how much of that is
+left: **17 hand-rolled controls across 6 of 7 consumer repositories** as of 2026-08-25 (see
 [Consumer drift](#consumer-drift-what-is-still-hand-rolled)). And `edgeproc-core`'s six
 older green publish runs (when it was still named `shared-libs-python`) predate the
 migration *and* its PyPI trusted-publisher bootstrap, which is why the package never
@@ -105,7 +103,8 @@ nothing here checked the second one. See [Publish verification](#publish-verific
 > npm matches the *caller's* workflow filename (proven by privacy-core run 29886074787).
 
 Net: the npm publish workflow (`ts-publish.yml`) and the `setup-python-uv` composite have
-executed green inside real consumer releases — the two runs above. The gate, audit, and
+executed green inside real consumer releases — the two runs above. `security-audit.yml`
+now has an EdgeProc caller; its live run is not evidenced here. The gate, frontend, and
 deploy templates have not yet had a consumer run. See the
 [self-assessment](#self-assessment) for the scorecard.
 
@@ -123,15 +122,15 @@ permissions:
   pull-requests: read
 jobs:
   gate:
-    uses: hseshadr/ci/.github/workflows/python-gate.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/python-gate.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
     with: { sync-args: "--frozen --all-extras" }
   gitleaks:
     name: Secret scan
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
 ```
 
 That is the *whole file*, and it is copy-pasteable as written: the SHA above **is**
-`ci-v3.2.1`, the current release. `gate` runs the repo's `poe gate` (lint, format-check,
+`ci-v3.3.0`, the current release. `gate` runs the repo's `poe gate` (lint, format-check,
 types, complexity, tests + coverage floor); `gitleaks` scans **the commits this push or
 pull request introduced** — not the repository's history. Sweeping history needs a second
 caller on a `schedule`; see [What the secret scan actually
@@ -181,7 +180,7 @@ workflow cannot carry its own `schedule:`. Every consumer already has a
 jobs:
   gitleaks:
     name: Secret scan
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
     with:
       full-history: true
 ```
@@ -208,7 +207,7 @@ caller job alone. So replacing an inline job called `gitleaks` with
 ```yaml
   gitleaks:
     name: Secret scan
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<sha> # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@<sha> # ci-v3.3.0
 ```
 
 produces a check named **`Secret scan / gitleaks`**. The old `gitleaks` context stops
@@ -245,7 +244,7 @@ name as fact is precisely how the `gitleaks` mismatch got copied into five repos
 ### Our releases are `ci-vX.Y.Z`, and that can trip a consumer's own pin guard
 
 Third-party actions tag `vN`; this repo tags `ci-vN.N.N`, so the trailing comment on a
-first-party pin reads `# ci-v3.2.1`, not `# v3.2.1`. A consumer that lints its own pinned
+first-party pin reads `# ci-v3.3.0`, not `# v3.3.0`. A consumer that lints its own pinned
 `uses:` comments with a `^v\d` regex will **reject a correct `hseshadr/ci` pin** — and the
 only way to satisfy that regex is to write a comment naming a tag that does not exist.
 
@@ -463,7 +462,7 @@ Consumers pin a **full 40-character commit SHA**, with the release name in a tra
 comment so Dependabot can bump it:
 
 ```yaml
-uses: hseshadr/ci/.github/workflows/python-gate.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+uses: hseshadr/ci/.github/workflows/python-gate.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
 ```
 
 Moving tags are **not** a supported pin, not even for first-party refs.
@@ -698,16 +697,16 @@ carried their own Cloudflare Pages deploy while a reusable one sat here, and one
 five copies drifted into a fork-PR deploy hole. The bug was in the copy, not in the shared
 workflow — and nothing was comparing the two.
 
-Today's count: **29 hand-rolled controls across 7 repositories** (almamesh 6, aml-filter 5,
-edge-reco 5, assay 4, edge-proc 3, edgeproc-core 3, privacy-core 3). They are listed
+Today's count: **17 hand-rolled controls across 6 of 7 repositories** (almamesh 4,
+aml-filter 5, edge-proc 3, edge-reco 1, edgeproc-core 2, privacy-core 2; assay 0). They are listed
 individually in `tests/consumer-drift-allowlist.txt`, which is a **convergence backlog, not
 an exemption list**: every entry requires a written reason, deleting one is free, and *new*
 drift with no entry fails the build.
 
-One entry records a gap in the shared control itself: `edge-proc/publish.yml` runs an
-explicit `gitleaks detect --log-opts=--all` tag-release preflight because the action derives
-its range from the tag-push event and can inspect zero commits. Keep that exact-key entry
-until the shared secret-scan control can prove full-history behavior on tag pushes.
+One entry is now ready to converge: `edge-proc/publish.yml` still runs an explicit
+`gitleaks git --log-opts=--all` tag-release preflight because the action-derived tag range
+can inspect zero commits. `secret-scan.yml@ci-v3.3.0` now proves that same full-history
+behavior through `full-history: true`; the consumer has not adopted it yet.
 
 #### It caught one, and the cause was partly this repo
 
@@ -806,9 +805,9 @@ for everything to resolve. While the repo is public it is automatic.
 ## Standardization coverage (per repo)
 
 This is the **target** mapping — what each repo should call once migrated — not current
-adoption. Today only 6 call-sites exist, all on the publish path
+adoption. Today 11 call-sites exist across 6 repositories
 (see [Status](#hseshadrci--one-home-for-the-portfolios-cicd)), and the gap between this
-table and reality is measured: **30 hand-rolled controls across these 7 repos**
+table and reality is measured: **17 hand-rolled controls across 6 of these 7 repos**
 (see [Consumer drift](#consumer-drift-what-is-still-hand-rolled)). Adopted cells are in
 **bold**; everything else is still the target.
 
@@ -817,11 +816,11 @@ Bespoke = the irreducible repo-specific build, which still composes the shared c
 
 | Repo | Reusable workflows | Composites (inside bespoke jobs) | Irreducibly bespoke |
 |---|---|---|---|
-| **edge-proc** | python-gate, secret-scan, security-audit | **setup-python-uv** (inside its inline PyPI publish job — adopted) | none |
-| **edgeproc-core** | python-gate (+coverage), secret-scan, security-audit | **setup-python-uv** (inside its inline PyPI publish job — adopted; cross-repo `python-publish.yml` is impossible for PyPI TP) | none |
-| **assay** | python-gate, frontend-gate, secret-scan, security-audit, **ts-publish** (npm OIDC — adopted, ×2) | **setup-python-uv** (inside its inline PyPI publish job — adopted) | none |
-| **privacy-core** | frontend-gate (+Playwright), **ts-publish** (npm OIDC — adopted), secret-scan, security-audit | — | none |
-| **edge-reco** | secret-scan, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
+| **edge-proc** | python-gate, **secret-scan**, **security-audit** | **setup-python-uv** (inside its inline PyPI publish job — adopted) | none |
+| **edgeproc-core** | python-gate (+coverage), **secret-scan**, security-audit | **setup-python-uv** (inside its inline PyPI publish job — adopted; cross-repo `python-publish.yml` is impossible for PyPI TP) | none |
+| **assay** | python-gate, frontend-gate, **secret-scan (×2)**, security-audit, ts-publish | setup-python-uv | none |
+| **privacy-core** | frontend-gate (+Playwright), **ts-publish** (npm OIDC — adopted), **secret-scan**, security-audit | — | none |
+| **edge-reco** | **secret-scan**, python-gate (backend), cloudflare-pages-deploy, security-audit | setup-pnpm, restore-model-cache, setup-playwright (frontend + e2e jobs) | the frontend/e2e *gate commands* only |
 | **aml-filter** | **secret-scan** (adopted in `ci.yml`), security-audit | setup-pnpm, restore-model-cache, setup-playwright (ci); setup-pnpm + **pages-deploy-dist** (deploy) | bundle sign/verify build; `publish-watchlist.yml` |
 | **almamesh** | security-audit (python) | (optional) setup-python-uv | Bun + Pyodide `test.yml`, `deploy.yml`, `nightly-e2e.yml`; key-custody gitleaks |
 | **ci** (this repo) | **secret-scan** (via a local `./` ref, so it runs against the commit being changed) | — | its own policy suite + actionlint + zizmor + example-fidelity + the daily consumer-drift sweep, weekly on a `schedule` as well as on push/PR |
@@ -847,7 +846,7 @@ Settings this repository cannot configure for itself:
 |---|---|---|
 | **Branch protection on `main`** | ✅ done — required contexts `Security policy`, `Secret scan (own brick) / gitleaks`, `Consumer drift detector`; force-push off | Every consumer pins a commit SHA from this repo's history. An unprotected `main` means the branch those SHAs descend from can be rewritten. |
 | **Repository secret scanning + push protection** | ✅ both enabled | Complements the gitleaks job: gitleaks catches what is already committed, push protection stops the commit. |
-| **Move the `ci-v3` pointer** | ⛔ **open** — `ci-v3` still points at `72521e7`, a Dependabot merge **21 commits behind** `ci-v3.2.1`. Nothing pins it (every ref is a full SHA), so it misleads readers rather than breaking builds. Fix: `git tag -f ci-v3 ci-v3.2.1^{}` `&& git push -f origin ci-v3` | The moving major pointer is documented as "the newest release in that major". It is not. |
+| **Move the `ci-v3` pointer** | ⛔ **open** — `ci-v3` still points at `72521e7`, a Dependabot merge **25 commits behind** `ci-v3.3.0`. Nothing pins it (every ref is a full SHA), so it misleads readers rather than breaking builds. Fix: `git tag -f ci-v3 ci-v3.3.0^{}` `&& git push -f origin ci-v3` | The moving major pointer is documented as "the newest release in that major". It is not. |
 
 ## Limits — where standardization genuinely can't reach
 
@@ -880,9 +879,9 @@ An honest self-assessment against a publish-readiness checklist:
 - **No hardcoded config** — ✅ every version/path is a documented input default; the
   coverage floor is deliberately owned by each repo's gate, not a CI input.
 - **Status matches reality / tags match the story** — ✅ CHANGELOG top release =
-  `ci-v3.2.1` (`605e51c…`, 2026-08-04), and every release lists the SHA consumers actually
-  pin. All **45** first-party refs in this tree pin `ci-v3.2.1`, and
-  `validate_first_party_release_lineage` fails the build if one drifts off it. `main` sits
+  `ci-v3.3.0` (`8166345…`, 2026-08-25), and every release lists the SHA consumers actually
+  pin. All **49** current first-party `uses:` refs in this tree pin `ci-v3.3.0`, and
+  `validate_current_first_party_release` fails the build if one drifts off it. `main` sits
   ahead of the tag, and at least the first commit of that gap is structural rather than
   drift: the re-pin cannot be *in* the commit it names, because a commit cannot contain
   its own SHA. The tag is cut first, the re-pin follows. The guard accepts that one state
@@ -896,9 +895,9 @@ An honest self-assessment against a publish-readiness checklist:
   consumer's committed default branch; UNVERIFIABLE is a failure, not a pass. It caught 8
   broken references that actionlint and zizmor passed. See [Guards that run in
   CI](#guards-that-run-in-ci).
-- **The gap to full adoption is measured, not guessed** — ⚠️ **7** call-sites across 5
-  repos today, six of them on the publish path, against **29** hand-rolled controls still
-  standing across 7 repos. Every one of the 29 is itemized with a reason in
+- **The gap to full adoption is measured, not guessed** — ⚠️ **11** call-sites across 6
+  repos today, against **17** hand-rolled controls still standing across 6 of 7 repos.
+  Every one of the 17 is itemized with a reason in
   `tests/consumer-drift-allowlist.txt`, and new drift fails the build — which it did, on
   2026-08-02, catching one it had never seen before
   ([details](#it-caught-one-and-the-cause-was-partly-this-repo)). That one has since
@@ -915,7 +914,8 @@ An honest self-assessment against a publish-readiness checklist:
   **unverified** here — though `secret-scan.yml` has: aml-filter
   [run 31051313153](https://github.com/hseshadr/aml-filter/actions/runs/31051313153),
   `Secret scan / gitleaks` SUCCESS on `main` at the `ci-v3.2.1` SHA. ⛔ **Still open:** the gate,
-  security-audit, frontend, and deploy templates have zero consumer runs,
+  frontend, and deploy templates have zero consumer runs; `security-audit.yml` has an
+  EdgeProc caller but no live-run evidence recorded here,
   and cross-repo PyPI through `python-publish.yml` is structurally **impossible**
   (`job_workflow_ref` mismatch — documented above), not merely unverified; consumers
   inline that job instead.

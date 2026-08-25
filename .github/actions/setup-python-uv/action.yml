@@ -19,7 +19,7 @@
 # which runs with `id-token: write`, so a mutable ref here would reach PyPI. Copy the
 # release SHA from CHANGELOG.md and keep the trailing version comment. Usage:
 #   - uses: actions/checkout@v7
-#   - uses: hseshadr/ci/.github/actions/setup-python-uv@<40-char-sha> # ci-v2.0.1
+#   - uses: hseshadr/ci/.github/actions/setup-python-uv@<40-char-sha> # ci-v3.3.0
 #     with: { working-directory: backend, sync-args: "--locked --extra dev" }
 name: "Setup Python + uv"
 description: "Install uv (cached), pin Python, and optionally uv sync. Checkout is the caller's responsibility."
