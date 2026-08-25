@@ -8,7 +8,10 @@ included.
 
 ## Unreleased
 
-No changes yet.
+- **The stale moving-major pointer is repaired.** Lightweight `ci-v3` moved from
+  `72521e7` to the commit peeled from annotated `ci-v3.3.0`, `8166345`. A live scan of
+  all 34 first-party workflow refs found zero `@ci-v3` consumers, so the documentation
+  contract is restored without changing any consumer execution.
 
 ## ci-v3.3.0 — 2026-08-25
 
