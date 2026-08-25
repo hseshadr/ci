@@ -846,7 +846,7 @@ Settings this repository cannot configure for itself:
 |---|---|---|
 | **Branch protection on `main`** | ✅ done — required contexts `Security policy`, `Secret scan (own brick) / gitleaks`, `Consumer drift detector`; force-push off | Every consumer pins a commit SHA from this repo's history. An unprotected `main` means the branch those SHAs descend from can be rewritten. |
 | **Repository secret scanning + push protection** | ✅ both enabled | Complements the gitleaks job: gitleaks catches what is already committed, push protection stops the commit. |
-| **Move the `ci-v3` pointer** | ⛔ **open** — `ci-v3` still points at `72521e7`, a Dependabot merge **25 commits behind** `ci-v3.3.0`. Nothing pins it (every ref is a full SHA), so it misleads readers rather than breaking builds. Fix: `git tag -f ci-v3 ci-v3.3.0^{}` `&& git push -f origin ci-v3` | The moving major pointer is documented as "the newest release in that major". It is not. |
+| **Move the `ci-v3` pointer** | ✅ done — the lightweight `ci-v3` ref and annotated `ci-v3.3.0` tag both peel to `8166345c9355dde54c12fa95d0457c4ea97d3e64` (verified 2026-08-25). All 34 live first-party workflow refs use immutable SHAs; none pins the mutable major. | The convenience pointer now names the newest release in its major without changing any consumer execution. |
 
 ## Limits — where standardization genuinely can't reach
 

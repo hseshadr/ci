@@ -733,6 +733,27 @@ validate_current_first_party_release() {
   done <<< "$placeholder_refs"
 }
 
+# The moving-major ref is a convenience pointer, never a consumer pin. It still has
+# to tell the truth: ci-vN must resolve to the same immutable commit as the newest
+# ci-vN.X.Y release. Full tag history is already required by this job.
+validate_moving_major_pointer() {
+  local current_tag major_tag current_sha major_sha
+
+  current_tag="$(git tag --list 'ci-v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+  [[ "$current_tag" =~ ^ci-v([0-9]+)\. ]] || {
+    fail "newest release tag has an invalid name: $current_tag"
+    return
+  }
+  major_tag="ci-v${BASH_REMATCH[1]}"
+  current_sha="$(git rev-parse "${current_tag}^{}")"
+  major_sha="$(git rev-parse "${major_tag}^{}")" || {
+    fail "moving major tag $major_tag does not resolve"
+    return
+  }
+  [[ "$major_sha" == "$current_sha" ]] ||
+    fail "$major_tag resolves to $major_sha, not newest release $current_tag ($current_sha)"
+}
+
 # validate_first_party_release_lineage lives in tests/lib/ so the scenario suite in
 # tests/lineage-guard-cases.sh can drive the same code against synthetic repos —
 # the release-commit bootstrap it has to tolerate is not reproducible in this repo
@@ -1746,6 +1767,7 @@ run_check validate_dangerous_trigger_suppression_cases
 run_check validate_dependabot_cooldown
 run_check validate_first_party_pins
 run_check validate_current_first_party_release
+run_check validate_moving_major_pointer
 run_check validate_first_party_release_lineage
 run_check validate_publish_provenance
 run_check validate_publish_provenance_cases
