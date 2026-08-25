@@ -154,8 +154,9 @@ full commit SHA, never a moving `@ci-vN` tag; see
 | `push`, `pull_request` | `--log-opts=--no-merges --first-parent BASE^..HEAD` | **only the commits that event introduced** |
 | `schedule`, `workflow_dispatch` | nothing | **every commit in the repository** |
 
-`fetch-depth: 0` is still mandatory — it makes `BASE^` resolvable and is what lets the
-scheduled sweep reach every commit — but on its own it does **not** widen the range.
+`fetch-depth: 0` is still mandatory — it makes `BASE^` resolvable and makes every commit
+available to the explicit full-history pass — but on its own it does **not** widen the
+action's event-derived range.
 
 Measured on this repository, through `secret-scan.yml` itself:
 
@@ -171,9 +172,9 @@ history", "a credential committed five commits ago is exactly as leaked as one c
 at HEAD" — and every consumer's only caller was on `push`/`pull_request`. So no repo's
 pre-existing history had ever been scanned by CI.
 
-**The caller owns the schedule.** A `workflow_call` workflow cannot carry its own
-`schedule:`, so the fix is not inside `secret-scan.yml`. Every consumer already has a
-`security-audit.yml` on a weekly cron; add a second caller job there:
+**The caller owns when a sweep runs; the shared workflow owns how.** A `workflow_call`
+workflow cannot carry its own `schedule:`. Every consumer already has a
+`security-audit.yml` on a weekly cron, so add a second caller job there:
 
 ```yaml
 # security-audit.yml  —  on: schedule
@@ -185,14 +186,14 @@ jobs:
       full-history: true
 ```
 
-`full-history: true` does **not** widen the scan — nothing can, from inside a reusable
-workflow. It makes the expectation *machine-checked*: on any event that scans a partial
-range the job fails loudly instead of reporting a clean partial scan as clean. It defaults
-to `false` so adopting this release cannot redden an existing push/PR caller.
+`full-history: true` runs `gitleaks git --log-opts=--all` after the action's event-range
+scan. That works on schedules, manual runs, and tag pushes whose action-derived range can
+be empty. It defaults to `false`, so ordinary push/PR callers keep their fast incremental
+scan.
 
-Every run now also prints what it covered ("gitleaks swept FULL HISTORY: all N commits" or
-"gitleaks scanned ONLY the push event's commit range, out of N commits in history"),
-because "No leaks detected" over 0 commits and over 41 commits are the same three words.
+Findings remain only in redacted job logs: PR comments, job summaries, and SARIF artifact
+uploads are disabled. This matters precisely on failure—a secret scanner must not turn a
+detected credential into a downloadable artifact.
 
 `tests/security-policy.sh` refuses an `examples/` tree where a repo calls
 `secret-scan.yml` but never from a scheduled workflow, and executes the coverage step
@@ -308,7 +309,7 @@ it is broken.
 |---|---|---|
 | `python-gate.yml` (workflow) | your Python repo runs `uv run poe gate` | — |
 | `frontend-gate.yml` (workflow) | your JS repo runs `pnpm gate`, optionally with Playwright | — |
-| `secret-scan.yml` (workflow) | any repo — gitleaks over the calling event's commits; add a scheduled caller with `full-history: true` to sweep history | aml-filter |
+| `secret-scan.yml` (workflow) | any repo — gitleaks over the event range by default; `full-history: true` runs an explicit `--all` sweep | aml-filter |
 | `security-audit.yml` (workflow) | you want `pip-audit` and/or `pnpm audit` (at least one must be on) | — |
 | `cloudflare-pages-deploy.yml` (workflow) | you deploy a built site to Cloudflare Pages | — |
 | `ts-publish.yml` (workflow) | you release an npm package from a `v*` tag, token-free via OIDC | assay (×2), privacy-core |

@@ -10,7 +10,8 @@ included.
 
 **A brick changed shape**: `secret-scan.yml` gains one optional input, `full-history`
 (boolean, default `false`). Re-pinning without setting it is a drop-in — the default is
-the existing behaviour, so no current caller changes verdict.
+the existing event-range behaviour. Setting it runs an explicit
+`gitleaks git --log-opts=--all` pass on any event, including tag pushes.
 
 **Action required if you copied `examples/<repo>/security-audit.yml`**: its `gitleaks` job
 now carries its own `permissions:` block. Without it that job cannot start — see below.
@@ -59,15 +60,15 @@ now carries its own `permissions:` block. Without it that job cannot start — s
   [30793713570](https://github.com/hseshadr/ci/actions/runs/30793713570) (schedule)
   scanned **41**. The workflow is `workflow_call`-only and every caller in `examples/` but
   one ran on push/PR, so no consumer's pre-existing history had ever been scanned by CI.
-- **The caller owns the schedule.** A `workflow_call` workflow cannot carry its own
-  `schedule:`, so the fix is not inside the brick. Every consumer already has
-  `security-audit.yml` on a weekly cron; each `examples/*/security-audit.yml` now calls
-  `secret-scan.yml` from it with `full-history: true`.
-- **`full-history` asserts, it does not widen.** Nothing can widen the range from inside a
-  reusable workflow. The input makes the expectation machine-checked: on any event that
-  scans a partial range the job fails instead of reporting a clean partial scan as clean.
-  Every run also now prints what it actually covered, because "No leaks detected" over 0
-  commits and over 41 commits are the same three words.
+- **The caller owns the schedule; the brick owns the sweep.** A `workflow_call` workflow
+  cannot carry its own `schedule:`, so each `examples/*/security-audit.yml` invokes it
+  weekly with `full-history: true`. The shared workflow now executes the explicit `--all`
+  scan itself, so release callers can request the same guarantee on tag pushes whose
+  action-derived range may be empty.
+- **Secret findings cannot become collaboration or artifact data.** The action's comment,
+  summary, and SARIF upload features are all disabled, the CLI version is fixed, and both
+  passes redact findings. A failed scan may name the file/rule in its job log; it cannot
+  copy the detected credential into a PR, summary, or downloadable artifact.
 - **Every secret-scan caller job is named.** An unnamed one reports as `gitleaks /
   gitleaks` instead of the documented `Secret scan / gitleaks`, silently orphaning an
   adopter's required status check. Five of the six callers shipped in `examples/` omitted
@@ -75,8 +76,9 @@ now carries its own `permissions:` block. Without it that job cannot start — s
 - **Two guards, both shown failing.** `validate_secret_scan_history_sweep` refuses an
   `examples/` tree where a repo calls `secret-scan.yml` but never from a scheduled
   workflow, and refuses an unnamed caller job; it carries a vacuity floor.
-  `validate_secret_scan_coverage_cases` executes the workflow's real coverage script under
-  both event families instead of grepping for its error string.
+  `validate_secret_scan_coverage_cases` executes the workflow's real coverage script with
+  a recording gitleaks double, proving `--all` is passed under both event families and the
+  CLI is not invoked for range-only mode.
 - **README: 16 false claims fixed or deleted.** The file had never been updated past
   `ci-v3.0.0` while three releases and one consumer adoption landed. Corrected: the current
   release and every `2a575cd` pin (now `605e51c` / `ci-v3.2.1`), the adoption count (7

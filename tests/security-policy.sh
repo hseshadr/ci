@@ -1311,18 +1311,18 @@ YAML
 #   run 30978634362  pull_request   1 commit  scanned   reported success
 #   run 30793713570  schedule      41 commits scanned   reported success
 #
-# A repo whose only secret-scan caller runs on push/PR has therefore NEVER had its
-# history scanned by CI, while every comment and README line said it had. Two
-# properties are asserted, neither of which a comment alone can satisfy:
+# A repo whose only range scan runs on push/PR has therefore NEVER had its history
+# scanned by CI, while every comment and README line said it had. Two properties
+# are asserted, neither of which a comment alone can satisfy:
 #
 #   1. Every examples/ repo that calls secret-scan.yml at all also calls it from a
 #      workflow carrying an `on: schedule:` trigger, with `full-history: true`.
 #      And every caller job is NAMED — an unnamed one reports as
 #      "gitleaks / gitleaks", silently orphaning a required "Secret scan /
 #      gitleaks" status check for whoever copy-pastes it.
-#   2. The workflow's coverage step actually REFUSES the mismatch. Its real `run:`
-#      script is executed under both event families rather than grepped for its
-#      error string, so deleting the check reddens these cases.
+#   2. The workflow's coverage step actually RUNS an explicit `--all` scan when
+#      `full-history` is requested, including on tag pushes whose action-derived
+#      range can be empty. Its real `run:` script is executed rather than grepped.
 
 # "<repo> <path> <job> <scheduled|event-range> <named|unnamed> <full-history|range-only>"
 # for every job in examples/ that calls secret-scan.yml, one per line.
@@ -1378,10 +1378,7 @@ validate_secret_scan_history_sweep() {
       fail "$path job '$job' calls secret-scan.yml with no name: — it reports as '$job / gitleaks', not 'Secret scan / gitleaks'"
     if [[ "$scheduled" == "scheduled" ]]; then
       [[ "$full" == "full-history" ]] ||
-        fail "$path job '$job' is the scheduled caller but omits full-history: true — its sweep is unasserted"
-    else
-      [[ "$full" == "range-only" ]] ||
-        fail "$path job '$job' asks for full-history: true on a workflow with no schedule — that event scans a partial range and the job will refuse"
+        fail "$path job '$job' is the scheduled caller but omits full-history: true — it would scan only the event range"
     fi
   done <<< "$report"
 
@@ -1393,20 +1390,57 @@ validate_secret_scan_history_sweep() {
   done
 }
 
-# Execute secret-scan.yml's real coverage script the way the runner would, under a
-# chosen event. Nothing is stubbed: the script's only external call is a
-# `git rev-list` that falls back to "?" outside a repository.
+# Execute secret-scan.yml's real coverage script the way the runner would. A
+# recording gitleaks double keeps the test offline while proving the exact CLI
+# arguments; git itself stays real and falls back to "?" outside a repository.
 run_scan_coverage_step() {
-  local event="$1" full="$2" script workdir status=0
+  local event="$1" full="$2" expected_scan="$3" script workdir status=0
   script="$(extract_run_script_by_env .github/workflows/secret-scan.yml SCAN_FULL_HISTORY)" || return 2
   workdir="$(mktemp -d)"
+  mkdir -p "$workdir/bin"
+  cat > "$workdir/bin/gitleaks" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$GITLEAKS_ARGS_FILE"
+SH
+  chmod +x "$workdir/bin/gitleaks"
   (
     cd "$workdir" &&
       env GITHUB_EVENT_NAME="$event" SCAN_FULL_HISTORY="$full" \
+        GITLEAKS_ARGS_FILE="$workdir/gitleaks.args" PATH="$workdir/bin:$PATH" \
         bash -e -u -o pipefail -c "$script"
   ) >/dev/null 2>&1 || status=$?
+
+  if [[ "$status" -eq 0 && "$expected_scan" == "full" ]]; then
+    diff -u <(printf '%s\n' git --redact --no-banner '--log-opts=--all' .) \
+      "$workdir/gitleaks.args" >/dev/null 2>&1 || status=1
+  elif [[ "$status" -eq 0 && -e "$workdir/gitleaks.args" ]]; then
+    status=1
+  fi
   rm -rf "$workdir"
   return "$status"
+}
+
+validate_secret_scan_action_is_non_exfiltrating() {
+  ruby -e '
+    require "yaml"
+
+    workflow = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
+    steps = workflow.fetch("jobs").fetch("gitleaks").fetch("steps")
+    action = steps.find { |step| step.fetch("uses", "").start_with?("gitleaks/gitleaks-action@") }
+    abort "secret-scan.yml has no gitleaks action" if action.nil?
+
+    env = action.fetch("env", {})
+    %w[
+      GITLEAKS_ENABLE_COMMENTS
+      GITLEAKS_ENABLE_SUMMARY
+      GITLEAKS_ENABLE_UPLOAD_ARTIFACT
+    ].each do |name|
+      abort "#{name} must be false so findings never leave the job" unless env[name] == "false"
+    end
+
+    version = env.fetch("GITLEAKS_VERSION", "")
+    abort "GITLEAKS_VERSION must be an exact release" unless version.match?(/\A\d+\.\d+\.\d+\z/)
+  ' .github/workflows/secret-scan.yml
 }
 
 validate_secret_scan_coverage_cases() {
@@ -1414,20 +1448,24 @@ validate_secret_scan_coverage_cases() {
   # dropped — the expect_success cases go red rather than the expect_failure cases
   # passing vacuously on a script that was never found.
   expect_success "secret-scan refuses a scheduled full-history sweep" \
-    run_scan_coverage_step schedule true
+    run_scan_coverage_step schedule true full
   expect_success "secret-scan refuses a workflow_dispatch full-history sweep" \
-    run_scan_coverage_step workflow_dispatch true
+    run_scan_coverage_step workflow_dispatch true full
   expect_success "secret-scan refuses an ordinary push caller that made no full-history claim" \
-    run_scan_coverage_step push false
+    run_scan_coverage_step push false range
   expect_success "secret-scan refuses an ordinary pull_request caller" \
-    run_scan_coverage_step pull_request false
+    run_scan_coverage_step pull_request false range
 
-  # The whole point: a caller that believes it is sweeping history while the event
-  # hands it a handful of commits must go RED, not report success.
-  expect_failure "secret-scan ACCEPTS full-history on a push event — a partial scan reported as a sweep" \
-    run_scan_coverage_step push true
-  expect_failure "secret-scan ACCEPTS full-history on a pull_request event — a partial scan reported as a sweep" \
-    run_scan_coverage_step pull_request true
+  # `full-history` is an execution mode, not an event assertion. Release workflows
+  # run on tag pushes, whose action-derived range can be empty; the explicit CLI
+  # scan must therefore run with --all on every event family.
+  expect_success "secret-scan fails to sweep full history on a tag-style push" \
+    run_scan_coverage_step push true full
+  expect_success "secret-scan fails to sweep full history on pull_request" \
+    run_scan_coverage_step pull_request true full
+
+  expect_success "secret-scan action may upload or comment secret findings" \
+    validate_secret_scan_action_is_non_exfiltrating
 }
 
 # A decoded private key must not be able to outlive the job that decoded it.
