@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 
-from ci.main import GITLEAKS_IMAGE, PYTHON_IMAGE, Ci
+from ci.main import GITLEAKS_IMAGE, PYTHON_IMAGE, SOURCE_EXCLUDES, Ci
 
 
 def test_should_require_explicit_workspace_and_typed_fleet_secret() -> None:
@@ -44,3 +44,17 @@ def test_should_give_zizmor_explicit_workflow_inputs() -> None:
     # Then collection cannot silently depend on repository-root discovery
     assert all(path in adapter for path in required_inputs)
     assert '"--min-severity", "medium"' in " ".join(adapter.split())
+
+
+def test_should_not_require_generated_sdk_inside_explicit_source() -> None:
+    # Given hosted Workspace bytes, which never contain Dagger's generated SDK
+    repository = inspect.getsource(Ci._repository)
+
+    # When the inner Python environment is assembled
+    generated_sdk = ("current_module", 'directory("sdk")', '"/src/.dagger/sdk"')
+
+    # Then caller source stays explicit while Dagger supplies its generated toolchain
+    assert ".dagger/sdk" in SOURCE_EXCLUDES
+    assert all(fragment in repository for fragment in generated_sdk)
+    assert '"--frozen"' in repository
+    assert '"--all-groups"' in repository

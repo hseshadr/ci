@@ -1,32 +1,185 @@
-name: Dagger security audit
+# Reusable dependency-CVE audit (house standard §4) — its OWN workflow, never a CI
+# step, so a known-unfixable upstream advisory can't mask code regressions in the
+# main gate. NO suppressions anywhere: every finding is fixed by a version floor,
+# not an --ignore flag. A red scheduled run is a red repo — check `gh run list`.
+#
+# The CALLER owns the triggers (schedule / push / workflow_dispatch) — a reusable
+# workflow only carries `on: workflow_call`, so each repo keeps its own cadence with
+# zero conflict. Toggle the two halves with run-python-audit / run-pnpm-audit; a
+# repo may enable one, the other, or both.
+#
+# Setup composes the SAME setup-python-uv / setup-pnpm composites as the gates, with
+# their sync/install steps switched off (audits read the lockfile, they don't build a
+# venv or install node_modules). Covers all 5 current audit users: edge-proc /
+# shared-libs / almamesh (python), privacy-core / aml-filter (pnpm), edge-reco (both).
+#
+# PIN TO A COMMIT SHA, NOT A TAG. Every `uses:` ref here — including first-party
+# hseshadr/ci refs — must name a full 40-char commit SHA; tests/security-policy.sh
+# rejects a moving `@ci-vN`. Copy the SHA of the release you want from CHANGELOG.md
+# and keep the trailing version comment so Dependabot can bump it. Ready-to-copy
+# callers live in examples/.
+#
+# Caller (python lib, weekly):
+#   on:
+#     schedule: [{ cron: "0 6 * * 1" }]
+#     workflow_dispatch:
+#   jobs:
+#     audit:
+#       uses: hseshadr/ci/.github/workflows/security-audit.yml@<40-char-sha> # ci-v3.3.0
+#       with: { run-python-audit: true }
+name: Security audit (reusable)
 
 on:
-  schedule:
-    - cron: "17 6 * * 1"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      run-python-audit:
+        description: "Run the pip-audit (backend) job."
+        type: boolean
+        default: false
+      run-pnpm-audit:
+        description: "Run the pnpm audit (frontend) job."
+        type: boolean
+        default: false
+      python-working-directory:
+        description: "Dir holding pyproject.toml + uv.lock."
+        type: string
+        default: "."
+      pip-audit-export-args:
+        description: >-
+          Args to `uv export` before pip-audit. Append
+          '--no-emit-package <name>' for each vendored/local path source that has
+          no registry release to audit (its 3rd-party deps stay in the export).
+        type: string
+        default: "--frozen --all-extras --no-emit-project --no-hashes"
+      frontend-working-directory:
+        description: "Dir holding pnpm-lock.yaml ('.' for a root single-package repo)."
+        type: string
+        default: "frontend"
+      pnpm-audit-level:
+        description: "Fail threshold for pnpm audit: low | moderate | high | critical."
+        type: string
+        default: "low"
+      node-version:
+        type: string
+        default: "24"
+      runs-on:
+        type: string
+        default: "ubuntu-latest"
 
 permissions:
   contents: read
 
-concurrency:
-  group: dagger-security-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  security:
-    name: Dagger security audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  # BOTH audit toggles default to false, so a caller that forgets them gets two
+  # skipped jobs and a SUCCESS conclusion from a workflow that audited nothing —
+  # a skip indistinguishable from a pass, in the security control most likely to
+  # be adopted by copy-paste. The defaults stay false (each consumer has exactly
+  # one relevant ecosystem, and defaulting either to true would make the other
+  # repo's audit fail on a missing lockfile), so the honest fix is to refuse the
+  # no-op rather than to guess.
+  #
+  # This job has NO `if:` on purpose — it is the one thing that must always run.
+  # tests/security-policy.sh:validate_no_vacuous_success enforces that.
+  configured:
+    name: Audit configuration
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Refuse to report success without auditing anything
+        env:
+          RUN_PYTHON: ${{ inputs.run-python-audit }}
+          RUN_PNPM: ${{ inputs.run-pnpm-audit }}
+        run: |
+          set -euo pipefail
+          if [ "$RUN_PYTHON" != "true" ] && [ "$RUN_PNPM" != "true" ]; then
+            echo "::error::security-audit was called with run-python-audit=false AND run-pnpm-audit=false. Both audit jobs would skip and this workflow would report success having audited nothing. Set at least one to true."
+            exit 1
+          fi
+          echo "Auditing: python=$RUN_PYTHON pnpm=$RUN_PNPM"
+
+  pip-audit:
+    if: ${{ inputs.run-python-audit }}
+    name: pip-audit (backend, locked deps)
+    runs-on: ${{ inputs.runs-on }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+
+      # run-sync: false — we `uv export` the lock, not build a venv.
+      - name: Setup Python + uv
+        uses: hseshadr/ci/.github/actions/setup-python-uv@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
         with:
-          version: "0.21.8"
-          verb: call
-          args: >-
-            security --github-token=env:GITHUB_TOKEN
-            --commit-sha=${{ github.sha }}
+          working-directory: ${{ inputs.python-working-directory }}
+          run-sync: "false"
+
+      # §4 portable invocation: export the frozen lock to a requirements file and
+      # audit THAT (pip-audit's default venv mode is fragile; the export pins the
+      # exact transitive set from uv.lock).
+      - name: Export locked dependencies
+        working-directory: ${{ inputs.python-working-directory }}
+        env:
+          PIP_AUDIT_EXPORT_ARGS: ${{ inputs.pip-audit-export-args }}
+        run: |
+          read -r -a requested_args <<< "$PIP_AUDIT_EXPORT_ARGS"
+          export_args=()
+          index=0
+          while ((index < ${#requested_args[@]})); do
+            argument="${requested_args[$index]}"
+            case "$argument" in
+              --frozen | --locked | --all-extras | --no-emit-project | --no-hashes)
+                export_args+=("$argument")
+                ;;
+              --no-emit-package)
+                index=$((index + 1))
+                package="${requested_args[$index]:-}"
+                if [[ ! "$package" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                  echo "::error::Invalid pip-audit export argument value: $package"
+                  exit 1
+                fi
+                export_args+=("$argument" "$package")
+                ;;
+              *)
+                echo "::error::Invalid pip-audit export argument: $argument"
+                exit 1
+                ;;
+            esac
+            index=$((index + 1))
+          done
+          uv export "${export_args[@]}" -o requirements-audit.txt
+
+      - name: Audit for known CVEs (no suppressions)
+        working-directory: ${{ inputs.python-working-directory }}
+        run: uvx pip-audit -r requirements-audit.txt --disable-pip --no-deps
+
+  pnpm-audit:
+    if: ${{ inputs.run-pnpm-audit }}
+    name: pnpm audit (frontend)
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # install: false — `pnpm audit` reads the lockfile + queries the advisory DB
+      # directly; no node_modules needed.
+      - name: Setup pnpm + Node
+        uses: hseshadr/ci/.github/actions/setup-pnpm@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
+        with:
+          package-json-file: ${{ inputs.frontend-working-directory }}/package.json
+          node-version: ${{ inputs.node-version }}
+          cache-dependency-path: ${{ inputs.frontend-working-directory }}/pnpm-lock.yaml
+          install: "false"
+
+      - name: Audit for known CVEs (no suppressions)
+        working-directory: ${{ inputs.frontend-working-directory }}
+        env:
+          PNPM_AUDIT_LEVEL: ${{ inputs.pnpm-audit-level }}
+        run: |
+          case "$PNPM_AUDIT_LEVEL" in
+            low | moderate | high | critical) ;;
+            *)
+              echo "::error::Invalid pnpm audit level: $PNPM_AUDIT_LEVEL"
+              exit 1
+              ;;
+          esac
+          pnpm audit --audit-level "$PNPM_AUDIT_LEVEL"

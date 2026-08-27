@@ -35,6 +35,7 @@ SOURCE_EXCLUDES: Final = [
     ".dagger/.mypy_cache",
     ".dagger/.pytest_cache",
     ".dagger/.ruff_cache",
+    ".dagger/sdk",
     "**/__pycache__",
 ]
 GITLEAKS_SNAPSHOT: Final = [
@@ -87,7 +88,15 @@ class Ci:
     @function
     async def fleet(self, github_token: dagger.Secret, include_central: bool = False) -> str:
         """Fail closed on authoritative exact-main fleet evidence."""
-        command = ["uv", "run", "--directory", ".dagger", "python", "-m", "ci.fleet_cli"]
+        command = [
+            "uv",
+            "run",
+            "--directory",
+            ".dagger",
+            "python",
+            "-m",
+            "ci.fleet_cli",
+        ]
         if include_central:
             command.append("--include-central")
         scan = self._repository().with_secret_variable("GITHUB_TOKEN", github_token)
@@ -146,8 +155,10 @@ class Ci:
 
     def _repository(self) -> dagger.Container:
         uv = dag.container().from_(UV_IMAGE).file("/uv")
+        sdk = dag.current_module().source().directory("sdk")
         base = dag.container(platform=dagger.Platform("linux/amd64")).from_(PYTHON_IMAGE)
         base = base.with_file("/usr/local/bin/uv", uv).with_directory("/src", self.source)
+        base = base.with_directory("/src/.dagger/sdk", sdk)
         base = base.with_workdir("/src")
         base = base.with_mounted_cache("/root/.cache/uv", dag.cache_volume("ci-uv"))
         return base.with_exec(["uv", "sync", "--directory", ".dagger", "--frozen", "--all-groups"])
