@@ -15,7 +15,7 @@ def _source(name: str) -> SourceFile:
 
 def test_should_keep_all_central_execution_behind_thin_dagger_ingress() -> None:
     # Given the three workflows that remain after central cutover
-    names = ("dagger.yml", "fleet.yml", "security-audit.yml")
+    names = ("dagger.yml", "consumer-drift.yml", "security-audit.yml")
 
     # When every authored job is evaluated by the fleet policy itself
     findings = tuple(item for name in names for item in validate_workflow(_source(name)))
@@ -27,7 +27,7 @@ def test_should_keep_all_central_execution_behind_thin_dagger_ingress() -> None:
 def test_should_bind_hosted_tokens_and_exact_commit_to_typed_dagger_calls() -> None:
     # Given the protected, fleet, and scheduled-security entry points
     dagger = _source("dagger.yml").text
-    fleet = _source("fleet.yml").text
+    fleet = _source("consumer-drift.yml").text
     security = _source("security-audit.yml").text
 
     # When their Dagger arguments and event boundaries are inspected
