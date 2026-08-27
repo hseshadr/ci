@@ -11,6 +11,7 @@ from .artifact import (
     parse_producing_identity,
     verify_envelope_directory,
 )
+from .github import CheckEvidence, resolve_green_main
 from .guard import build_guard
 from .identity import CommitIdentity, FullSha, RepositoryRef
 from .source import SourceBinding, bind_dagger_source
@@ -65,10 +66,10 @@ class PortfolioFoundation:
             envelope, identity, module_sha, tuple(allowed_roots), run_id
         )
 
-    @function
-    def green_main(self, github_token: dagger.Secret, repository: str) -> str:
+    @function(cache="never")  # type: ignore[call-overload,untyped-decorator]  # SDK stub gap
+    async def green_main(self, github_token: dagger.Secret, repository: str) -> CheckEvidence:
         """Resolve exact-green main evidence using a typed secret."""
-        raise NotImplementedError
+        return await resolve_green_main(github_token, RepositoryRef.parse(repository))
 
 
 async def _source_binding(

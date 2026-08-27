@@ -5,8 +5,6 @@ from typing import cast
 import dagger
 import pytest
 
-from portfolio_foundation import PortfolioFoundation
-
 MODULE = Path(__file__).parents[2]
 type Parameter = tuple[str, str]
 type PublicSignature = tuple[str, tuple[Parameter, ...], str]
@@ -45,17 +43,13 @@ EXPECTED_PUBLIC_SCHEMA: tuple[PublicSignature, ...] = (
     (
         "green_main",
         (("github_token", "dagger.Secret"), ("repository", "str")),
-        "str",
+        "CheckEvidence",
     ),
 )
 
 
 def _directory() -> dagger.Directory:
     return cast(dagger.Directory, None)
-
-
-def _secret() -> dagger.Secret:
-    return cast(dagger.Secret, None)
 
 
 def _main_tree(source: str | None = None) -> ast.Module:
@@ -73,8 +67,13 @@ def _public_methods(tree: ast.Module) -> tuple[PublicFunction, ...]:
 
 
 def _is_function(node: PublicFunction) -> bool:
-    decorators = (ast.unparse(decorator) for decorator in node.decorator_list)
+    decorators = (_decorator_name(decorator) for decorator in node.decorator_list)
     return any(name in {"function", "dagger.function"} for name in decorators)
+
+
+def _decorator_name(decorator: ast.expr) -> str:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return ast.unparse(target)
 
 
 def _annotation(node: ast.expr | None) -> str:
@@ -130,6 +129,14 @@ def test_should_expose_envelope_verifier_as_async_runtime_adapter() -> None:
     assert isinstance(verifier, ast.AsyncFunctionDef)
 
 
-def test_should_raise_until_green_main_adapter_is_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        PortfolioFoundation().green_main(_secret(), "owner/repository")
+def test_should_expose_green_main_as_async_runtime_adapter() -> None:
+    green_main = next(node for node in _public_methods(_main_tree()) if node.name == "green_main")
+    assert isinstance(green_main, ast.AsyncFunctionDef)
+
+
+def test_should_disable_cache_for_current_github_evidence() -> None:
+    green_main = next(node for node in _public_methods(_main_tree()) if node.name == "green_main")
+    decorator = next(node for node in green_main.decorator_list if isinstance(node, ast.Call))
+    cache = next(keyword.value for keyword in decorator.keywords if keyword.arg == "cache")
+    assert isinstance(cache, ast.Constant)
+    assert cache.value == "never"
