@@ -35,6 +35,7 @@ max-complexity = 5
 
 [tool.ruff.lint.per-file-ignores]
 "tests/test_*.py" = ["PLR2004", "S101"]
+"tests/test_bootstrap.py" = ["S603"]
 
 [tool.mypy]
 strict = true
@@ -45,13 +46,15 @@ disallow_any_explicit = true
 [tool.pytest.ini_options]
 pythonpath = []
 
-[tool.coverage.run]
-omit = ["src/portfolio_foundation/main.py"]
-
 [tool.poe.tasks]
-lint = { shell = "ruff check --fix src tests && ruff format src tests" }
+develop = { cmd = "dagger -m .. develop", executor = "simple" }
+sync = { cmd = "uv sync --frozen --all-groups", executor = "simple" }
+bootstrap = ["develop", "sync"]
+lint = { shell = "ruff check src tests && ruff format --check src tests" }
+format = { shell = "ruff check --fix src tests && ruff format src tests" }
 typecheck = "mypy --strict src tests"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src"
 test = "pytest tests --cov=portfolio_foundation --cov-fail-under=90"
+schema = "dagger -m .. functions"
 audit = "pip-audit"
-gate = ["lint", "typecheck", "complexity", "test"]
+gate = ["lint", "typecheck", "complexity", "test", "schema"]
