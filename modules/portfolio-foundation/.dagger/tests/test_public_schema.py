@@ -98,9 +98,9 @@ def test_should_expose_source_as_async_runtime_adapter() -> None:
     assert isinstance(source, ast.AsyncFunctionDef)
 
 
-def test_should_raise_until_guard_adapter_is_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        PortfolioFoundation().guard(_directory(), "owner/repository", "a" * 40)
+def test_should_expose_guard_as_async_runtime_adapter() -> None:
+    guard = next(node for node in _public_methods(_main_tree()) if node.name == "guard")
+    assert isinstance(guard, ast.AsyncFunctionDef)
 
 
 def test_should_raise_until_envelope_adapter_is_implemented() -> None:

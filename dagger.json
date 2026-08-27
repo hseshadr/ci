@@ -8,5 +8,11 @@
     ".dagger/pyproject.toml",
     ".dagger/src/**"
   ],
+  "dependencies": [
+    {
+      "name": "foundation",
+      "source": "modules/portfolio-foundation"
+    }
+  ],
   "source": ".dagger"
 }
