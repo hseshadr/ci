@@ -320,6 +320,50 @@ def test_should_reject_invalid_direct_manifest_construction(
         )
 
 
+class DuckIdentity:
+    repository = RepositoryRef("owner", "consumer")
+    commit = FullSha("a" * 40)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        "owner/consumer@sha",
+        DuckIdentity(),
+        CommitIdentity(cast(RepositoryRef, "owner/consumer"), FullSha("a" * 40)),
+        CommitIdentity(RepositoryRef("owner", "consumer"), cast(FullSha, "a" * 40)),
+    ),
+)
+def test_should_reject_noncanonical_runtime_identity_when_constructing_manifest(
+    identity: object,
+) -> None:
+    # Given / When / Then
+    with pytest.raises(ManifestParseError, match="identity"):
+        _direct_manifest(identity, 1)
+
+
+@pytest.mark.parametrize("schema_version", (True, 1.0, "1", None, 2))
+def test_should_reject_nonexact_schema_version_when_constructing_manifest(
+    schema_version: object,
+) -> None:
+    # Given / When / Then
+    with pytest.raises(ManifestParseError, match="schema"):
+        _direct_manifest(IDENTITY, schema_version)
+
+
+def _direct_manifest(identity: object, schema_version: object) -> ArtifactManifest:
+    return ArtifactManifest(
+        cast(CommitIdentity, identity),
+        FullSha(MODULE_SHA),
+        ENGINE_VERSION,
+        TOOLCHAIN,
+        RUN_ID,
+        ROOTS,
+        (_file("dist/index.html", b"index"),),
+        cast(int, schema_version),
+    )
+
+
 def test_should_reject_unknown_or_missing_manifest_fields_when_parsing() -> None:
     # Given
     payload = _manifest_payload()

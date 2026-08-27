@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, TypeGuard
 
 import dagger
 from dagger import dag
@@ -533,14 +533,45 @@ def _sum_record(line: str) -> tuple[str, str]:
 
 def _validate_manifest(manifest: ArtifactManifest) -> None:
     """Validate schema, identities, roots, run ID, records, and toolchain exactly."""
-    if manifest.schema_version != SCHEMA_VERSION or not isinstance(manifest.module_sha, FullSha):
-        raise ManifestParseError("artifact manifest schema or module identity is invalid")
+    _require_manifest_schema(manifest.schema_version)
+    _require_manifest_identity(manifest.identity)
+    if not isinstance(manifest.module_sha, FullSha):
+        raise ManifestParseError("artifact manifest module identity is invalid")
     _require_run_id(manifest.producing_run_id)
     canonical_roots(manifest.allowed_roots)
     validate_paths(tuple(file.path for file in manifest.files), manifest.allowed_roots)
     if manifest.files != tuple(sorted(manifest.files, key=lambda item: item.path)):
         raise ManifestParseError("artifact manifest files must be sorted")
     _require_compatible_toolchain(manifest)
+
+
+def _require_manifest_schema(value: object) -> None:
+    """Require the one supported schema as an exact non-boolean integer."""
+    if type(value) is not int or value != SCHEMA_VERSION:
+        raise ManifestParseError("artifact manifest schema version is invalid")
+
+
+def _require_manifest_identity(value: object) -> None:
+    """Require a complete identity graph before immutable evidence can exist."""
+    if not _is_exact_identity(value):
+        raise ManifestParseError("artifact manifest identity is invalid")
+    _validate_identity_values(value)
+
+
+def _is_exact_identity(value: object) -> TypeGuard[CommitIdentity]:
+    """Recognize only canonical identity value types, never structural lookalikes."""
+    if not isinstance(value, CommitIdentity) or type(value) is not CommitIdentity:
+        return False
+    return type(value.repository) is RepositoryRef and type(value.commit) is FullSha
+
+
+def _validate_identity_values(identity: CommitIdentity) -> None:
+    """Reconstruct nested value objects to reject forged instances with invalid fields."""
+    try:
+        RepositoryRef(identity.repository.owner, identity.repository.name)
+        FullSha(identity.commit.value)
+    except (TypeError, ValueError) as error:
+        raise ManifestParseError("artifact manifest identity is invalid") from error
 
 
 def _require_compatible_toolchain(manifest: ArtifactManifest) -> None:
