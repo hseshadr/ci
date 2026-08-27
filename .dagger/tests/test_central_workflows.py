@@ -40,3 +40,19 @@ def test_should_bind_hosted_tokens_and_exact_commit_to_typed_dagger_calls() -> N
     assert "pull_request:" not in fleet
     assert "secrets.CONSUMER_DRIFT_TOKEN" in fleet
     assert "--include-central" in fleet
+
+
+def test_should_delete_every_retired_central_execution_surface() -> None:
+    # Given the fleet no longer executes a central reusable control
+    remaining = {path.name for path in WORKFLOWS.glob("*.yml")}
+
+    # When central execution surfaces are inventoried
+    expected = {"dagger.yml", "consumer-drift.yml", "dagger-security.yml"}
+
+    # Then only thin Dagger ingress remains; classifiers/templates are gone
+    assert remaining == expected
+    retired = (ROOT / ".github" / "actions", ROOT / "examples", ROOT / "tests")
+    authored = (
+        path for root in retired for path in root.rglob("*") if "__pycache__" not in path.parts
+    )
+    assert not any(path.is_file() for path in authored)

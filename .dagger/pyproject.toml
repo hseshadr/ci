@@ -51,15 +51,15 @@ disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
-pythonpath = ["../tests/lib"]
+pythonpath = []
 
 [tool.coverage.run]
 omit = ["src/ci/main.py", "src/ci/fleet_cli.py"]
 
 [tool.poe.tasks]
-lint = { shell = "ruff check --fix src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py && ruff format src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py" }
-typecheck = "mypy --strict src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py"
-complexity = "xenon --max-absolute A --max-modules A --max-average A src ../tests/lib/dagger_source_policy.py"
-test = { cmd = "pytest tests ../tests/test_dagger_source_policy.py --cov=ci --cov=dagger_source_policy --cov-fail-under=90", env = { PYTHONPATH = "../tests/lib" } }
+lint = { shell = "ruff check --fix src tests && ruff format src tests" }
+typecheck = "mypy --strict src tests"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src"
+test = "pytest tests --cov=ci --cov-fail-under=90"
 audit = "pip-audit"
 gate = ["lint", "typecheck", "complexity", "test"]
