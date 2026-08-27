@@ -68,12 +68,14 @@ def _canary_commands() -> tuple[str, ...]:
         'canary_status="$?"',
         "set -e",
         f'test "$canary_status" -eq {CANARY_EXIT_CODE}',
+        "echo guard-canary-detected >&2",
     )
 
 
 def _snapshot_commands() -> tuple[str, ...]:
     return (
         'test -n "$(find /snapshot -type f -print -quit)"',
+        "echo guard-snapshot-nonempty >&2",
         _gitleaks("/snapshot", no_git=True),
     )
 
@@ -85,6 +87,7 @@ def _history_commands(commit_sha: str) -> tuple[str, ...]:
         f'test "$(git -C /repo rev-parse HEAD)" = {commit_sha}',
         'test -n "$(git -C /repo rev-list --all)"',
         "git -C /repo fsck --full --no-dangling",
+        "echo guard-history-verified >&2",
         _gitleaks("/repo", log_options="--all"),
     )
 
