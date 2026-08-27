@@ -5,6 +5,7 @@ from __future__ import annotations
 import dagger
 from dagger import dag, function, object_type
 
+from .artifact import envelope_directory, parse_consumer_identity, parse_producing_identity
 from .guard import build_guard
 from .identity import CommitIdentity, FullSha, RepositoryRef
 from .source import SourceBinding, bind_dagger_source
@@ -30,11 +31,19 @@ class PortfolioFoundation:
         return build_guard(binding)
 
     @function
-    def envelope(
-        self, artifact: dagger.Directory, repository: str, commit_sha: str
+    async def envelope(
+        self,
+        artifact: dagger.Directory,
+        consumer_identity: str,
+        producing_identity: str,
+        allowed_roots: list[str],
     ) -> dagger.Directory:
         """Wrap a typed artifact with deterministic evidence."""
-        raise NotImplementedError
+        identity = parse_consumer_identity(consumer_identity)
+        module_sha, run_id = parse_producing_identity(producing_identity)
+        return await envelope_directory(
+            artifact, identity, module_sha, tuple(allowed_roots), run_id
+        )
 
     @function
     def green_main(self, github_token: dagger.Secret, repository: str) -> str:

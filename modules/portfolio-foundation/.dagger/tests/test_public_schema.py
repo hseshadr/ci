@@ -24,7 +24,12 @@ EXPECTED_PUBLIC_SCHEMA: tuple[PublicSignature, ...] = (
     ),
     (
         "envelope",
-        (("artifact", "dagger.Directory"), ("repository", "str"), ("commit_sha", "str")),
+        (
+            ("artifact", "dagger.Directory"),
+            ("consumer_identity", "str"),
+            ("producing_identity", "str"),
+            ("allowed_roots", "list[str]"),
+        ),
         "dagger.Directory",
     ),
     (
@@ -103,9 +108,9 @@ def test_should_expose_guard_as_async_runtime_adapter() -> None:
     assert isinstance(guard, ast.AsyncFunctionDef)
 
 
-def test_should_raise_until_envelope_adapter_is_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        PortfolioFoundation().envelope(_directory(), "owner/repository", "a" * 40)
+def test_should_expose_envelope_as_async_runtime_adapter() -> None:
+    envelope = next(node for node in _public_methods(_main_tree()) if node.name == "envelope")
+    assert isinstance(envelope, ast.AsyncFunctionDef)
 
 
 def test_should_raise_until_green_main_adapter_is_implemented() -> None:
