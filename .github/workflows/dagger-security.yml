@@ -1,20 +1,20 @@
-name: Dagger fleet policy
+name: Dagger security audit
 
 on:
   schedule:
-    - cron: "23 7 * * *"
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dagger-fleet-${{ github.ref }}
+  group: dagger-security-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  fleet:
-    name: Dagger fleet policy
+  security:
+    name: Dagger security audit
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -23,10 +23,10 @@ jobs:
           persist-credentials: false
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         env:
-          GITHUB_TOKEN: ${{ secrets.CONSUMER_DRIFT_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           version: "0.21.8"
           verb: call
           args: >-
-            fleet --github-token=env:GITHUB_TOKEN
-            ${{ github.ref == 'refs/heads/main' && '--include-central' || '' }}
+            security --github-token=env:GITHUB_TOKEN
+            --commit-sha=${{ github.sha }}

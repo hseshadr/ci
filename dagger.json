@@ -1,0 +1,12 @@
+{
+  "name": "ci",
+  "engineVersion": "v0.21.8",
+  "sdk": {
+    "source": "python"
+  },
+  "include": [
+    ".dagger/pyproject.toml",
+    ".dagger/src/**"
+  ],
+  "source": ".dagger"
+}

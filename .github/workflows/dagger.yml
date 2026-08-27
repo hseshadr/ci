@@ -1,0 +1,50 @@
+name: Dagger
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dagger-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dagger:
+    name: Dagger
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          version: "0.21.8"
+          verb: call
+          args: >-
+            ci --github-token=env:GITHUB_TOKEN
+            --commit-sha=${{ github.sha }}
+  fleet:
+    name: Dagger fleet policy
+    needs: dagger
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.CONSUMER_DRIFT_TOKEN }}
+        with:
+          version: "0.21.8"
+          verb: call
+          args: fleet --github-token=env:GITHUB_TOKEN --include-central

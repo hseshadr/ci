@@ -1,0 +1,65 @@
+[project]
+name = "ci"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "dagger-io",
+  "pydantic==2.13.4",
+  "PyYAML==6.0.3",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18.0",
+  "pip-audit>=2.9.0",
+  "poethepoet>=0.38.0",
+  "pytest>=8.4.0",
+  "pytest-cov>=7.0.0",
+  "radon>=6.0.1",
+  "ruff>=0.12.0",
+  "types-PyYAML>=6.0.12.20250915",
+  "xenon>=0.9.3",
+  "zizmor==1.26.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+dagger-io = { path = "sdk", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C901", "B", "UP", "SIM", "N", "RUF", "ASYNC", "S", "PL"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 5
+
+[tool.ruff.lint.per-file-ignores]
+"../tests/test_*.py" = ["PLR2004", "S101"]
+"tests/test_*.py" = ["PLR2004", "S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+warn_unreachable = true
+disallow_any_explicit = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+pythonpath = []
+
+[tool.coverage.run]
+omit = ["src/ci/main.py", "src/ci/fleet_cli.py"]
+
+[tool.poe.tasks]
+lint = { shell = "ruff check --fix src tests && ruff format src tests" }
+typecheck = "mypy --strict src tests"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src"
+test = "pytest tests --cov=ci --cov-fail-under=90"
+audit = "pip-audit"
+gate = ["lint", "typecheck", "complexity", "test"]
