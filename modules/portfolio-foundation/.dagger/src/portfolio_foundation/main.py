@@ -5,7 +5,12 @@ from __future__ import annotations
 import dagger
 from dagger import dag, function, object_type
 
-from .artifact import envelope_directory, parse_consumer_identity, parse_producing_identity
+from .artifact import (
+    envelope_directory,
+    parse_consumer_identity,
+    parse_producing_identity,
+    verify_envelope_directory,
+)
 from .guard import build_guard
 from .identity import CommitIdentity, FullSha, RepositoryRef
 from .source import SourceBinding, bind_dagger_source
@@ -43,6 +48,21 @@ class PortfolioFoundation:
         module_sha, run_id = parse_producing_identity(producing_identity)
         return await envelope_directory(
             artifact, identity, module_sha, tuple(allowed_roots), run_id
+        )
+
+    @function
+    async def verify_envelope(
+        self,
+        envelope: dagger.Directory,
+        consumer_identity: str,
+        producing_identity: str,
+        allowed_roots: list[str],
+    ) -> dagger.Directory:
+        """Revalidate and return only a closed envelope's artifact subtree."""
+        identity = parse_consumer_identity(consumer_identity)
+        module_sha, run_id = parse_producing_identity(producing_identity)
+        return await verify_envelope_directory(
+            envelope, identity, module_sha, tuple(allowed_roots), run_id
         )
 
     @function

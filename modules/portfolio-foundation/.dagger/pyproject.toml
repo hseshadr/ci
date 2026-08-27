@@ -57,7 +57,8 @@ typecheck = "mypy --strict src tests"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src"
 test = "pytest tests --cov=portfolio_foundation --cov-branch --cov-fail-under=90"
 branchrate = { shell = "coverage json -o /tmp/portfolio-foundation-coverage.json && python -c \"import json; data=json.load(open('/tmp/portfolio-foundation-coverage.json'))['files']; values=[item['summary'] for path,item in data.items() if path.startswith('src/portfolio_foundation/')]; covered=sum(item['covered_branches'] for item in values); total=sum(item['num_branches'] for item in values); assert total and covered * 100 >= total * 90, f'branch coverage {covered}/{total} below floor'\"" }
+artifactbranchrate = { shell = "coverage json -o /tmp/portfolio-foundation-coverage.json && python -c \"import json; summary=json.load(open('/tmp/portfolio-foundation-coverage.json'))['files']['src/portfolio_foundation/artifact.py']['summary']; covered=summary['covered_branches']; total=summary['num_branches']; assert total and covered * 100 >= total * 90, f'artifact branch coverage {covered}/{total} below floor'\"" }
 integration = "pytest tests/test_source_integration.py tests/test_guard_integration.py -q"
 schema = "dagger -m .. functions"
 audit = "pip-audit"
-gate = ["lint", "typecheck", "complexity", "test", "branchrate", "schema"]
+gate = ["lint", "typecheck", "complexity", "test", "branchrate", "artifactbranchrate", "schema"]

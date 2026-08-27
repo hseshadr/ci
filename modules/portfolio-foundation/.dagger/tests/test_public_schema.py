@@ -33,6 +33,16 @@ EXPECTED_PUBLIC_SCHEMA: tuple[PublicSignature, ...] = (
         "dagger.Directory",
     ),
     (
+        "verify_envelope",
+        (
+            ("envelope", "dagger.Directory"),
+            ("consumer_identity", "str"),
+            ("producing_identity", "str"),
+            ("allowed_roots", "list[str]"),
+        ),
+        "dagger.Directory",
+    ),
+    (
         "green_main",
         (("github_token", "dagger.Secret"), ("repository", "str")),
         "str",
@@ -111,6 +121,13 @@ def test_should_expose_guard_as_async_runtime_adapter() -> None:
 def test_should_expose_envelope_as_async_runtime_adapter() -> None:
     envelope = next(node for node in _public_methods(_main_tree()) if node.name == "envelope")
     assert isinstance(envelope, ast.AsyncFunctionDef)
+
+
+def test_should_expose_envelope_verifier_as_async_runtime_adapter() -> None:
+    verifier = next(
+        node for node in _public_methods(_main_tree()) if node.name == "verify_envelope"
+    )
+    assert isinstance(verifier, ast.AsyncFunctionDef)
 
 
 def test_should_raise_until_green_main_adapter_is_implemented() -> None:
