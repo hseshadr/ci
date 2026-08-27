@@ -42,6 +42,27 @@ def test_should_bind_hosted_tokens_and_exact_commit_to_typed_dagger_calls() -> N
     assert "--include-central" in fleet
 
 
+def test_should_run_main_fleet_only_after_exact_dagger_success() -> None:
+    # Given central protection requires the Dagger check for the new main commit
+    dagger = _source("dagger.yml").text
+    fleet = _source("consumer-drift.yml").text
+
+    # When the fleet proof is triggered after a merge
+    required_boundaries = (
+        "fleet:",
+        "needs: dagger",
+        "github.event_name == 'push'",
+        "github.ref == 'refs/heads/main'",
+        "secrets.CONSUMER_DRIFT_TOKEN",
+        "fleet --github-token=env:GITHUB_TOKEN --include-central",
+    )
+
+    # Then the scheduled/manual ingress cannot race the exact-main Dagger check
+    assert "push:" not in fleet
+    assert "workflow_run:" not in fleet
+    assert all(boundary in dagger for boundary in required_boundaries)
+
+
 def test_should_delete_every_retired_central_execution_surface() -> None:
     # Given the fleet no longer executes a central reusable control
     remaining = {path.name for path in WORKFLOWS.glob("*.yml")}
