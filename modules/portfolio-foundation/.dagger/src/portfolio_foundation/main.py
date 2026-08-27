@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import dagger
-from dagger import function, object_type
+from dagger import dag, function, object_type
+
+from .identity import CommitIdentity, FullSha, RepositoryRef
+from .source import bind_dagger_source
 
 
 @object_type
@@ -11,11 +14,17 @@ class PortfolioFoundation:
     """Expose typed placeholders for unprivileged portfolio operations."""
 
     @function
-    def source(
+    async def source(
         self, source: dagger.Directory, repository: str, commit_sha: str
     ) -> dagger.Directory:
         """Bind a supplied workspace to a repository identity."""
-        raise NotImplementedError
+        identity = CommitIdentity(RepositoryRef.parse(repository), FullSha(commit_sha))
+        history = (
+            dag.git(identity.repository.github_url)
+            .commit(identity.commit.value)
+            .tree(depth=0, include_tags=True)
+        )
+        return (await bind_dagger_source(source, history, identity)).source
 
     @function
     def guard(self, source: dagger.Directory, repository: str, commit_sha: str) -> dagger.Container:

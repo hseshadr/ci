@@ -10,6 +10,7 @@ from portfolio_foundation import PortfolioFoundation
 MODULE = Path(__file__).parents[2]
 type Parameter = tuple[str, str]
 type PublicSignature = tuple[str, tuple[Parameter, ...], str]
+type PublicFunction = ast.FunctionDef | ast.AsyncFunctionDef
 EXPECTED_PUBLIC_SCHEMA: tuple[PublicSignature, ...] = (
     (
         "source",
@@ -47,14 +48,16 @@ def _main_tree(source: str | None = None) -> ast.Module:
     return ast.parse(text)
 
 
-def _public_methods(tree: ast.Module) -> tuple[ast.FunctionDef, ...]:
+def _public_methods(tree: ast.Module) -> tuple[PublicFunction, ...]:
     foundation = next(node for node in tree.body if isinstance(node, ast.ClassDef))
     return tuple(
-        node for node in foundation.body if isinstance(node, ast.FunctionDef) and _is_function(node)
+        node
+        for node in foundation.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_function(node)
     )
 
 
-def _is_function(node: ast.FunctionDef) -> bool:
+def _is_function(node: PublicFunction) -> bool:
     decorators = (ast.unparse(decorator) for decorator in node.decorator_list)
     return any(name in {"function", "dagger.function"} for name in decorators)
 
@@ -64,7 +67,7 @@ def _annotation(node: ast.expr | None) -> str:
     return ast.unparse(node)
 
 
-def _signature(node: ast.FunctionDef) -> PublicSignature:
+def _signature(node: PublicFunction) -> PublicSignature:
     parameters = tuple(
         (argument.arg, _annotation(argument.annotation)) for argument in node.args.args[1:]
     )
@@ -90,9 +93,9 @@ def test_should_reject_public_arbitrary_command_escape_hatch(escape_hatch: str) 
     assert schema != EXPECTED_PUBLIC_SCHEMA
 
 
-def test_should_raise_until_source_adapter_is_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        PortfolioFoundation().source(_directory(), "owner/repository", "a" * 40)
+def test_should_expose_source_as_async_runtime_adapter() -> None:
+    source = next(node for node in _public_methods(_main_tree()) if node.name == "source")
+    assert isinstance(source, ast.AsyncFunctionDef)
 
 
 def test_should_raise_until_guard_adapter_is_implemented() -> None:
