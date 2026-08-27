@@ -4,6 +4,7 @@ from typing import cast
 import dagger
 import pytest
 
+from portfolio_foundation import main as main_module
 from portfolio_foundation import source as source_module
 from portfolio_foundation.identity import CommitIdentity, FullSha, RepositoryRef
 from portfolio_foundation.source import (
@@ -51,6 +52,38 @@ def test_should_reject_workspace_when_inventory_differs_from_exact_commit() -> N
     # When / Then
     with pytest.raises(SourceMismatch, match=r"src/app\.ts"):
         require_same_inventory(expected, actual)
+
+
+def test_should_accept_workspace_when_inventory_matches_exact_commit() -> None:
+    # Given
+    inventory = ("dagger.json:abc",)
+
+    # When
+    require_same_inventory(inventory, inventory)
+
+    # Then
+    assert True
+
+
+def test_should_reject_duplicate_paths_when_inventory_is_ambiguous() -> None:
+    inventory = FakeInventory(
+        (
+            InventoryEntry("same", "a" * 64, EntryType.REGULAR),
+            InventoryEntry("same", "b" * 64, EntryType.REGULAR),
+        )
+    )
+    with pytest.raises(SourceMismatch, match="duplicate"):
+        asyncio.run(canonical_inventory(inventory))
+
+
+@pytest.mark.parametrize(
+    ("file_type", "expected"),
+    ((dagger.FileType.SYMLINK, EntryType.SYMLINK), (None, EntryType.UNKNOWN)),
+)
+def test_should_classify_unsupported_dagger_nodes(
+    file_type: dagger.FileType | None, expected: EntryType
+) -> None:
+    assert source_module._entry_type(file_type) is expected
 
 
 def test_should_keep_source_and_history_as_distinct_inputs_when_bound() -> None:
@@ -138,3 +171,41 @@ def test_should_omit_directories_when_creating_dagger_inventory(
 
     # Then
     assert manifest == (f"src/app.ts:{'a' * 64}",)
+
+
+def test_should_reject_invalid_inventory_entry_when_path_is_unsafe() -> None:
+    with pytest.raises(ValueError, match="relative path"):
+        InventoryEntry("../escape", "a" * 64, EntryType.REGULAR)
+
+
+def test_should_delegate_source_when_identity_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    history = cast(dagger.Directory, object())
+
+    class FakeGit:
+        def commit(self, _: str) -> "FakeGit":
+            return self
+
+        def tree(self, *, depth: int, include_tags: bool) -> dagger.Directory:
+            assert (depth, include_tags) == (0, True)
+            return history
+
+    class FakeDag:
+        def git(self, _: str) -> FakeGit:
+            return FakeGit()
+
+    async def bind(_: dagger.Directory, __: dagger.Directory, ___: CommitIdentity) -> object:
+        return type("Binding", (), {"source": source})()
+
+    monkeypatch.setattr(main_module, "dag", FakeDag())
+    monkeypatch.setattr(main_module, "bind_dagger_source", bind)
+
+    # When
+    foundation = main_module.PortfolioFoundation()
+    result: dagger.Directory = asyncio.run(foundation.source(source, "owner/repository", "a" * 40))
+
+    # Then
+    assert result is source
