@@ -25,6 +25,14 @@ def test_should_parse_canonical_repository_when_owner_and_name_are_present() -> 
     assert repository.github_url == "https://github.com/owner/repository.git"
 
 
+@pytest.mark.parametrize("owner,name", ((".", "repo"), ("owner", ".."), ("owner", "repo.git")))
+def test_should_reject_noncanonical_components_when_constructed_directly(
+    owner: str, name: str
+) -> None:
+    with pytest.raises(ValueError, match="canonical GitHub"):
+        RepositoryRef(owner, name)
+
+
 @pytest.mark.parametrize("value", ("abc1234", "A" * 40, "g" * 40, ""))
 def test_should_reject_noncanonical_sha_when_value_is_invalid(value: str) -> None:
     # Given

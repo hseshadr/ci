@@ -12,9 +12,10 @@ from typing import Protocol, runtime_checkable
 import dagger
 from dagger import dag
 
-from .identity import CommitIdentity, FullSha
+from .identity import CommitIdentity
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+HASH_IMAGE = "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
 
 
 class SourceMismatchError(ValueError):
@@ -61,7 +62,7 @@ class SourceBinding[SourceT, HistoryT]:
 
     source: SourceT
     history: HistoryT
-    identity: FullSha
+    identity: CommitIdentity
     manifest_sha256: str
 
 
@@ -74,12 +75,22 @@ class DaggerSourceInventory:
     async def entries(self) -> tuple[InventoryEntry, ...]:
         """Return a complete typed inventory for this Dagger directory."""
         paths = await _dagger_paths(self.directory, "")
-        entries = await asyncio.gather(*(_dagger_entry(self.directory, path) for path in paths))
+        entries = await _dagger_entries(self.directory, paths)
         return _file_entries(entries)
 
 
+async def _dagger_entries(
+    directory: dagger.Directory, paths: tuple[str, ...]
+) -> list[InventoryEntry]:
+    """Hash files sequentially to bound utility-container executions."""
+    entries: list[InventoryEntry] = []
+    for path in paths:
+        entries.append(await _dagger_entry(directory, path))
+    return entries
+
+
 def bind_source[SourceT, HistoryT](
-    source: SourceT, history: HistoryT, identity: FullSha, manifest: tuple[str, ...]
+    source: SourceT, history: HistoryT, identity: CommitIdentity, manifest: tuple[str, ...]
 ) -> SourceBinding[SourceT, HistoryT]:
     """Bind distinct source and history values to a canonical manifest."""
     return SourceBinding(source, history, identity, manifest_sha256(manifest))
@@ -90,11 +101,11 @@ async def bind_dagger_source(
 ) -> SourceBinding[dagger.Directory, dagger.Directory]:
     """Reject a workspace unless every hosted byte matches the exact commit."""
     expected, actual = await asyncio.gather(
-        canonical_inventory(DaggerSourceInventory(history)),
-        canonical_inventory(DaggerSourceInventory(source)),
+        canonical_inventory(DaggerSourceInventory(history.without_directory(".git"))),
+        canonical_inventory(DaggerSourceInventory(source.without_directory(".git"))),
     )
     require_same_inventory(expected, actual)
-    return bind_source(source, history, identity.commit, expected)
+    return bind_source(source, history, identity, expected)
 
 
 async def canonical_inventory(inventory: SourceInventory) -> tuple[str, ...]:
@@ -108,8 +119,17 @@ async def canonical_inventory(inventory: SourceInventory) -> tuple[str, ...]:
 
 def manifest_sha256(manifest: tuple[str, ...]) -> str:
     """Hash a canonical text representation of a source inventory."""
-    content = "\n".join(sorted(manifest)).encode()
+    content = _encoded_manifest(sorted(manifest))
     return hashlib.sha256(content).hexdigest()
+
+
+def _encoded_manifest(lines: list[str]) -> bytes:
+    records = tuple(line.encode() for line in lines)
+    return len(records).to_bytes(8) + b"".join(_encoded_record(record) for record in records)
+
+
+def _encoded_record(record: bytes) -> bytes:
+    return len(record).to_bytes(8) + record
 
 
 def require_same_inventory(expected: tuple[str, ...], actual: tuple[str, ...]) -> None:
@@ -163,7 +183,7 @@ def _sha256_container(directory: dagger.Directory, path: str) -> dagger.Containe
     """Create the fixed, read-only hashing step for one relative workspace file."""
     return (
         dag.container()
-        .from_("alpine:3.22")
+        .from_(HASH_IMAGE)
         .with_mounted_directory("/source", directory, read_only=True)
         .with_exec(["sha256sum", f"/source/{path}"])
     )
@@ -219,7 +239,8 @@ def _is_safe_path(path: str) -> bool:
 
 def _join_path(parent: str, name: str) -> str:
     """Create a slash-separated relative child path."""
-    return f"{parent}/{name}" if parent else name
+    logical_name = name.removesuffix("/")
+    return f"{parent}/{logical_name}" if parent else logical_name
 
 
 def _child_paths(parent: str, names: list[str]) -> tuple[str, ...]:
@@ -248,7 +269,7 @@ def _require_regular_entries(entries: tuple[InventoryEntry, ...]) -> None:
         (entry.path for entry in entries if entry.entry_type is not EntryType.REGULAR), None
     )
     if invalid is not None:
-        raise SourceMismatch(f"hosted source contains unsupported node at {invalid}")
+        raise SourceMismatch(f"source inventory contains unsupported node at {invalid}")
 
 
 def _require_unique_paths(lines: tuple[str, ...]) -> None:

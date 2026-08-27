@@ -54,7 +54,7 @@ lint = { shell = "ruff check src tests && ruff format --check src tests" }
 format = { shell = "ruff check --fix src tests && ruff format src tests" }
 typecheck = "mypy --strict src tests"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src"
-test = "pytest tests --cov=portfolio_foundation --cov-fail-under=90"
+test = "pytest tests --cov=portfolio_foundation --cov-branch --cov-fail-under=90"
 schema = "dagger -m .. functions"
 audit = "pip-audit"
 gate = ["lint", "typecheck", "complexity", "test", "schema"]

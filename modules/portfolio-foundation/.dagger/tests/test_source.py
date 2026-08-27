@@ -5,7 +5,7 @@ import dagger
 import pytest
 
 from portfolio_foundation import source as source_module
-from portfolio_foundation.identity import FullSha
+from portfolio_foundation.identity import CommitIdentity, FullSha, RepositoryRef
 from portfolio_foundation.source import (
     EntryType,
     InventoryEntry,
@@ -35,7 +35,7 @@ class FakeStat:
 
 class FakeDaggerDirectory:
     async def entries(self, *, path: str | None = None) -> list[str]:
-        return [] if path == "src" else ["src"]
+        return ["app.ts"] if path == "src" else ["src/"]
 
     def stat(self, path: str, *, do_not_follow_symlinks: bool = False) -> FakeStat:
         assert do_not_follow_symlinks
@@ -60,11 +60,13 @@ def test_should_keep_source_and_history_as_distinct_inputs_when_bound() -> None:
     manifest = ("dagger.json:abc",)
 
     # When
-    binding = bind_source(fake_source, fake_history, FullSha("a" * 40), manifest)
+    identity = CommitIdentity(RepositoryRef("owner", "repository"), FullSha("a" * 40))
+    binding = bind_source(fake_source, fake_history, identity, manifest)
 
     # Then
     assert binding.source is fake_source
     assert binding.history is fake_history
+    assert binding.identity == identity
 
 
 def test_should_create_stable_manifest_hash_when_inventory_order_differs() -> None:
@@ -77,6 +79,12 @@ def test_should_create_stable_manifest_hash_when_inventory_order_differs() -> No
 
     # Then
     assert unordered_hash == manifest_sha256(ordered)
+
+
+def test_should_distinguish_manifest_collision_when_path_contains_separator() -> None:
+    first = (f"x:{'a' * 64}\ny:{'b' * 64}",)
+    second = (f"x:{'a' * 64}", f"y:{'b' * 64}")
+    assert manifest_sha256(first) != manifest_sha256(second)
 
 
 def test_should_reject_unexpected_file_when_workspace_has_more_files() -> None:
@@ -129,4 +137,4 @@ def test_should_omit_directories_when_creating_dagger_inventory(
     manifest = asyncio.run(canonical_inventory(source_module.DaggerSourceInventory(directory)))
 
     # Then
-    assert manifest == ()
+    assert manifest == (f"src/app.ts:{'a' * 64}",)
