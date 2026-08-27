@@ -2,7 +2,11 @@
 name = "ci"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["dagger-io"]
+dependencies = [
+  "dagger-io",
+  "pydantic==2.13.4",
+  "PyYAML==6.0.3",
+]
 
 [dependency-groups]
 dev = [
@@ -13,7 +17,9 @@ dev = [
   "pytest-cov>=7.0.0",
   "radon>=6.0.1",
   "ruff>=0.12.0",
+  "types-PyYAML>=6.0.12.20250915",
   "xenon>=0.9.3",
+  "zizmor==1.26.1",
 ]
 
 [build-system]
@@ -35,19 +41,25 @@ max-complexity = 5
 
 [tool.ruff.lint.per-file-ignores]
 "../tests/test_*.py" = ["PLR2004", "S101"]
+"tests/test_*.py" = ["PLR2004", "S101"]
 
 [tool.mypy]
 strict = true
 python_version = "3.13"
 warn_unreachable = true
 disallow_any_explicit = true
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 pythonpath = ["../tests/lib"]
 
+[tool.coverage.run]
+omit = ["src/ci/main.py", "src/ci/fleet_cli.py"]
+
 [tool.poe.tasks]
-lint = { shell = "ruff check --fix src ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py && ruff format src ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py" }
-typecheck = "mypy --strict src ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py"
+lint = { shell = "ruff check --fix src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py && ruff format src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py" }
+typecheck = "mypy --strict src tests ../tests/lib/dagger_source_policy.py ../tests/test_dagger_source_policy.py"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src ../tests/lib/dagger_source_policy.py"
-test = { cmd = "pytest ../tests/test_dagger_source_policy.py --cov=dagger_source_policy --cov-fail-under=90", env = { PYTHONPATH = "../tests/lib" } }
+test = { cmd = "pytest tests ../tests/test_dagger_source_policy.py --cov=ci --cov=dagger_source_policy --cov-fail-under=90", env = { PYTHONPATH = "../tests/lib" } }
 audit = "pip-audit"
+gate = ["lint", "typecheck", "complexity", "test"]
