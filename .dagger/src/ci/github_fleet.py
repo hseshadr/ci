@@ -198,7 +198,7 @@ class CheckPayload:
 
     name: str
     head_sha: str
-    conclusion: str
+    conclusion: str | None
     app: AppPayload
 
 
@@ -358,8 +358,8 @@ def select_modules(sources: tuple[SourceFile, ...]) -> tuple[SourceFile, ...]:
 
 
 def build_check_runs(checks: CheckRunsPayload) -> tuple[CheckRun, ...]:
-    """Translate every complete-page check run into domain evidence."""
-    return tuple(to_check_run(item) for item in checks.check_runs)
+    """Translate only concluded checks into greenable domain evidence."""
+    return tuple(to_check_run(item) for item in checks.check_runs if item.conclusion is not None)
 
 
 def build_check_apps(checks: CheckRunsPayload) -> tuple[str, ...]:
@@ -369,6 +369,8 @@ def build_check_apps(checks: CheckRunsPayload) -> tuple[str, ...]:
 
 def to_check_run(payload: CheckPayload) -> CheckRun:
     """Preserve app and exact-commit identity for one check run."""
+    if payload.conclusion is None:
+        raise ValueError("an in-progress check cannot become domain evidence")
     return CheckRun(
         name=payload.name,
         app_id=payload.app.id,

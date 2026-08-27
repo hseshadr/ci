@@ -146,6 +146,30 @@ def test_should_build_exact_snapshot_when_authoritative_endpoints_are_complete()
     assert snapshot.modules[0].path == "dagger/src/index.ts"
 
 
+def test_should_parse_in_progress_checks_without_treating_them_as_green() -> None:
+    # Given GitHub reports an in-progress exact-main check with no conclusion yet
+    responses = _responses()
+    path = f"repos/hseshadr/example/commits/{SHA}/check-runs?per_page=100"
+    payload = json.loads(responses[path].body)
+    payload["total_count"] = 3
+    payload["check_runs"].append(
+        {
+            "name": "Dagger fleet policy",
+            "head_sha": SHA,
+            "conclusion": None,
+            "app": {"id": 999, "slug": "untrusted-app"},
+        }
+    )
+    responses[path] = _json(payload)
+
+    # When the authoritative boundary parses the live check page
+    snapshot = read_repository(FakeTransport(responses), "hseshadr", "example")
+
+    # Then unfinished work cannot satisfy a green check, but its app remains observable
+    assert all(run.name != "Dagger fleet policy" for run in snapshot.check_runs)
+    assert "untrusted-app" in snapshot.check_apps
+
+
 def test_should_name_minimal_scope_when_protection_read_is_forbidden() -> None:
     # Given a token that can read source but not effective protection
     responses = _responses()
