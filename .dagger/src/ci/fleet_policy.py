@@ -3,15 +3,36 @@
 from __future__ import annotations
 
 import ast
+import json
+import posixpath
 import re
+import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
+from itertools import chain
+from types import MappingProxyType
 from typing import Final, TypeIs
 
+import tree_sitter_typescript as ts_typescript
 import yaml
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 from pydantic.dataclasses import dataclass as validated_dataclass
+from tree_sitter import Language, Node, Parser
 
 PINNED_ACTION: Final = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}$")
+REMOTE_MODULE_SHAPE: Final = re.compile(
+    r"^github\.com/(?P<owner>[^/]+)/(?P<repo>[^/@]+)"
+    r"(?:/(?P<subpath>[^@]*))?@(?P<sha>[0-9a-f]{40})$"
+)
+RAW_PINNED_REMOTE: Final = re.compile(r"^github\.com/.+@[0-9a-f]{40}$")
+GITHUB_OWNER: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
+GITHUB_REPOSITORY: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+GITHUB_PATH_SEGMENT: Final = re.compile(r"[A-Za-z0-9._-]+")
+REMOTE_LIKE: Final = re.compile(r"^(?:[a-z][a-z0-9+.-]*:|[^/]+\.[^/]+/)|@")
+PROVIDER_REMOTE: Final = re.compile(
+    r"^github\.com/hseshadr/ci/modules/cloudflare-pages@[0-9a-f]{40}$"
+)
 SENSITIVE_ARGUMENT: Final = re.compile(
     r"(?:token|secret|password|private_key|api_key|signing_key|oidc_url)$"
 )
@@ -21,8 +42,72 @@ UPLOAD_ACTION: Final = "actions/upload-artifact"
 DOWNLOAD_ACTION: Final = "actions/download-artifact"
 PYPI_ACTION: Final = "pypa/gh-action-pypi-publish"
 APP_ID: Final = 15368
+ENGINE_VERSION: Final = "v0.21.8"
+ACTION_VERSION: Final = "0.21.8"
+COMPATIBLE_DAGGER_ACTIONS: Final = frozenset(
+    (
+        "496f1b3d8b0d823834c13e67cf8a8e08ca3b9602",
+        "27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77",
+    )
+)
+PRODUCTION_SECRETS: Final = frozenset(
+    (
+        "BUNDLE_PRIVATE_KEY_B64",
+        "BUNDLE_PUBLIC_KEY_B64",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+        "WATCHLIST_SIGNING_KEY",
+    )
+)
+ARBITRARY_COMMAND_ARGUMENTS: Final = frozenset(
+    (
+        "arguments",
+        "argv",
+        "cmd",
+        "command",
+        "commands",
+        "executable",
+        "program",
+        "script",
+        "shell",
+    )
+)
+PROCESS_CAPABILITIES: Final = frozenset(
+    ("exec", "execute", "invoke", "launch", "process", "run", "spawn")
+)
+TYPESCRIPT_DAGGER_FUNCTION: Final = re.compile(
+    r"@(?:func|function)\s*\([^)]*\)\s*(?:async\s+)?"
+    r"(?P<name>\w+)\s*\((?P<arguments>[^)]*)\)"
+)
+TYPESCRIPT_ASSIGNMENT: Final = re.compile(
+    r"(?:\b(?:const|let|var)\s+)?"
+    r"(?P<target>\[[^\]]+\]|[A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*(?P<value>[^;\n]+)"
+)
+TYPESCRIPT_EXECUTION_SINK: Final = re.compile(
+    r"\b(?:withExec|withEntrypoint|exec|execute|run|spawn)\s*\("
+)
+TYPESCRIPT_IDENTIFIER: Final = re.compile(r"[A-Za-z_$][\w$]*")
+TYPESCRIPT_INERT_NODES: Final = frozenset(("comment", "regex", "string"))
+TYPESCRIPT_LANGUAGE: Final = Language(ts_typescript.language_typescript())
+ALIAS_FLOW_PASSES: Final = 4
+SHARED_MODULES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "cloudflare-pages": "github.com/hseshadr/ci/modules/cloudflare-pages@",
+        "foundation": "github.com/hseshadr/ci/modules/portfolio-foundation@",
+        "portfolio-foundation": "github.com/hseshadr/ci/modules/portfolio-foundation@",
+    }
+)
+SECRET_REFERENCE: Final = re.compile(
+    r"secrets(?:\.([A-Z][A-Z0-9_]*)|\s*\[\s*['\"]([A-Z][A-Z0-9_]*)['\"]\s*\])",
+    re.IGNORECASE,
+)
+DYNAMIC_SECRET_REFERENCE: Final = re.compile(r"secrets\s*\[\s*(?!['\"])")
+APPROVED_PUBLISHER_MODULES: Final = frozenset(("github.com/hseshadr/ci/modules/npm-publisher",))
 type Scalar = str | bool | int
+type RemoteIdentity = tuple[str, str, str, str]
+type ByteRange = tuple[int, int]
 BOUNDARY_CONFIG: Final = ConfigDict(frozen=True, extra="forbid")
+LOCK_CONFIG: Final = ConfigDict(frozen=True, extra="ignore", strict=True)
 
 
 @validated_dataclass(config=BOUNDARY_CONFIG)
@@ -31,6 +116,14 @@ class SourceFile:
 
     path: str
     text: str
+
+
+@dataclass(frozen=True)
+class TypeScriptDocument:
+    """One grammar-parsed position-preserving TypeScript code view."""
+
+    code: str
+    valid: bool
 
 
 @validated_dataclass(config=BOUNDARY_CONFIG)
@@ -66,6 +159,63 @@ class Protection:
 
 
 @validated_dataclass(config=BOUNDARY_CONFIG)
+class DaggerDependency:
+    """One declared direct Dagger module dependency."""
+
+    name: str
+    source: str
+    pin: str | None = None
+
+
+@validated_dataclass(config=BOUNDARY_CONFIG)
+class DaggerConfig:
+    """One recursively resolved Dagger module configuration."""
+
+    identity: str
+    path: str
+    name: str
+    engine_version: str
+    dependencies: tuple[DaggerDependency, ...] = Field(default_factory=tuple)
+    sdk: str | None = None
+    source: str | None = None
+    generated_lock: SourceFile | None = None
+
+
+@validated_dataclass(config=LOCK_CONFIG)
+class PythonLockSource:
+    """Policy-relevant source identity from one uv lock package."""
+
+    editable: str | None = None
+
+
+@validated_dataclass(config=LOCK_CONFIG)
+class PythonLockPackage:
+    """Policy-relevant package identity from a generated uv lock."""
+
+    name: str
+    source: PythonLockSource | None = None
+
+
+@validated_dataclass(config=LOCK_CONFIG)
+class PythonLockPayload:
+    """The strict generated uv lock vocabulary needed by fleet policy."""
+
+    version: int
+    package: tuple[PythonLockPackage, ...]
+
+
+@validated_dataclass(config=BOUNDARY_CONFIG)
+class DeploymentEnvironment:
+    """Name-only GitHub deployment environment evidence."""
+
+    name: str
+    protected_branches: bool
+    custom_branch_policies: bool
+    branch_names: tuple[str, ...]
+    secret_names: tuple[str, ...]
+
+
+@validated_dataclass(config=BOUNDARY_CONFIG)
 class RepositoryExpectation:
     """The reviewed protection contract for one fleet member."""
 
@@ -73,6 +223,8 @@ class RepositoryExpectation:
     required_contexts: tuple[str, ...]
     linear_history: bool
     conversation_resolution: bool
+    shared_foundation_required: bool = False
+    grandfathered_until: date | None = None
 
 
 @validated_dataclass(config=BOUNDARY_CONFIG)
@@ -88,6 +240,10 @@ class RepositorySnapshot:
     check_apps: tuple[str, ...]
     codeql_default_state: str
     legacy_references: tuple[str, ...]
+    dagger_configs: tuple[DaggerConfig, ...] = Field(default_factory=tuple)
+    missing_dagger_configs: tuple[str, ...] = Field(default_factory=tuple)
+    environments: tuple[DeploymentEnvironment, ...] = Field(default_factory=tuple)
+    repository_secret_names: tuple[str, ...] = Field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -181,32 +337,542 @@ def validate_repository(
     snapshot: RepositorySnapshot, expectation: RepositoryExpectation
 ) -> tuple[PolicyFinding, ...]:
     """Validate source, protection, and exact-main integration as one contract."""
-    findings = [item for source in snapshot.workflows for item in validate_workflow(source)]
+    engine = root_engine(snapshot.dagger_configs) or ENGINE_VERSION
+    findings = list(validate_workflows(snapshot, engine))
     findings.extend(validate_modules(snapshot.modules))
+    findings.extend(validate_dagger_graph(snapshot, expectation))
+    findings.extend(validate_production_boundaries(snapshot))
     findings.extend(validate_protection(snapshot, expectation))
     findings.extend(validate_control_plane(snapshot))
     findings.extend(validate_legacy(snapshot))
     return tuple(findings)
 
 
-def validate_workflow(source: SourceFile) -> tuple[PolicyFinding, ...]:
+def validate_workflows(snapshot: RepositorySnapshot, engine: str) -> tuple[PolicyFinding, ...]:
+    """Validate every exact-main workflow in repository identity context."""
+    return tuple(
+        item
+        for source in snapshot.workflows
+        for item in validate_workflow(source, engine, snapshot.name)
+    )
+
+
+def root_engine(configs: tuple[DaggerConfig, ...]) -> str | None:
+    """Return the exact root module engine when its config was resolved."""
+    root = next((item for item in configs if item.path == "dagger.json"), None)
+    return None if root is None else root.engine_version
+
+
+def validate_dagger_graph(
+    snapshot: RepositorySnapshot, expectation: RepositoryExpectation
+) -> tuple[PolicyFinding, ...]:
+    """Validate immutable dependency, publisher, engine, and graph identity."""
+    findings = list(validate_config_dependencies(snapshot.dagger_configs))
+    findings.extend(validate_missing_configs(snapshot.missing_dagger_configs))
+    findings.extend(validate_config_engines(snapshot.dagger_configs))
+    findings.extend(validate_generated_locks(snapshot.dagger_configs))
+    if graph_has_cycle(snapshot.dagger_configs):
+        findings.append(finding("dagger-dependency-cycle", "dagger.json", "dependency cycle"))
+    findings.extend(validate_shared_requirement(snapshot.dagger_configs, expectation))
+    return tuple(findings)
+
+
+def validate_config_dependencies(
+    configs: tuple[DaggerConfig, ...],
+) -> tuple[PolicyFinding, ...]:
+    """Require immutable remotes and approved shared-module publishers."""
+    return tuple(
+        item
+        for config in configs
+        for dependency in config.dependencies
+        for item in validate_dependency(config, dependency)
+    )
+
+
+def validate_dependency(
+    config: DaggerConfig, dependency: DaggerDependency
+) -> tuple[PolicyFinding, ...]:
+    """Validate one direct dependency without conflating consumer identity."""
+    findings = list(validate_dependency_source(config.path, dependency.source))
+    findings.extend(validate_dependency_pin(config.path, dependency))
+    expected = SHARED_MODULES.get(dependency.name)
+    if expected is not None and not shared_publisher_is_valid(config, dependency, expected):
+        findings.append(finding("shared-module-publisher", config.path, dependency.source))
+    return tuple(findings)
+
+
+def validate_dependency_pin(path: str, dependency: DaggerDependency) -> tuple[PolicyFinding, ...]:
+    """Require Dagger's generated pin to repeat an exact remote revision."""
+    remote = parse_pinned_remote(dependency.source)
+    if remote is None:
+        return ()
+    if dependency.pin is None:
+        return (finding("missing-generated-pin", path, dependency.source),)
+    if dependency.pin != remote[3]:
+        return (finding("invalid-generated-pin", path, dependency.pin),)
+    return ()
+
+
+def validate_dependency_source(path: str, source: str) -> tuple[PolicyFinding, ...]:
+    """Classify mutable GitHub refs separately from unsupported dependency syntax."""
+    if source.startswith("github.com/") and RAW_PINNED_REMOTE.fullmatch(source) is None:
+        return (finding("mutable-dagger-dependency", path, source),)
+    if dependency_source_is_valid(path, source):
+        return ()
+    return (finding("invalid-dagger-dependency", path, source),)
+
+
+def shared_publisher_is_valid(
+    config: DaggerConfig, dependency: DaggerDependency, expected: str
+) -> bool:
+    """Allow exact consumers and local edges inside the exact central module tree."""
+    if dependency.source.startswith(expected):
+        return True
+    central = approved_shared_identity(config.identity)
+    return central and not dependency_is_remote(dependency.source)
+
+
+def approved_shared_identity(identity: str) -> bool:
+    """Return whether an exact config belongs to one reviewed shared module."""
+    revision = identity.rpartition("@")[2]
+    base = identity.rpartition("@")[0]
+    approved = frozenset(prefix.removesuffix("@") for prefix in SHARED_MODULES.values())
+    return base in approved and re.fullmatch(r"[0-9a-f]{40}", revision) is not None
+
+
+def dependency_source_is_valid(config_path: str, source: str) -> bool:
+    """Accept only canonical exact GitHub remotes or in-repository local edges."""
+    remote = parse_pinned_remote(source) is not None
+    return remote or local_dependency_path(config_path, source) is not None
+
+
+def parse_pinned_remote(source: str) -> RemoteIdentity | None:
+    """Parse one byte-for-byte canonical GitHub module identity."""
+    match = REMOTE_MODULE_SHAPE.fullmatch(source)
+    if match is None:
+        return None
+    remote = remote_identity_parts(match)
+    return remote if canonical_remote_text(remote) == source else None
+
+
+def remote_identity_parts(match: re.Match[str]) -> RemoteIdentity:
+    """Validate canonical repository and module-path components."""
+    owner, repo, sha = (match.group(name) for name in ("owner", "repo", "sha"))
+    subpath = match.group("subpath") or ""
+    if not canonical_repository(owner, repo) or not canonical_subpath(subpath):
+        return ("", "", "", "")
+    return owner, repo, subpath, sha
+
+
+def canonical_repository(owner: str, repo: str) -> bool:
+    """Apply the reviewed GitHub owner and repository component rules."""
+    owner_valid = GITHUB_OWNER.fullmatch(owner) is not None
+    repo_valid = GITHUB_REPOSITORY.fullmatch(repo) is not None and not repo.endswith(".git")
+    return owner_valid and repo_valid
+
+
+def canonical_subpath(subpath: str) -> bool:
+    """Reject empty, traversal, encoded, and alternate-separator path segments."""
+    if not subpath:
+        return True
+    segments = subpath.split("/")
+    return all(canonical_path_segment(item) for item in segments)
+
+
+def canonical_path_segment(segment: str) -> bool:
+    """Recognize one byte-stable GitHub module path segment."""
+    return segment not in {"", ".", ".."} and GITHUB_PATH_SEGMENT.fullmatch(segment) is not None
+
+
+def canonical_remote_text(remote: RemoteIdentity) -> str:
+    """Render one validated remote identity for raw/canonical comparison."""
+    owner, repo, subpath, sha = remote
+    suffix = f"/{subpath}" if subpath else ""
+    return f"github.com/{owner}/{repo}{suffix}@{sha}"
+
+
+def validate_missing_configs(missing: tuple[str, ...]) -> tuple[PolicyFinding, ...]:
+    """Report every exact dependency whose config could not be read."""
+    return tuple(
+        finding("missing-dagger-config", item, "dagger.json unavailable") for item in missing
+    )
+
+
+def validate_config_engines(configs: tuple[DaggerConfig, ...]) -> tuple[PolicyFinding, ...]:
+    """Require one compatible engine across the complete graph."""
+    return tuple(
+        finding("incompatible-dagger-engine", item.path, item.engine_version)
+        for item in configs
+        if item.engine_version != ENGINE_VERSION
+    )
+
+
+def validate_generated_locks(configs: tuple[DaggerConfig, ...]) -> tuple[PolicyFinding, ...]:
+    """Validate every configured language SDK's exact committed generated lock."""
+    return tuple(
+        item
+        for config in configs
+        if config.sdk is not None
+        for item in validate_generated_lock(config)
+    )
+
+
+def validate_generated_lock(config: DaggerConfig) -> tuple[PolicyFinding, ...]:
+    """Validate a present authoritative language lock without inventing one."""
+    expected = expected_lock_path(config)
+    if expected is None:
+        return (finding("unsupported-dagger-sdk", config.path, config.sdk or "missing"),)
+    if config.generated_lock is None:
+        return ()
+    if generated_lock_is_invalid(config, expected):
+        return (finding("invalid-generated-lock", expected, "generated SDK lock is stale"),)
+    return ()
+
+
+def generated_lock_is_invalid(config: DaggerConfig, expected: str) -> bool:
+    """Return whether present generated metadata has wrong identity or semantics."""
+    lock = config.generated_lock
+    return lock is None or lock.path != expected or not generated_lock_is_valid(config)
+
+
+def expected_lock_path(config: DaggerConfig) -> str | None:
+    """Return the reviewed generated language lock location for one module."""
+    filename = {"python": "uv.lock", "typescript": "yarn.lock"}.get(config.sdk or "")
+    if filename is None:
+        return None
+    root = posixpath.dirname(config.path)
+    return posixpath.normpath(posixpath.join(root, config.source or ".", filename))
+
+
+def generated_lock_is_valid(config: DaggerConfig) -> bool:
+    """Dispatch generated lock semantics by configured SDK language."""
+    lock = config.generated_lock
+    if lock is None:
+        return False
+    if config.sdk == "python":
+        return python_lock_is_valid(lock.text)
+    return typescript_lock_is_valid(lock.text)
+
+
+def python_lock_is_valid(source: str) -> bool:
+    """Require uv lock v1 and its generated editable Dagger SDK package."""
+    try:
+        raw = json.dumps(tomllib.loads(source))
+        payload = TypeAdapter(PythonLockPayload).validate_json(raw)
+    except (tomllib.TOMLDecodeError, ValidationError):
+        return False
+    return payload.version == 1 and any(dagger_sdk_package(item) for item in payload.package)
+
+
+def dagger_sdk_package(package: PythonLockPackage) -> bool:
+    """Recognize Dagger's generated local Python SDK lock entry."""
+    source = package.source
+    return package.name == "dagger-io" and source is not None and source.editable == "sdk"
+
+
+def typescript_lock_is_valid(source: str) -> bool:
+    """Require generated Yarn v1 metadata with immutable resolution and integrity."""
+    header = "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1"
+    pinned = re.search(r'^  resolved "https://[^"#]+#[0-9a-f]{40}"$', source, re.MULTILINE)
+    integrity = re.search(r"^  integrity sha512-[A-Za-z0-9+/=]+$", source, re.MULTILINE)
+    return source.startswith(header) and pinned is not None and integrity is not None
+
+
+def validate_shared_requirement(
+    configs: tuple[DaggerConfig, ...], expectation: RepositoryExpectation
+) -> tuple[PolicyFinding, ...]:
+    """Require shared foundation unless one explicit rollout allowance is active."""
+    if not expectation.shared_foundation_required or has_shared_foundation(configs):
+        return ()
+    if grandfather_is_active(expectation.grandfathered_until):
+        return ()
+    return (finding("missing-shared-module", expectation.name, "foundation dependency absent"),)
+
+
+def has_shared_foundation(configs: tuple[DaggerConfig, ...]) -> bool:
+    """Return whether the root declares the central foundation dependency."""
+    root = next((item for item in configs if item.path == "dagger.json"), None)
+    if root is None:
+        return False
+    return any(item.name in {"foundation", "portfolio-foundation"} for item in root.dependencies)
+
+
+def grandfather_is_active(expiry: date | None) -> bool:
+    """Keep a rollout exception active only through its explicit date."""
+    return expiry is not None and expiry >= date.today()
+
+
+def graph_has_cycle(configs: tuple[DaggerConfig, ...]) -> bool:
+    """Return whether any recursively resolved dependency closes a cycle."""
+    graph = {config.identity: dependency_targets(config, configs) for config in configs}
+    return any(cycle_from(identity, graph, frozenset()) for identity in graph)
+
+
+def dependency_targets(config: DaggerConfig, configs: tuple[DaggerConfig, ...]) -> tuple[str, ...]:
+    """Resolve graph edges against exact remote and local config identities."""
+    targets = tuple(dependency_identity(config, item, configs) for item in config.dependencies)
+    return tuple(item for item in targets if item is not None)
+
+
+def dependency_identity(
+    config: DaggerConfig, dependency: DaggerDependency, configs: tuple[DaggerConfig, ...]
+) -> str | None:
+    """Resolve one dependency source to a loaded config identity."""
+    if parse_pinned_remote(dependency.source) is not None:
+        return dependency.source
+    if dependency_is_remote(dependency.source):
+        return None
+    return local_dependency_identity(config, dependency, configs)
+
+
+def dependency_is_remote(source: str) -> bool:
+    """Return whether a source claims remote rather than repository-local identity."""
+    return parse_pinned_remote(source) is not None or remote_source_is_invalid(source)
+
+
+def remote_source_is_invalid(source: str) -> bool:
+    """Recognize remote-like syntax outside the one supported exact form."""
+    return "@" in source or REMOTE_LIKE.match(source) is not None
+
+
+def local_dependency_path(config_path: str, source: str) -> str | None:
+    """Resolve a local dependency only when it remains inside the repository tree."""
+    if local_source_is_invalid(source):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(config_path), source, "dagger.json"))
+    return None if path == ".." or path.startswith("../") else path
+
+
+def local_source_is_invalid(source: str) -> bool:
+    """Reject empty, absolute, and remote-like syntax before path normalization."""
+    if not source or source.startswith("/"):
+        return True
+    return remote_source_is_invalid(source)
+
+
+def local_dependency_identity(
+    config: DaggerConfig, dependency: DaggerDependency, configs: tuple[DaggerConfig, ...]
+) -> str | None:
+    """Resolve one repository-local dependency config path."""
+    path = local_dependency_path(config.path, dependency.source)
+    if path is None:
+        return None
+    return next((item.identity for item in configs if item.path == path), None)
+
+
+def cycle_from(identity: str, graph: dict[str, tuple[str, ...]], ancestors: frozenset[str]) -> bool:
+    """Walk one immutable dependency branch with an active-path fence."""
+    if identity in ancestors:
+        return True
+    active = ancestors | {identity}
+    return any(cycle_from(child, graph, active) for child in graph.get(identity, ()))
+
+
+def validate_production_boundaries(snapshot: RepositorySnapshot) -> tuple[PolicyFinding, ...]:
+    """Join secret names, workflow use, and the main-only production boundary."""
+    if not provider_scope_applies(snapshot):
+        return ()
+    repository_names = frozenset(snapshot.repository_secret_names) & PRODUCTION_SECRETS
+    jobs = production_jobs(snapshot.workflows)
+    referenced = frozenset(name for _, _, names in jobs for name in names) & PRODUCTION_SECRETS
+    repository = repository_secret_findings(snapshot.name, repository_names)
+    jobs_findings = validate_job_environments(jobs)
+    environment = validate_production_environment(snapshot, referenced)
+    return repository + jobs_findings + environment
+
+
+def provider_scope_applies(snapshot: RepositorySnapshot) -> bool:
+    """Activate provider policy only after typed provider adoption begins."""
+    return has_provider_dependency(snapshot.dagger_configs) or has_provider_ingress(
+        snapshot.workflows
+    )
+
+
+def has_provider_dependency(configs: tuple[DaggerConfig, ...]) -> bool:
+    """Return whether the root installs the approved Cloudflare provider."""
+    root = next((item for item in configs if item.path == "dagger.json"), None)
+    if root is None:
+        return False
+    return any(PROVIDER_REMOTE.fullmatch(item.source) for item in root.dependencies)
+
+
+def has_provider_ingress(workflows: tuple[SourceFile, ...]) -> bool:
+    """Return whether a workflow directly calls the exact shared provider module."""
+    return any(provider_ingress_in_workflow(source) for source in workflows)
+
+
+def provider_ingress_in_workflow(source: SourceFile) -> bool:
+    """Recognize one exact remote Cloudflare provider action call."""
+    document = parse_workflow(source)
+    if not isinstance(document, WorkflowDocument):
+        return False
+    steps = tuple(step for job in document.jobs.values() for step in job.steps)
+    return any(step_invokes_provider(step) for step in steps)
+
+
+def step_invokes_provider(step: WorkflowStep) -> bool:
+    """Recognize only an exact provider import on the reviewed Dagger action."""
+    module = scalar_text(step.with_.get("module"))
+    return action_name(step) == DAGGER_ACTION and PROVIDER_REMOTE.fullmatch(module) is not None
+
+
+def repository_secret_findings(
+    name: str, secret_names: frozenset[str]
+) -> tuple[PolicyFinding, ...]:
+    """Report production authority retained at repository scope."""
+    return tuple(
+        finding("unscoped-production-secret", name, secret) for secret in sorted(secret_names)
+    )
+
+
+def production_jobs(
+    workflows: tuple[SourceFile, ...],
+) -> tuple[tuple[str, WorkflowJob, tuple[str, ...]], ...]:
+    """Return jobs that reference a known production secret name."""
+    return tuple(item for source in workflows for item in production_jobs_for_workflow(source))
+
+
+def production_jobs_for_workflow(
+    source: SourceFile,
+) -> tuple[tuple[str, WorkflowJob, tuple[str, ...]], ...]:
+    """Return production-authority jobs from one valid workflow."""
+    document = parse_workflow(source)
+    if not isinstance(document, WorkflowDocument):
+        return ()
+    records = tuple(production_job_record(source.path, job) for job in document.jobs.values())
+    return tuple(item for item in records if item is not None)
+
+
+def production_job_record(
+    path: str, job: WorkflowJob
+) -> tuple[str, WorkflowJob, tuple[str, ...]] | None:
+    """Build one production-authority job record when secrets are referenced."""
+    names = job_secret_names(job)
+    dynamic = job_has_dynamic_secret(job)
+    provider = any(step_invokes_provider(step) for step in job.steps)
+    if not production_authority_exists(names, dynamic, provider):
+        return None
+    evidence = production_authority_evidence(names, dynamic)
+    return path, job, evidence
+
+
+def production_authority_exists(names: tuple[str, ...], dynamic: bool, provider: bool) -> bool:
+    """Return whether one job can exercise production provider authority."""
+    return bool(names) or dynamic or provider
+
+
+def production_authority_evidence(names: tuple[str, ...], dynamic: bool) -> tuple[str, ...]:
+    """Name the evidence that made one job production-authoritative."""
+    if names:
+        return names
+    return ("dynamic-secret",) if dynamic else ("provider-deployment",)
+
+
+def job_secret_names(job: WorkflowJob) -> tuple[str, ...]:
+    """Return known production secret names referenced by one job."""
+    names = {
+        next(item for item in match.groups() if item is not None).upper()
+        for value in job_expression_values(job)
+        for match in SECRET_REFERENCE.finditer(value)
+    }
+    return tuple(sorted(names & PRODUCTION_SECRETS))
+
+
+def job_expression_values(job: WorkflowJob) -> tuple[str, ...]:
+    """Return every action input and environment expression in one job."""
+    return tuple(
+        scalar_text(value)
+        for step in job.steps
+        for value in (*step.env.values(), *step.with_.values())
+    )
+
+
+def job_has_dynamic_secret(job: WorkflowJob) -> bool:
+    """Fail closed on computed GitHub secret selection after provider adoption."""
+    return any(DYNAMIC_SECRET_REFERENCE.search(value) for value in job_expression_values(job))
+
+
+def validate_job_environments(
+    jobs: tuple[tuple[str, WorkflowJob, tuple[str, ...]], ...],
+) -> tuple[PolicyFinding, ...]:
+    """Require every production-secret consumer to declare production."""
+    return tuple(
+        finding("unscoped-production-secret", path, ", ".join(names))
+        for path, job, names in jobs
+        if job.environment != "production"
+    )
+
+
+def validate_production_environment(
+    snapshot: RepositorySnapshot, referenced: frozenset[str]
+) -> tuple[PolicyFinding, ...]:
+    """Require an exact main-only environment containing referenced names."""
+    environment = next((item for item in snapshot.environments if item.name == "production"), None)
+    if environment is None:
+        return (finding("production-environment", snapshot.name, "production missing"),)
+    findings = list(validate_production_branches(snapshot.name, environment))
+    missing = referenced - frozenset(environment.secret_names)
+    findings.extend(
+        finding("missing-production-secret", snapshot.name, name) for name in sorted(missing)
+    )
+    return tuple(findings)
+
+
+def validate_production_branches(
+    name: str, environment: DeploymentEnvironment
+) -> tuple[PolicyFinding, ...]:
+    """Require one custom deployment branch pattern naming only main."""
+    valid = all(
+        (
+            not environment.protected_branches,
+            environment.custom_branch_policies,
+            environment.branch_names == ("main",),
+        )
+    )
+    return () if valid else (finding("production-branch-policy", name, "main only required"),)
+
+
+def validate_workflow(
+    source: SourceFile, engine_version: str | None = None, repository: str = ""
+) -> tuple[PolicyFinding, ...]:
     """Validate every job in one real workflow."""
     parsed = parse_workflow(source)
     if isinstance(parsed, PolicyFinding):
         return (parsed,)
-    findings = [item for job in parsed.jobs.values() for item in validate_job(source.path, job)]
+    engine = engine_version or ENGINE_VERSION
+    findings = [
+        item
+        for job in parsed.jobs.values()
+        for item in validate_job(source.path, job, engine, repository)
+    ]
     return tuple(findings)
 
 
-def validate_job(path: str, job: WorkflowJob) -> tuple[PolicyFinding, ...]:
+def validate_job(
+    path: str, job: WorkflowJob, engine_version: str | None = None, repository: str = ""
+) -> tuple[PolicyFinding, ...]:
     """Dispatch a job to its only accepted execution shape."""
-    common = validate_steps(path, job.steps)
+    common = validate_steps(path, job.steps) + validate_action_steps(
+        path, job.steps, engine_version
+    )
     names = tuple(map(action_name, job.steps))
     if UPLOAD_ACTION in names:
         return common + validate_candidate(path, job.steps)
     if DOWNLOAD_ACTION in names or scalar_text(job.permissions.get("id-token")) == "write":
-        return common + validate_publisher(path, job)
-    return common + validate_ingress(path, job.steps)
+        return common + validate_publisher(path, job, repository)
+    return common + validate_ingress(path, job.steps, engine_version)
+
+
+def validate_action_steps(
+    path: str, steps: tuple[WorkflowStep, ...], engine_version: str | None
+) -> tuple[PolicyFinding, ...]:
+    """Validate every Dagger action against the config-selected engine tuple."""
+    return tuple(
+        item
+        for step in steps
+        if action_name(step) == DAGGER_ACTION
+        for item in validate_action_compatibility(path, step, engine_version)
+    )
 
 
 def validate_steps(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFinding, ...]:
@@ -220,7 +886,9 @@ def validate_steps(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFi
     return tuple(findings)
 
 
-def validate_ingress(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFinding, ...]:
+def validate_ingress(
+    path: str, steps: tuple[WorkflowStep, ...], engine_version: str | None = None
+) -> tuple[PolicyFinding, ...]:
     """Accept exactly pinned checkout followed by a Dagger call."""
     names = tuple(map(action_name, steps))
     findings: list[PolicyFinding] = []
@@ -228,8 +896,22 @@ def validate_ingress(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[Policy
         findings.append(finding("non-dagger-ingress", path, "expected checkout then Dagger"))
         return tuple(findings)
     findings.extend(validate_checkout(path, steps[0]))
-    findings.extend(validate_dagger(path, steps[1]))
+    findings.extend(validate_dagger(path, steps[1], engine_version))
+    findings.extend(validate_ingress_module(path, steps[1]))
     return tuple(findings)
+
+
+def validate_ingress_module(path: str, step: WorkflowStep) -> tuple[PolicyFinding, ...]:
+    """Allow local source or the one exact shared provider direct import."""
+    module = scalar_text(step.with_.get("module"))
+    if not module or PROVIDER_REMOTE.fullmatch(module):
+        return ()
+    code = (
+        "publisher-module-identity"
+        if parse_pinned_remote(module) is not None
+        else "remote-module-identity"
+    )
+    return (finding(code, path, module),)
 
 
 def validate_checkout(path: str, step: WorkflowStep) -> tuple[PolicyFinding, ...]:
@@ -239,14 +921,40 @@ def validate_checkout(path: str, step: WorkflowStep) -> tuple[PolicyFinding, ...
     return (finding("checkout-credentials", path, "persist-credentials must be false"),)
 
 
-def validate_dagger(path: str, step: WorkflowStep) -> tuple[PolicyFinding, ...]:
+def validate_dagger(
+    path: str, step: WorkflowStep, engine_version: str | None = None
+) -> tuple[PolicyFinding, ...]:
     """Require the reviewed immutable Dagger call boundary."""
     findings: list[PolicyFinding] = []
-    if scalar_text(step.with_.get("version")) != "0.21.8":
+    if engine_version is None and scalar_text(step.with_.get("version")) != ACTION_VERSION:
         findings.append(finding("dagger-version", path, "Dagger 0.21.8 required"))
     if not dagger_invocation_is_owned(step):
         findings.append(finding("dagger-verb", path, "Dagger call/check input required"))
     return tuple(findings)
+
+
+def validate_action_compatibility(
+    path: str, step: WorkflowStep, engine_version: str | None
+) -> tuple[PolicyFinding, ...]:
+    """Require one reviewed action revision compatible with the config engine."""
+    findings: list[PolicyFinding] = []
+    revision = action_revision(step)
+    if not engine_action_versions_match(step, engine_version):
+        findings.append(finding("incompatible-dagger-engine", path, "engine/action mismatch"))
+    if revision not in COMPATIBLE_DAGGER_ACTIONS:
+        findings.append(finding("incompatible-dagger-action", path, revision))
+    return tuple(findings)
+
+
+def action_revision(step: WorkflowStep) -> str:
+    """Return the immutable action revision or no revision."""
+    return "" if step.uses is None else step.uses.partition("@")[2]
+
+
+def engine_action_versions_match(step: WorkflowStep, engine_version: str | None) -> bool:
+    """Return whether config and action select the reviewed engine version."""
+    expected = "" if engine_version is None else engine_version.removeprefix("v")
+    return expected == ACTION_VERSION and scalar_text(step.with_.get("version")) == expected
 
 
 def dagger_invocation_is_owned(step: WorkflowStep) -> bool:
@@ -265,8 +973,18 @@ def validate_candidate(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[Poli
         findings.append(finding("candidate-order", path, "expected checkout, Dagger, upload"))
     if steps and action_name(steps[0]) == CHECKOUT:
         findings.extend(validate_checkout(path, steps[0]))
+    findings.extend(validate_candidate_module(path, steps))
     findings.extend(validate_candidate_identity(path, steps))
     return tuple(findings)
+
+
+def validate_candidate_module(
+    path: str, steps: tuple[WorkflowStep, ...]
+) -> tuple[PolicyFinding, ...]:
+    """Require candidate bytes to come from the credential-free checkout source."""
+    step = next((item for item in steps if action_name(item) == DAGGER_ACTION), None)
+    module = "" if step is None else scalar_text(step.with_.get("module"))
+    return () if not module else (finding("candidate-module-identity", path, module),)
 
 
 def validate_candidate_identity(
@@ -291,7 +1009,7 @@ def candidate_identity_is_weak(step: WorkflowStep) -> bool:
     )
 
 
-def validate_publisher(path: str, job: WorkflowJob) -> tuple[PolicyFinding, ...]:
+def validate_publisher(path: str, job: WorkflowJob, repository: str) -> tuple[PolicyFinding, ...]:
     """Accept only source-free artifact transport into one OIDC publisher."""
     findings: list[PolicyFinding] = []
     findings.extend(validate_publisher_permissions(path, job))
@@ -299,9 +1017,9 @@ def validate_publisher(path: str, job: WorkflowJob) -> tuple[PolicyFinding, ...]
     findings.extend(validate_download(path, job.steps))
     names = tuple(map(action_name, job.steps))
     if PYPI_ACTION in names:
-        findings.extend(validate_pypi(path, job.steps))
+        findings.extend(validate_pypi(path, job.steps, repository))
     else:
-        findings.extend(validate_npm(path, job.steps))
+        findings.extend(validate_npm(path, job.steps, repository))
     return tuple(findings)
 
 
@@ -344,13 +1062,15 @@ def download_identity_is_weak(step: WorkflowStep) -> bool:
     )
 
 
-def validate_pypi(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFinding, ...]:
+def validate_pypi(
+    path: str, steps: tuple[WorkflowStep, ...], repository: str
+) -> tuple[PolicyFinding, ...]:
     """Require exact download followed by official attested PyPI publication."""
     names = tuple(map(action_name, steps))
     findings = list(validate_pypi_shape(path, names))
     pypi = next(step for step in steps if action_name(step) == PYPI_ACTION)
     findings.extend(validate_pypi_attestation(path, pypi))
-    findings.extend(validate_pypi_remote(path, names, steps))
+    findings.extend(validate_pypi_remote(path, names, steps, repository))
     return tuple(findings)
 
 
@@ -369,10 +1089,10 @@ def validate_pypi_attestation(path: str, step: WorkflowStep) -> tuple[PolicyFind
 
 
 def validate_pypi_remote(
-    path: str, names: tuple[str, ...], steps: tuple[WorkflowStep, ...]
+    path: str, names: tuple[str, ...], steps: tuple[WorkflowStep, ...], repository: str
 ) -> tuple[PolicyFinding, ...]:
     """Bind an optional pre-publication Dagger decision to the candidate SHA."""
-    return validate_remote_dagger(path, steps) if DAGGER_ACTION in names else ()
+    return validate_remote_dagger(path, steps, repository) if DAGGER_ACTION in names else ()
 
 
 def pypi_shape_is_allowed(names: tuple[str, ...]) -> bool:
@@ -382,13 +1102,15 @@ def pypi_shape_is_allowed(names: tuple[str, ...]) -> bool:
     return names in (direct, planned)
 
 
-def validate_npm(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFinding, ...]:
+def validate_npm(
+    path: str, steps: tuple[WorkflowStep, ...], repository: str
+) -> tuple[PolicyFinding, ...]:
     """Require exact remote Dagger npm publication with typed OIDC addresses."""
     names = tuple(map(action_name, steps))
     findings: list[PolicyFinding] = []
     if names != (DOWNLOAD_ACTION, DAGGER_ACTION):
         findings.append(finding("npm-shape", path, "expected download then remote Dagger"))
-    findings.extend(validate_remote_dagger(path, steps))
+    findings.extend(validate_remote_dagger(path, steps, repository))
     if not has_typed_oidc_publisher_step(steps):
         findings.append(finding("typed-oidc", path, "typed OIDC URL and token required"))
     return tuple(findings)
@@ -400,13 +1122,31 @@ def has_typed_oidc_publisher_step(steps: tuple[WorkflowStep, ...]) -> bool:
     return False if step is None else oidc_arguments_are_typed(step)
 
 
-def validate_remote_dagger(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFinding, ...]:
+def validate_remote_dagger(
+    path: str, steps: tuple[WorkflowStep, ...], repository: str
+) -> tuple[PolicyFinding, ...]:
     """Bind remote publisher code to the triggering candidate SHA."""
-    step = next((item for item in steps if action_name(item) == DAGGER_ACTION), None)
-    module = "" if step is None else scalar_text(step.with_.get("module"))
-    if module.endswith("@${{ github.event.workflow_run.head_sha }}"):
+    module = remote_dagger_module(steps)
+    if publisher_module_is_authorized(module, repository):
         return ()
+    dynamic = module.endswith("@${{ github.event.workflow_run.head_sha }}")
+    if parse_pinned_remote(module) is not None or dynamic:
+        return (finding("publisher-module-identity", path, module),)
     return (finding("remote-module-identity", path, "remote Dagger module is not exact"),)
+
+
+def remote_dagger_module(steps: tuple[WorkflowStep, ...]) -> str:
+    """Return the configured module on the only Dagger publisher step."""
+    step = next((item for item in steps if action_name(item) == DAGGER_ACTION), None)
+    return "" if step is None else scalar_text(step.with_.get("module"))
+
+
+def publisher_module_is_authorized(module: str, repository: str) -> bool:
+    """Accept exact consumer candidates or an approved literal central publisher."""
+    candidate = f"github.com/hseshadr/{repository}@${{{{ github.event.workflow_run.head_sha }}}}"
+    base, separator, revision = module.rpartition("@")
+    literal = separator == "@" and base in APPROVED_PUBLISHER_MODULES
+    return module == candidate or (literal and re.fullmatch(r"[0-9a-f]{40}", revision) is not None)
 
 
 def oidc_arguments_are_typed(step: WorkflowStep) -> bool:
@@ -425,6 +1165,8 @@ def validate_modules(modules: tuple[SourceFile, ...]) -> tuple[PolicyFinding, ..
     findings = validate_module_source(trees, typescript)
     findings.extend(validate_python_secrets(trees))
     findings.extend(validate_typescript_secrets(typescript))
+    findings.extend(validate_python_commands(trees))
+    findings.extend(validate_typescript_commands(typescript))
     return tuple(findings)
 
 
@@ -453,6 +1195,145 @@ def validate_python_secrets(
     )
 
 
+def validate_python_commands(
+    trees: tuple[tuple[SourceFile, ast.Module], ...],
+) -> tuple[PolicyFinding, ...]:
+    """Reject generic command arguments on Python Dagger functions."""
+    return tuple(item for module, tree in trees for item in command_findings(module.path, tree))
+
+
+def command_findings(path: str, tree: ast.Module) -> tuple[PolicyFinding, ...]:
+    """Return arbitrary-command findings for one parsed Python module."""
+    return tuple(
+        finding("arbitrary-command", path, node.name)
+        for node in ast.walk(tree)
+        if is_dagger_function(node) and python_command_capability(node)
+    )
+
+
+def python_command_capability(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Detect generic process capability by schema or executable sink use."""
+    arguments = function_arguments(node)
+    names = frozenset(item.arg for item in arguments if item.arg not in {"self", "cls"})
+    checks = (
+        node.name in PROCESS_CAPABILITIES and bool(names),
+        bool(names & ARBITRARY_COMMAND_ARGUMENTS),
+        uses_executable_sink(node, propagated_python_names(node, names)),
+    )
+    return any(checks)
+
+
+def propagated_python_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, names: frozenset[str]
+) -> frozenset[str]:
+    """Propagate caller control through a bounded number of local assignments."""
+    tainted = names
+    for _ in range(ALIAS_FLOW_PASSES):
+        tainted |= python_aliases(node, tainted)
+    return tainted
+
+
+def python_aliases(node: ast.AST, tainted: frozenset[str]) -> frozenset[str]:
+    """Return assignment targets whose value references caller-controlled data."""
+    return frozenset(
+        name for item in ast.walk(node) for name in tainted_assignment_names(item, tainted)
+    )
+
+
+def tainted_assignment_names(node: ast.AST, tainted: frozenset[str]) -> frozenset[str]:
+    """Return local names tainted by one supported Python assignment."""
+    targets, value = assignment_parts(node)
+    if value is None or not assignment_value_controls_command(value, tainted):
+        return frozenset()
+    return assigned_names(targets)
+
+
+def assignment_value_controls_command(node: ast.expr, tainted: frozenset[str]) -> bool:
+    """Separate fixed list data positions from executable and spread control."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return bool(command_element_names(node.elts) & tainted)
+    return bool(expression_names(node) & tainted)
+
+
+def assignment_parts(node: ast.AST) -> tuple[tuple[ast.expr, ...], ast.expr | None]:
+    """Extract targets and value from bounded Python assignment forms."""
+    if isinstance(node, ast.Assign):
+        return tuple(node.targets), node.value
+    if isinstance(node, ast.AnnAssign):
+        return (node.target,), node.value
+    if isinstance(node, ast.NamedExpr):
+        return (node.target,), node.value
+    return (), None
+
+
+def expression_names(node: ast.expr) -> frozenset[str]:
+    """Return identifiers read anywhere in one assignment expression."""
+    return frozenset(item.id for item in ast.walk(node) if isinstance(item, ast.Name))
+
+
+def assigned_names(targets: tuple[ast.expr, ...]) -> frozenset[str]:
+    """Return simple or destructured local assignment identities."""
+    return frozenset(
+        item.id for target in targets for item in ast.walk(target) if isinstance(item, ast.Name)
+    )
+
+
+def uses_executable_sink(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, argument_names: frozenset[str]
+) -> bool:
+    """Detect caller arguments forwarded into generic execution primitives."""
+    sinks = frozenset(("exec", "execute", "run", "spawn", "with_exec", "with_entrypoint"))
+    return any(call_uses_arguments(item, sinks, argument_names) for item in ast.walk(node))
+
+
+def call_uses_arguments(
+    node: ast.AST, sinks: frozenset[str], argument_names: frozenset[str]
+) -> bool:
+    """Return whether one call forwards a public argument into an execution sink."""
+    if not isinstance(node, ast.Call):
+        return False
+    return call_name(node) in sinks and bool(command_structure_names(node) & argument_names)
+
+
+def call_name(node: ast.Call) -> str:
+    """Return one executable call's simple function or method name."""
+    return node.func.attr if isinstance(node.func, ast.Attribute) else ast.unparse(node.func)
+
+
+def command_structure_names(node: ast.Call) -> frozenset[str]:
+    """Return public identifiers that can control executable or command-vector structure."""
+    if not node.args:
+        return frozenset()
+    command = node.args[0]
+    if isinstance(command, (ast.List, ast.Tuple)):
+        return command_element_names(command.elts)
+    return expression_names(command)
+
+
+def command_element_names(elements: list[ast.expr]) -> frozenset[str]:
+    """Return a variable executable or splatted argument-vector identity."""
+    if not elements:
+        return frozenset()
+    first = elements[0]
+    names = {first.id} if isinstance(first, ast.Name) else set()
+    names.update(filter(None, map(starred_name, elements)))
+    return frozenset(names)
+
+
+def starred_name(node: ast.expr) -> str | None:
+    """Return a splatted public argument-vector name when present."""
+    if isinstance(node, ast.Starred) and isinstance(node.value, ast.Name):
+        return node.value.id
+    return None
+
+
+def function_arguments(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.arg, ...]:
+    """Return every positional and keyword argument on one function."""
+    return (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+
+
 def validate_module_source(
     trees: tuple[tuple[SourceFile, ast.Module], ...], typescript: tuple[SourceFile, ...]
 ) -> list[PolicyFinding]:
@@ -462,6 +1343,52 @@ def validate_module_source(
     if not any((python_source, typescript_source)):
         return [finding("explicit-source", "dagger.json", "typed source is absent")]
     return []
+
+
+def parse_typescript(source: str) -> TypeScriptDocument:
+    """Parse TypeScript once and return its executable position-preserving view."""
+    encoded = source.encode()
+    root = Parser(TYPESCRIPT_LANGUAGE).parse(encoded).root_node
+    code = masked_typescript(encoded, root)
+    return TypeScriptDocument(code, not root.has_error)
+
+
+def masked_typescript(source: bytes, root: Node) -> str:
+    """Mask grammar-classified inert syntax without changing byte offsets."""
+    output = bytearray(source)
+    for start, end in typescript_inert_ranges(root):
+        mask_typescript_range(output, source, start, end)
+    return output.decode()
+
+
+def typescript_inert_ranges(node: Node) -> tuple[ByteRange, ...]:
+    """Return inert syntax ranges while retaining template interpolation code."""
+    if node.is_named and node.type in TYPESCRIPT_INERT_NODES:
+        return (node.byte_range,)
+    if node.type == "template_string":
+        return template_inert_ranges(node)
+    return tuple(chain.from_iterable(typescript_inert_ranges(child) for child in node.children))
+
+
+def template_inert_ranges(node: Node) -> tuple[ByteRange, ...]:
+    """Mask template static spans and recurse into executable substitutions."""
+    substitutions = tuple(
+        child for child in node.named_children if child.type == "template_substitution"
+    )
+    ranges: list[ByteRange] = []
+    cursor = node.start_byte
+    for substitution in substitutions:
+        ranges.append((cursor, substitution.start_byte))
+        ranges.extend(typescript_inert_ranges(substitution))
+        cursor = substitution.end_byte
+    return (*ranges, (cursor, node.end_byte))
+
+
+def mask_typescript_range(output: bytearray, source: bytes, start: int, end: int) -> None:
+    """Replace one inert syntax range with spaces while preserving newlines."""
+    for index in range(start, end):
+        if source[index] not in (10, 13):
+            output[index] = 32
 
 
 def has_typescript_source(source: str) -> bool:
@@ -480,6 +1407,141 @@ def validate_typescript_secrets(modules: tuple[SourceFile, ...]) -> tuple[Policy
         if pattern.search(module.text):
             findings.append(finding("untyped-secret", module.path, "credential typed string"))
     return tuple(findings)
+
+
+def validate_typescript_commands(modules: tuple[SourceFile, ...]) -> tuple[PolicyFinding, ...]:
+    """Reject generic command arguments on TypeScript Dagger functions."""
+    return tuple(
+        finding("arbitrary-command", module.path, "generic command argument")
+        for module in modules
+        if typescript_has_command_capability(module.text)
+    )
+
+
+def typescript_has_command_capability(source: str) -> bool:
+    """Return whether any exposed TypeScript function is a generic process API."""
+    document = parse_typescript(source)
+    if not document.valid:
+        return True
+    matches = TYPESCRIPT_DAGGER_FUNCTION.finditer(document.code)
+    return any(typescript_command_capability(document.code, match) for match in matches)
+
+
+def typescript_command_capability(source: str, match: re.Match[str]) -> bool:
+    """Detect generic TypeScript process schema or bounded sink data flow."""
+    name = match.group("name")
+    arguments = typescript_arguments(match)
+    schema = (name in PROCESS_CAPABILITIES and bool(arguments)) or bool(
+        arguments & ARBITRARY_COMMAND_ARGUMENTS
+    )
+    return schema or typescript_uses_executable_sink(source, match, arguments)
+
+
+def typescript_arguments(match: re.Match[str]) -> frozenset[str]:
+    """Return typed public argument names from one Dagger function signature."""
+    return frozenset(
+        item.strip().split("?", maxsplit=1)[0]
+        for item in re.findall(r"\b([A-Za-z_$][\w$]*\??)\s*:", match.group("arguments"))
+    )
+
+
+def typescript_uses_executable_sink(
+    source: str, match: re.Match[str], arguments: frozenset[str]
+) -> bool:
+    """Detect caller-controlled TypeScript command structure after local aliases."""
+    body = typescript_function_body(source, match.end())
+    tainted = propagated_typescript_names(body, arguments)
+    commands = typescript_sink_commands(body)
+    return any(bool(typescript_command_names(item) & tainted) for item in commands)
+
+
+def typescript_sink_commands(source: str) -> tuple[str, ...]:
+    """Return balanced first arguments from TypeScript execution sinks."""
+    return tuple(
+        typescript_call_argument(source, match.end())
+        for match in TYPESCRIPT_EXECUTION_SINK.finditer(source)
+    )
+
+
+def typescript_call_argument(source: str, start: int) -> str:
+    """Return one call argument list without truncating nested expressions."""
+    return typescript_balanced_contents(source, start, "(", ")")
+
+
+def typescript_function_body(source: str, start: int) -> str:
+    """Return the balanced body following one matched TypeScript signature."""
+    opening = source.find("{", start)
+    if opening < 0:
+        return ""
+    return typescript_balanced_contents(source, opening + 1, "{", "}")
+
+
+def typescript_balanced_contents(source: str, start: int, opening: str, closing: str) -> str:
+    """Return source up to the closing token matching an already-open token."""
+    depth = 1
+    for index, character in enumerate(source[start:], start):
+        depth += (character == opening) - (character == closing)
+        if depth == 0:
+            return source[start:index]
+    return source[start:]
+
+
+def propagated_typescript_names(body: str, names: frozenset[str]) -> frozenset[str]:
+    """Propagate caller control through bounded TypeScript local assignments."""
+    tainted = names
+    assignments = tuple(TYPESCRIPT_ASSIGNMENT.finditer(body))
+    for _ in range(ALIAS_FLOW_PASSES):
+        tainted |= typescript_aliases(assignments, tainted)
+    return tainted
+
+
+def typescript_aliases(
+    assignments: tuple[re.Match[str], ...], tainted: frozenset[str]
+) -> frozenset[str]:
+    """Return TypeScript assignment targets reached by caller-controlled data."""
+    return frozenset(
+        name
+        for item in assignments
+        if typescript_assignment_is_tainted(item.group("value"), tainted)
+        for name in typescript_names(item.group("target"))
+    )
+
+
+def typescript_assignment_is_tainted(source: str, tainted: frozenset[str]) -> bool:
+    """Separate fixed array data positions from executable and spread control."""
+    source = source.strip()
+    names = (
+        typescript_array_command_names(source[1:-1])
+        if source.startswith("[")
+        else typescript_expression_names(source)
+    )
+    return bool(names & tainted)
+
+
+def typescript_names(source: str) -> frozenset[str]:
+    """Return identifier tokens from one bounded TypeScript expression."""
+    return frozenset(TYPESCRIPT_IDENTIFIER.findall(source))
+
+
+def typescript_expression_names(source: str) -> frozenset[str]:
+    """Return identifier tokens outside static string literals."""
+    return typescript_names(source)
+
+
+def typescript_command_names(command: str) -> frozenset[str]:
+    """Return variable command identities from one TypeScript execution call."""
+    command = command.strip()
+    if command.startswith("["):
+        return typescript_array_command_names(command[1:-1])
+    return typescript_expression_names(command)
+
+
+def typescript_array_command_names(source: str) -> frozenset[str]:
+    """Return a variable executable or spread vector from one array literal."""
+    first = source.split(",", maxsplit=1)[0].strip()
+    names = {first} if TYPESCRIPT_IDENTIFIER.fullmatch(first) else set()
+    names.update(re.findall(r"\.\.\.\s*([A-Za-z_$][\w$]*)", source))
+    return frozenset(names)
 
 
 def has_explicit_source(tree: ast.Module) -> bool:
