@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import re
 from dataclasses import dataclass
@@ -15,7 +17,47 @@ from dagger import dag
 from .identity import CommitIdentity
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+MAX_PERMISSIONS = 0o7777
 HASH_IMAGE = "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+INVENTORY_TRAILER = "portfolio-foundation-inventory-v1"
+INVENTORY_SCRIPT = r"""set -eu
+zero=$(printf '%064d' 0)
+records=/tmp/portfolio-foundation-inventory
+: > "$records"
+find /source -mindepth 1 -exec sh -c '
+records=$1
+zero=$2
+shift 2
+for full_path do
+  path=${full_path#/source/}
+  if [ -L "$full_path" ]; then
+    kind=symlink
+    digest=$zero
+    permissions=0
+  elif [ -f "$full_path" ]; then
+    kind=regular
+    digest=$(sha256sum "$full_path")
+    digest=${digest%% *}
+    permissions=$(stat -c "%a" "$full_path")
+  elif [ -d "$full_path" ]; then
+    kind=directory
+    digest=$zero
+    permissions=0
+  else
+    kind=unknown
+    digest=$zero
+    permissions=0
+  fi
+  encoded=$(printf "%s" "$path" | base64 | tr -d "\n")
+  printf "%s\t%s\t%s\t%s\n" "$kind" "$permissions" "$digest" "$encoded" >> "$records"
+done
+' sh "$records" "$zero" {} +
+count=$(wc -l < "$records" | tr -d "[:space:]")
+digest=$(sha256sum "$records")
+digest=${digest%% *}
+cat "$records"
+printf "portfolio-foundation-inventory-v1\t%s\t%s\n" "$count" "$digest"
+"""
 
 
 class SourceMismatchError(ValueError):
@@ -41,11 +83,14 @@ class InventoryEntry:
     path: str
     sha256: str
     entry_type: EntryType
+    permissions: int = 0o644
 
     def __post_init__(self) -> None:
         """Reject paths and hashes that cannot safely form a manifest."""
         if not _is_safe_path(self.path) or SHA256_PATTERN.fullmatch(self.sha256) is None:
             raise ValueError("inventory entries require a relative path and SHA-256 hash")
+        if not 0 <= self.permissions <= MAX_PERMISSIONS:
+            raise ValueError("inventory entry permissions are invalid")
 
 
 @runtime_checkable
@@ -74,19 +119,95 @@ class DaggerSourceInventory:
 
     async def entries(self) -> tuple[InventoryEntry, ...]:
         """Return a complete typed inventory for this Dagger directory."""
-        paths = await _dagger_paths(self.directory, "")
-        entries = await _dagger_entries(self.directory, paths)
-        return _file_entries(entries)
+        output = await _inventory_container(self.directory).stdout()
+        entries = _parse_inventory(output)
+        _require_unique_entry_paths(entries)
+        return _file_entries(list(entries))
 
 
-async def _dagger_entries(
-    directory: dagger.Directory, paths: tuple[str, ...]
-) -> list[InventoryEntry]:
-    """Hash files sequentially to bound utility-container executions."""
-    entries: list[InventoryEntry] = []
-    for path in paths:
-        entries.append(await _dagger_entry(directory, path))
-    return entries
+def _inventory_container(directory: dagger.Directory) -> dagger.Container:
+    """Inventory one mounted tree in one pinned read-only execution."""
+    return (
+        dag.container()
+        .from_(HASH_IMAGE)
+        .with_mounted_directory("/source", directory, read_only=True)
+        .with_exec(["sh", "-ec", INVENTORY_SCRIPT])
+    )
+
+
+def _parse_inventory(output: str) -> tuple[InventoryEntry, ...]:
+    """Parse the binary-safe fixed-field inventory emitted by the utility container."""
+    records = _inventory_records(output)
+    return tuple(_inventory_entry(record.removesuffix("\n")) for record in records)
+
+
+def _inventory_records(output: str) -> tuple[str, ...]:
+    """Require the versioned terminal marker before exposing inventory records."""
+    lines = _inventory_lines(output)
+    records = tuple(lines[:-1])
+    _require_single_trailer(records)
+    _require_trailer_digest(records, lines[-1].removesuffix("\n"))
+    return records
+
+
+def _inventory_lines(output: str) -> tuple[str, ...]:
+    """Split only output with a complete terminal version marker."""
+    if not output.endswith("\n"):
+        raise SourceMismatch("source inventory complete-stream trailer is truncated")
+    lines = tuple(output.splitlines(keepends=True))
+    if not lines or not lines[-1].startswith(f"{INVENTORY_TRAILER}\t"):
+        raise SourceMismatch("source inventory complete-stream trailer is missing")
+    return lines
+
+
+def _require_single_trailer(records: tuple[str, ...]) -> None:
+    """Reject a second version marker anywhere in the record sequence."""
+    if any(record.startswith(f"{INVENTORY_TRAILER}\t") for record in records):
+        raise SourceMismatch("source inventory has a duplicate complete-stream trailer")
+
+
+def _require_trailer_digest(records: tuple[str, ...], trailer: str) -> None:
+    """Reject a terminal marker unless it authenticates the exact record bytes."""
+    try:
+        version, count, digest = trailer.split("\t")
+    except ValueError as error:
+        raise SourceMismatch("source inventory complete-stream trailer is malformed") from error
+    actual = hashlib.sha256("".join(records).encode()).hexdigest()
+    if version != INVENTORY_TRAILER or count != str(len(records)) or digest != actual:
+        raise SourceMismatch("source inventory complete-stream trailer differs")
+
+
+def _inventory_entry(record: str) -> InventoryEntry:
+    """Build one fail-closed typed entry from an encoded inventory record."""
+    try:
+        entry_type, permissions, digest, path = record.split("\t")
+        return InventoryEntry(
+            _decoded_path(path), digest, EntryType(entry_type), _decoded_permissions(permissions)
+        )
+    except ValueError as error:
+        raise SourceMismatch("source inventory output is malformed") from error
+
+
+def _decoded_path(value: str) -> str:
+    """Decode one canonical base64 UTF-8 relative path without replacement."""
+    try:
+        raw = base64.b64decode(value, validate=True)
+        path = raw.decode()
+    except (binascii.Error, UnicodeDecodeError) as error:
+        raise ValueError("inventory path encoding is invalid") from error
+    if base64.b64encode(raw).decode() != value:
+        raise ValueError("inventory path encoding is not canonical")
+    return path
+
+
+def _decoded_permissions(value: str) -> int:
+    """Decode canonical octal permissions without accepting signed or padded forms."""
+    if not value or any(digit not in "01234567" for digit in value):
+        raise ValueError("inventory permissions are invalid")
+    permissions = int(value, 8)
+    if f"{permissions:o}" != value:
+        raise ValueError("inventory permissions are not canonical")
+    return permissions
 
 
 def bind_source[SourceT, HistoryT](
@@ -158,13 +279,6 @@ async def _nested_paths(directory: dagger.Directory, path: str) -> tuple[str, ..
     """Return descendants only when a Dagger node is a directory."""
     entry_type = await _dagger_entry_type(directory, path)
     return await _dagger_paths(directory, path) if entry_type is EntryType.DIRECTORY else ()
-
-
-async def _dagger_entry(directory: dagger.Directory, path: str) -> InventoryEntry:
-    """Convert one Dagger node to an inventory entry without following links."""
-    entry_type = await _dagger_entry_type(directory, path)
-    sha256 = await _dagger_sha256(directory, path) if entry_type is EntryType.REGULAR else "0" * 64
-    return InventoryEntry(path, sha256, entry_type)
 
 
 async def _dagger_entry_type(directory: dagger.Directory, path: str) -> EntryType:
@@ -255,7 +369,7 @@ def _flatten_paths(groups: list[tuple[str, ...]]) -> tuple[str, ...]:
 
 def _manifest_line(entry: InventoryEntry) -> str:
     """Render one regular-file inventory entry in its canonical form."""
-    return f"{entry.path}:{entry.sha256}"
+    return f"{entry.path}:{entry.permissions:o}:{entry.sha256}"
 
 
 def _file_entries(entries: list[InventoryEntry]) -> tuple[InventoryEntry, ...]:
@@ -272,6 +386,13 @@ def _require_regular_entries(entries: tuple[InventoryEntry, ...]) -> None:
         raise SourceMismatch(f"source inventory contains unsupported node at {invalid}")
 
 
+def _require_unique_entry_paths(entries: tuple[InventoryEntry, ...]) -> None:
+    """Reject duplicate raw nodes before directories can be filtered out."""
+    paths = tuple(entry.path for entry in entries)
+    if len(paths) != len(frozenset(paths)):
+        raise SourceMismatch("source inventory contains duplicate raw paths")
+
+
 def _require_unique_paths(lines: tuple[str, ...]) -> None:
     """Reject duplicated paths so no hash can be hidden by a repeated record."""
     paths = tuple(_split_manifest_line(line)[0] for line in lines)
@@ -280,6 +401,6 @@ def _require_unique_paths(lines: tuple[str, ...]) -> None:
 
 
 def _split_manifest_line(line: str) -> tuple[str, str]:
-    """Split the canonical path-and-digest representation once."""
-    path, digest = line.rsplit(":", maxsplit=1)
-    return path, digest
+    """Split the canonical path-and-mode-and-digest representation."""
+    path, permissions, digest = line.rsplit(":", maxsplit=2)
+    return path, f"{permissions}:{digest}"
