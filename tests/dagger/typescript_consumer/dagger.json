@@ -1,0 +1,17 @@
+{
+  "name": "typescript-consumer",
+  "engineVersion": "v0.21.8",
+  "sdk": {
+    "source": "typescript"
+  },
+  "dependencies": [
+    {
+      "name": "foundation",
+      "source": "../../../modules/portfolio-foundation"
+    },
+    {
+      "name": "cloudflare-pages",
+      "source": "../../../modules/cloudflare-pages"
+    }
+  ]
+}

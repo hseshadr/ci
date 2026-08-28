@@ -14,8 +14,8 @@ def _source(name: str) -> SourceFile:
 
 
 def test_should_keep_all_central_execution_behind_thin_dagger_ingress() -> None:
-    # Given the three workflows that remain after central cutover
-    names = ("dagger.yml", "consumer-drift.yml", "dagger-security.yml")
+    # Given the four workflows that remain after central cutover
+    names = ("dagger.yml", "consumer-drift.yml", "dagger-security.yml", "module-canary.yml")
 
     # When every authored job is evaluated by the fleet policy itself
     findings = tuple(item for name in names for item in validate_workflow(_source(name)))
@@ -68,12 +68,31 @@ def test_should_delete_every_retired_central_execution_surface() -> None:
     remaining = {path.name for path in WORKFLOWS.glob("*.yml")}
 
     # When central execution surfaces are inventoried
-    expected = {"dagger.yml", "consumer-drift.yml", "dagger-security.yml"}
+    expected = {"dagger.yml", "consumer-drift.yml", "dagger-security.yml", "module-canary.yml"}
 
     # Then only thin Dagger ingress remains; classifiers/templates are gone
     assert remaining == expected
-    retired = (ROOT / ".github" / "actions", ROOT / "examples", ROOT / "tests")
+    retired = (ROOT / ".github" / "actions", ROOT / "examples")
     authored = (
         path for root in retired for path in root.rglob("*") if "__pycache__" not in path.parts
     )
     assert not any(path.is_file() for path in authored)
+    assert {path.name for path in (ROOT / "tests").iterdir()} == {"dagger"}
+
+
+def test_should_keep_module_canary_shadowed_and_dagger_owned() -> None:
+    # Given the scheduled/manual cross-language canary ingress
+    canary = _source("module-canary.yml")
+
+    # When its complete workflow is checked by fleet policy
+    findings = validate_workflow(canary)
+
+    # Then it remains non-required transport for only the root fixture graph
+    assert findings == ()
+    assert "schedule:" in canary.text and "workflow_dispatch:" in canary.text
+    assert "module-fixtures" in canary.text
+    assert "pull_request:" not in canary.text and "push:" not in canary.text
+    assert canary.text.count("- uses:") == 2
+    assert canary.text.index("actions/checkout@") < canary.text.index("dagger/dagger-for-github@")
+    assert "persist-credentials: false" in canary.text
+    assert all(item not in canary.text for item in ("- run:", "actions/setup-", "actions/cache@"))

@@ -23,14 +23,21 @@ SOURCE_EXCLUDES: Final = [
     "**/.env",
     "**/*.key",
     "**/*.pem",
-    ".dagger/.venv",
-    ".dagger/.coverage",
-    ".dagger/.mypy_cache",
-    ".dagger/.pytest_cache",
-    ".dagger/.ruff_cache",
+    "**/.venv",
+    "**/.coverage",
+    "**/.mypy_cache",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/node_modules",
+    "**/sdk",
     ".dagger/sdk",
     "**/__pycache__",
 ]
+FIXTURE_MODULES: Final = (
+    "tests/dagger/python_consumer",
+    "tests/dagger/typescript_consumer",
+)
+FLEET_COMMAND: Final = ("uv", "run", "--directory", ".dagger", "python", "-m", "ci.fleet_cli")
 
 
 @object_type
@@ -63,20 +70,25 @@ class Ci:
     @function
     async def fleet(self, github_token: dagger.Secret, include_central: bool = False) -> str:
         """Fail closed on authoritative exact-main fleet evidence."""
-        command = [
-            "uv",
-            "run",
-            "--directory",
-            ".dagger",
-            "python",
-            "-m",
-            "ci.fleet_cli",
-        ]
+        command = list(FLEET_COMMAND)
         if include_central:
             command.append("--include-central")
         scan = self._repository().with_secret_variable("GITHUB_TOKEN", github_token)
         await scan.with_exec(command).sync()
         return "authoritative Dagger fleet policy passed"
+
+    @function
+    async def module_fixtures(self) -> str:
+        """Run both generated-client consumer checks from this source snapshot."""
+        for path in FIXTURE_MODULES:
+            await self._module_fixture(path)
+        return "cross-language Dagger module fixtures passed"
+
+    async def _module_fixture(self, path: str) -> None:
+        module = self.source.as_module(source_root_path=path)
+        fixture = module.check("contract").run()
+        if not await fixture.passed():
+            raise RuntimeError(f"Dagger module fixture failed: {path}")
 
     async def _security(self, commit_sha: str, github_token: dagger.Secret) -> None:
         await self._dependency_audit().sync()
