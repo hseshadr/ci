@@ -181,6 +181,46 @@ class DaggerConfig:
     generated_lock: SourceFile | None = None
 
 
+@dataclass(frozen=True)
+class LocalDependencyRule:
+    """One exact same-tree edge in the central shared-module repository."""
+
+    parent_path: str
+    parent_name: str
+    dependency_name: str
+    source: str
+    target_path: str
+    target_name: str
+
+
+CENTRAL_LOCAL_DEPENDENCIES: Final[tuple[LocalDependencyRule, ...]] = (
+    LocalDependencyRule(
+        "dagger.json",
+        "ci",
+        "foundation",
+        "modules/portfolio-foundation",
+        "modules/portfolio-foundation/dagger.json",
+        "portfolio-foundation",
+    ),
+    LocalDependencyRule(
+        "dagger.json",
+        "ci",
+        "cloudflare-pages",
+        "modules/cloudflare-pages",
+        "modules/cloudflare-pages/dagger.json",
+        "cloudflare-pages",
+    ),
+    LocalDependencyRule(
+        "modules/cloudflare-pages/dagger.json",
+        "cloudflare-pages",
+        "foundation",
+        "../portfolio-foundation",
+        "modules/portfolio-foundation/dagger.json",
+        "portfolio-foundation",
+    ),
+)
+
+
 @validated_dataclass(config=LOCK_CONFIG)
 class PythonLockSource:
     """Policy-relevant source identity from one uv lock package."""
@@ -385,18 +425,22 @@ def validate_config_dependencies(
         item
         for config in configs
         for dependency in config.dependencies
-        for item in validate_dependency(config, dependency)
+        for item in validate_dependency(config, dependency, configs)
     )
 
 
 def validate_dependency(
-    config: DaggerConfig, dependency: DaggerDependency
+    config: DaggerConfig,
+    dependency: DaggerDependency,
+    configs: tuple[DaggerConfig, ...],
 ) -> tuple[PolicyFinding, ...]:
     """Validate one direct dependency without conflating consumer identity."""
-    findings = list(validate_dependency_source(config.path, dependency.source))
+    findings = list(validate_dependency_source(config, dependency, configs))
     findings.extend(validate_dependency_pin(config.path, dependency))
     expected = SHARED_MODULES.get(dependency.name)
-    if expected is not None and not shared_publisher_is_valid(config, dependency, expected):
+    if expected is not None and not shared_publisher_is_valid(
+        config, dependency, configs, expected
+    ):
         findings.append(finding("shared-module-publisher", config.path, dependency.source))
     return tuple(findings)
 
@@ -413,37 +457,93 @@ def validate_dependency_pin(path: str, dependency: DaggerDependency) -> tuple[Po
     return ()
 
 
-def validate_dependency_source(path: str, source: str) -> tuple[PolicyFinding, ...]:
+def validate_dependency_source(
+    config: DaggerConfig,
+    dependency: DaggerDependency,
+    configs: tuple[DaggerConfig, ...],
+) -> tuple[PolicyFinding, ...]:
     """Classify mutable GitHub refs separately from unsupported dependency syntax."""
+    source = dependency.source
     if source.startswith("github.com/") and RAW_PINNED_REMOTE.fullmatch(source) is None:
-        return (finding("mutable-dagger-dependency", path, source),)
-    if dependency_source_is_valid(path, source):
+        return (finding("mutable-dagger-dependency", config.path, source),)
+    if parse_pinned_remote(source) is not None:
         return ()
-    return (finding("invalid-dagger-dependency", path, source),)
+    if local_dependency_is_valid(config, dependency, configs):
+        return ()
+    return (finding("invalid-dagger-dependency", config.path, source),)
 
 
 def shared_publisher_is_valid(
-    config: DaggerConfig, dependency: DaggerDependency, expected: str
+    config: DaggerConfig,
+    dependency: DaggerDependency,
+    configs: tuple[DaggerConfig, ...],
+    expected: str,
 ) -> bool:
     """Allow exact consumers and local edges inside the exact central module tree."""
     if dependency.source.startswith(expected):
         return True
-    central = approved_shared_identity(config.identity)
-    return central and not dependency_is_remote(dependency.source)
+    return local_dependency_is_valid(config, dependency, configs)
 
 
-def approved_shared_identity(identity: str) -> bool:
-    """Return whether an exact config belongs to one reviewed shared module."""
-    revision = identity.rpartition("@")[2]
-    base = identity.rpartition("@")[0]
-    approved = frozenset(prefix.removesuffix("@") for prefix in SHARED_MODULES.values())
-    return base in approved and re.fullmatch(r"[0-9a-f]{40}", revision) is not None
+def local_dependency_is_valid(
+    config: DaggerConfig, dependency: DaggerDependency, configs: tuple[DaggerConfig, ...]
+) -> bool:
+    """Accept one reviewed central edge only when both configs share a revision."""
+    rule = matching_local_rule(config, dependency)
+    revision = central_config_revision(config)
+    if rule is None or revision is None:
+        return False
+    target = next((item for item in configs if item.path == rule.target_path), None)
+    return target_matches_rule(target, rule, revision)
 
 
-def dependency_source_is_valid(config_path: str, source: str) -> bool:
-    """Accept only canonical exact GitHub remotes or in-repository local edges."""
-    remote = parse_pinned_remote(source) is not None
-    return remote or local_dependency_path(config_path, source) is not None
+def matching_local_rule(
+    config: DaggerConfig, dependency: DaggerDependency
+) -> LocalDependencyRule | None:
+    """Select an exact parent, dependency name, and raw local source tuple."""
+    return next(
+        (
+            rule
+            for rule in CENTRAL_LOCAL_DEPENDENCIES
+            if local_rule_matches(rule, config, dependency)
+        ),
+        None,
+    )
+
+
+def local_rule_matches(
+    rule: LocalDependencyRule, config: DaggerConfig, dependency: DaggerDependency
+) -> bool:
+    """Compare one edge without normalizing aliases into approved paths."""
+    parent = config.path == rule.parent_path and config.name == rule.parent_name
+    child = dependency.name == rule.dependency_name and dependency.source == rule.source
+    return parent and child
+
+
+def central_config_revision(config: DaggerConfig) -> str | None:
+    """Return the revision only for an exact hseshadr/ci config identity."""
+    remote = parse_pinned_remote(config.identity)
+    if remote is None or remote[:2] != ("hseshadr", "ci"):
+        return None
+    expected = central_config_identity(config.path, remote[3])
+    return remote[3] if config.identity == expected else None
+
+
+def central_config_identity(config_path: str, revision: str) -> str:
+    """Build the sole central identity for an exact config path and revision."""
+    subpath = posixpath.dirname(config_path)
+    suffix = "" if subpath in {"", "."} else f"/{subpath}"
+    return f"github.com/hseshadr/ci{suffix}@{revision}"
+
+
+def target_matches_rule(
+    target: DaggerConfig | None, rule: LocalDependencyRule, revision: str
+) -> bool:
+    """Bind loaded target path, name, and identity to the parent's revision."""
+    if target is None or target.name != rule.target_name:
+        return False
+    expected = central_config_identity(rule.target_path, revision)
+    return target.identity == expected
 
 
 def parse_pinned_remote(source: str) -> RemoteIdentity | None:
