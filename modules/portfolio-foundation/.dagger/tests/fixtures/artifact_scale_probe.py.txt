@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import asyncio
+import json
+
+import dagger
+from dagger.client._core import Context
+
+from portfolio_foundation import artifact as artifact_module
+from portfolio_foundation.artifact import parse_manifest, verify_envelope_directory
+from portfolio_foundation.identity import CommitIdentity, FullSha, RepositoryRef
+
+FIXTURE_IMAGE = "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+DIRECTORY_COUNT = 11
+EXECUTION_BUDGET = 8
+SCALE_SCRIPT = r"""set -eu
+root=/fixture/dist
+for level in 00 01 02 03 04 05 06 07 08 09; do
+  root="$root/level-$level"
+done
+mkdir -p "$root"
+for index in $(seq -w 0 819); do
+  printf "payload-%s" "$index" > "$root/payload-$index.bin"
+done
+newline=$(printf "line\nbreak.txt")
+printf newline > "$root/$newline"
+printf backslash > "$root/slash\name.txt"
+chmod 711 "$root/payload-000.bin"
+"""
+
+
+class TerminalBudgetExceededError(RuntimeError):
+    pass
+
+
+class Counter:
+    def __init__(self) -> None:
+        self.total = 0
+        self.mark = 0
+        self.budgeted = False
+
+    def start(self) -> None:
+        self.mark = self.total
+        self.budgeted = True
+
+    def stop(self) -> int:
+        self.budgeted = False
+        return self.total - self.mark
+
+
+class ResolvedDirectory(dagger.Directory):
+    def __init__(self, directory: dagger.Directory, directory_id: str) -> None:
+        super().__init__(directory._ctx)
+        self._resolved_id = directory_id
+
+    async def id(self) -> str:
+        return self._resolved_id
+
+    @classmethod
+    def _graphql_name(cls) -> str:
+        return "Directory"
+
+
+COUNTER = Counter()
+ORIGINAL_EXECUTE = Context.execute
+
+
+async def counted_execute(self, return_type=None):
+    COUNTER.total += 1
+    if COUNTER.budgeted and COUNTER.total - COUNTER.mark > EXECUTION_BUDGET:
+        raise TerminalBudgetExceededError("artifact graph terminal budget exceeded")
+    return await ORIGINAL_EXECUTE(self, return_type)
+
+
+def identity() -> CommitIdentity:
+    return CommitIdentity(RepositoryRef("owner", "consumer"), FullSha("a" * 40))
+
+
+def scale_fixture(client: dagger.Client) -> dagger.Directory:
+    container = client.container().from_(FIXTURE_IMAGE).with_exec(["sh", "-ec", SCALE_SCRIPT])
+    return container.directory("/fixture")
+
+
+async def resolved(directory: dagger.Directory) -> dagger.Directory:
+    synced = await directory.sync()
+    return ResolvedDirectory(synced, await synced.id())
+
+
+async def create_envelope(directory: dagger.Directory) -> tuple[dagger.Directory | None, int, str]:
+    COUNTER.start()
+    try:
+        envelope = await artifact_module.envelope_directory(
+            directory, identity(), "b" * 40, ("dist",), "12345"
+        )
+        return await envelope.sync(), COUNTER.stop(), ""
+    except TerminalBudgetExceededError as error:
+        return None, COUNTER.stop(), str(error)
+
+
+async def verify(envelope: dagger.Directory) -> tuple[dagger.Directory | None, int, str]:
+    COUNTER.start()
+    try:
+        verified = await verify_envelope_directory(
+            envelope, identity(), "b" * 40, ("dist",), "12345"
+        )
+        return await verified.sync(), COUNTER.stop(), ""
+    except TerminalBudgetExceededError as error:
+        return None, COUNTER.stop(), str(error)
+
+
+async def evidence_result(
+    envelope: dagger.Directory, verified: dagger.Directory
+) -> dict[str, object]:
+    text = await envelope.file("evidence/artifact-manifest.json").contents()
+    manifest = parse_manifest(text)
+    paths = tuple(file.path for file in manifest.files)
+    mode = await verified.stat(_executable_path(), do_not_follow_symlinks=True).permissions()
+    return {
+        "file_count": len(paths),
+        "directory_count": _directory_count(paths),
+        "depth": max(path.count("/") for path in paths),
+        "newline_seen": any("\n" in path for path in paths),
+        "backslash_seen": any("\\" in path for path in paths),
+        "mode": mode,
+    }
+
+
+def _directory_count(paths: tuple[str, ...]) -> int:
+    parents = {parent for path in paths for parent in _parent_paths(path)}
+    return len(parents)
+
+
+def _parent_paths(path: str) -> tuple[str, ...]:
+    parts = path.split("/")
+    return tuple("/".join(parts[:depth]) for depth in range(1, len(parts)))
+
+
+def _executable_path() -> str:
+    levels = "/".join(f"level-{index:02}" for index in range(10))
+    return f"dist/{levels}/payload-000.bin"
+
+
+async def run() -> dict[str, object]:
+    async with dagger.Connection() as client:
+        artifact_module.dag = client
+        directory = await resolved(scale_fixture(client))
+        envelope, create_execs, error = await create_envelope(directory)
+        if envelope is None:
+            return _failure("create", create_execs, error)
+        verified, verify_execs, error = await verify(envelope)
+        if verified is None:
+            return _failure("verify", verify_execs, error, create_execs)
+        result = await evidence_result(envelope, verified)
+        return {**result, "create_execs": create_execs, "verify_execs": verify_execs, "error": ""}
+
+
+def _failure(phase: str, execs: int, error: str, create_execs: int = 0) -> dict[str, object]:
+    return {
+        "file_count": 0,
+        "directory_count": DIRECTORY_COUNT,
+        "depth": 0,
+        "newline_seen": False,
+        "backslash_seen": False,
+        "mode": 0,
+        "create_execs": execs if phase == "create" else create_execs,
+        "verify_execs": execs if phase == "verify" else 0,
+        "error": f"{phase}: {error}",
+    }
+
+
+async def main() -> None:
+    Context.execute = counted_execute
+    print(json.dumps(await run(), sort_keys=True))
+
+
+asyncio.run(main())

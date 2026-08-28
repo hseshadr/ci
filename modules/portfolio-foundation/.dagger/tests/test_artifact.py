@@ -67,24 +67,17 @@ def _file_payload(path: str, contents: bytes) -> dict[str, object]:
     return {"mode": 0o644, "path": path, "sha256": hashlib.sha256(contents).hexdigest()}
 
 
-class FakeArtifactStat:
-    def __init__(self, entry_type: dagger.FileType, permissions: int) -> None:
-        self._entry_type = entry_type
-        self._permissions = permissions
-
-    async def file_type(self) -> dagger.FileType:
-        return self._entry_type
-
-    async def permissions(self) -> int:
-        return self._permissions
-
-
 class FakeArtifactFile:
     def __init__(self, contents: str) -> None:
         self._contents = contents
 
     async def contents(self) -> str:
         return self._contents
+
+
+class FakeInventoryContainer:
+    async def stdout(self) -> str:
+        return "regular\t644\t" + ("0" * 64) + "\tZGlzdC9pbmRleC5odG1s\n"
 
 
 class FakeArtifactDirectory:
@@ -94,11 +87,6 @@ class FakeArtifactDirectory:
 
     async def entries(self, *, path: str | None = None) -> list[str]:
         return _entry_names_at(self._nodes, path or "")
-
-    def stat(self, path: str, *, do_not_follow_symlinks: bool) -> FakeArtifactStat:
-        assert do_not_follow_symlinks
-        node = next(node for node in self._nodes if node.path == path)
-        return FakeArtifactStat(_dagger_type(node.entry_type), node.permissions)
 
     def file(self, path: str) -> FakeArtifactFile:
         return FakeArtifactFile(self._files[path])
@@ -124,30 +112,10 @@ class FakeEnvelopeDirectory(FakeArtifactDirectory):
 
 
 class FakeOutputDirectory:
-    def with_file(self, path: str, _: dagger.File, *, permissions: int) -> FakeOutputDirectory:
-        assert path.startswith("dist/") and permissions in {0o644, 0o755}
-        return self
-
-    def with_timestamps(self, timestamp: int) -> FakeOutputDirectory:
-        assert timestamp == 0
-        return self
-
-
-class FakeDag:
-    def directory(self) -> FakeOutputDirectory:
-        return FakeOutputDirectory()
+    pass
 
 
 type Tamperer = Callable[[FakeArtifactDirectory, FakeEnvelopeDirectory, pytest.MonkeyPatch], None]
-
-
-def _dagger_type(entry_type: EntryType) -> dagger.FileType:
-    types = {
-        EntryType.DIRECTORY: dagger.FileType.DIRECTORY,
-        EntryType.REGULAR: dagger.FileType.REGULAR,
-        EntryType.SYMLINK: dagger.FileType.SYMLINK,
-    }
-    return types.get(entry_type, cast(dagger.FileType, None))
 
 
 def _entry_names_at(nodes: tuple[ArtifactNode, ...], parent: str) -> list[str]:
@@ -452,25 +420,6 @@ def test_should_expose_actual_directory_verifier_before_privileged_consumption()
 
 
 @pytest.mark.parametrize(
-    ("file_type", "expected"),
-    (
-        (dagger.FileType.DIRECTORY, EntryType.DIRECTORY),
-        (dagger.FileType.REGULAR, EntryType.REGULAR),
-        (dagger.FileType.SYMLINK, EntryType.SYMLINK),
-        (None, EntryType.UNKNOWN),
-    ),
-)
-def test_should_classify_every_dagger_node_type_when_inventorying_artifacts(
-    file_type: dagger.FileType | None, expected: EntryType
-) -> None:
-    # Given / When
-    actual = artifact_module._entry_type(file_type)
-
-    # Then
-    assert actual is expected
-
-
-@pytest.mark.parametrize(
     "nodes",
     (
         (ArtifactNode("dist/link", EntryType.SYMLINK, "0" * 64, 0o777),),
@@ -484,6 +433,15 @@ def test_should_reject_unmanifested_artifact_nodes_when_inventorying(
     # Given / When / Then
     with pytest.raises((UnsupportedArtifactNode, UnexpectedArtifactPath, EmptyArtifact)):
         artifact_module._validate_nodes(nodes, ROOTS)
+
+
+def test_should_reject_artifact_inventory_without_complete_stream_trailer() -> None:
+    # Given
+    container = cast(dagger.Container, FakeInventoryContainer())
+
+    # When / Then
+    with pytest.raises(artifact_module.ArtifactEnvelopeError, match="malformed"):
+        asyncio.run(artifact_module._artifact_inventory_entries(container))
 
 
 def test_should_keep_only_regular_nodes_and_normalize_executable_behavior() -> None:
@@ -534,12 +492,12 @@ def test_should_collect_normalized_evidence_from_complete_typed_inventory(
 ) -> None:
     # Given
     directory = _artifact_directory()
+    output = FakeOutputDirectory()
 
-    async def digest(_: dagger.Directory, path: str) -> str:
-        return hashlib.sha256(directory._files[path].encode()).hexdigest()
+    async def inventory(_: dagger.Directory) -> artifact_module._ArtifactInventory:
+        return artifact_module._ArtifactInventory(_artifact_nodes(), cast(dagger.Directory, output))
 
-    monkeypatch.setattr(artifact_module, "_dagger_sha256", digest)
-    monkeypatch.setattr(artifact_module, "dag", FakeDag())
+    monkeypatch.setattr(artifact_module, "_artifact_inventory", inventory)
 
     # When
     evidence = asyncio.run(
@@ -549,7 +507,7 @@ def test_should_collect_normalized_evidence_from_complete_typed_inventory(
     )
 
     # Then
-    assert isinstance(evidence.directory, FakeOutputDirectory)
+    assert evidence.directory is cast(dagger.Directory, output)
     assert evidence.manifest.files == (_file("dist/index.html", b"index"),)
 
 
@@ -560,10 +518,7 @@ def test_should_return_only_verified_artifact_when_envelope_matches_every_invari
     directory = _artifact_directory()
     envelope = _envelope(directory)
 
-    async def digest(_: dagger.Directory, path: str) -> str:
-        return hashlib.sha256(directory._files[path].encode()).hexdigest()
-
-    monkeypatch.setattr(artifact_module, "_dagger_sha256", digest)
+    monkeypatch.setattr(artifact_module, "_artifact_nodes", _fake_live_nodes(directory))
 
     # When
     verified = asyncio.run(
@@ -604,7 +559,7 @@ def _tamper_fake_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _tamperer(kind)(directory, envelope, monkeypatch)
-    monkeypatch.setattr(artifact_module, "_dagger_sha256", _fake_digest(directory))
+    monkeypatch.setattr(artifact_module, "_artifact_nodes", _fake_live_nodes(directory))
 
 
 def _tamperer(kind: str) -> Tamperer:
@@ -665,13 +620,20 @@ def _tamper_mode(
     )
 
 
-def _fake_digest(
+def _fake_live_nodes(
     directory: FakeArtifactDirectory,
-) -> Callable[[dagger.Directory, str], Awaitable[str]]:
-    async def digest(_: dagger.Directory, path: str) -> str:
-        return hashlib.sha256(directory._files[path].encode()).hexdigest()
+) -> Callable[[dagger.Directory], Awaitable[tuple[ArtifactNode, ...]]]:
+    async def nodes(_: dagger.Directory) -> tuple[ArtifactNode, ...]:
+        return tuple(_live_node(node, directory) for node in directory._nodes)
 
-    return digest
+    return nodes
+
+
+def _live_node(node: ArtifactNode, directory: FakeArtifactDirectory) -> ArtifactNode:
+    if node.entry_type is not EntryType.REGULAR:
+        return node
+    digest = hashlib.sha256(directory._files[node.path].encode()).hexdigest()
+    return ArtifactNode(node.path, node.entry_type, digest, node.permissions)
 
 
 def _run_envelope(source: Path, output: Path) -> subprocess.CompletedProcess[str]:
