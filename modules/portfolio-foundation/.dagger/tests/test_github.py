@@ -9,6 +9,8 @@ import subprocess
 import time
 import tomllib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -49,8 +51,13 @@ MODULE = Path(__file__).parents[2]
 REPOSITORY = RepositoryRef("owner", "repository")
 SHA = "a" * 40
 RUN_ID = 456
+SUITE_ID = 321
+CREATED_AT = "2026-08-27T00:00:00Z"
+RUN_STARTED_AT = "2026-08-27T00:00:01Z"
+CHECK_STARTED_AT = "2026-08-27T00:00:02Z"
+CHECK_COMPLETED_AT = "2026-08-27T00:00:03Z"
+UPDATED_AT = "2026-08-27T00:00:04Z"
 LIVE_REPOSITORY = "hseshadr/ci"
-LIVE_SHA = "1b2b18a38fc52801bdd2f3eb89d6616d847ef1fe"
 
 
 def _app(app_id: int = APP_ID) -> dict[str, object]:
@@ -62,22 +69,29 @@ def _check_payload(
     check_id: int = 123,
     status: str = "completed",
     conclusion: str | None = "success",
-    app_id: int = APP_ID,
+    started_at: str = CHECK_STARTED_AT,
+    completed_at: str = CHECK_COMPLETED_AT,
 ) -> dict[str, object]:
+    completion = completed_at if status == "completed" else None
     return {
         "id": check_id,
         "name": CHECK_NAME,
         "head_sha": SHA,
         "status": status,
         "conclusion": conclusion,
-        "details_url": f"https://github.com/owner/repository/actions/runs/{RUN_ID}/job/789",
-        "app": _app(app_id),
+        "details_url": f"https://github.com/owner/repository/actions/runs/{RUN_ID}/job/{check_id}",
+        "started_at": started_at,
+        "completed_at": completion,
+        "app": _app(),
+        "check_suite": {"id": SUITE_ID},
     }
 
 
 def _check(**changes: object) -> GitHubCheckRun:
     payload = _check_payload()
     payload.update(changes)
+    if payload["status"] != "completed" and "completed_at" not in changes:
+        payload["completed_at"] = None
     return GitHubCheckRun.model_validate(payload)
 
 
@@ -108,10 +122,46 @@ def _workflow_payload(**changes: object) -> str:
         "status": "completed",
         "conclusion": "success",
         "event": "push",
+        "run_attempt": 1,
+        "created_at": CREATED_AT,
+        "updated_at": UPDATED_AT,
+        "run_started_at": RUN_STARTED_AT,
         "repository": {"full_name": "owner/repository"},
     }
     payload.update(changes)
     return json.dumps(payload)
+
+
+def _job_payload(
+    *,
+    job_id: int = 123,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    run_attempt: int = 1,
+    started_at: str = CHECK_STARTED_AT,
+) -> str:
+    completion = _one_second_after(started_at) if status == "completed" else None
+    payload = {
+        "id": job_id,
+        "run_id": RUN_ID,
+        "run_attempt": run_attempt,
+        "workflow_name": WORKFLOW_NAME,
+        "head_branch": "main",
+        "head_sha": SHA,
+        "status": status,
+        "conclusion": conclusion,
+        "name": CHECK_NAME,
+        "check_run_url": f"https://api.github.com/repos/owner/repository/check-runs/{job_id}",
+        "started_at": started_at,
+        "completed_at": completion,
+    }
+    return json.dumps(payload)
+
+
+def _one_second_after(timestamp: str) -> str:
+    parsed = datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00")
+    completed = (parsed + timedelta(seconds=1)).astimezone(UTC)
+    return completed.isoformat().replace("+00:00", "Z")
 
 
 def _targets() -> tuple[ApiTarget, ApiTarget, ApiTarget, ApiTarget]:
@@ -120,8 +170,16 @@ def _targets() -> tuple[ApiTarget, ApiTarget, ApiTarget, ApiTarget]:
         ApiTarget(base),
         ApiTarget(f"{base}/branches/main"),
         ApiTarget(f"{base}/commits/{SHA}/check-runs?filter=all&per_page=100&page=1"),
-        ApiTarget(f"{base}/actions/runs/{RUN_ID}"),
+        ApiTarget(f"{base}/actions/runs/{RUN_ID}/attempts/1"),
     )
+
+
+def _job_target(job_id: int = 123) -> ApiTarget:
+    return ApiTarget(f"/repos/owner/repository/actions/jobs/{job_id}")
+
+
+def _attempt_target(attempt: int = 1) -> ApiTarget:
+    return ApiTarget(f"/repos/owner/repository/actions/runs/{RUN_ID}/attempts/{attempt}")
 
 
 class FakeApi:
@@ -129,7 +187,12 @@ class FakeApi:
         self._pages = pages
 
     async def get(self, target: ApiTarget) -> HttpPage:
-        return self._pages[target]
+        if target in self._pages:
+            return self._pages[target]
+        marker = "/actions/jobs/"
+        if marker in target.value:
+            return HttpPage(_job_payload(job_id=int(target.value.rpartition(marker)[2])))
+        raise KeyError(target)
 
 
 class FakeSecret:
@@ -141,16 +204,23 @@ class FakeSecret:
 
 
 class FakeHttpResponse:
-    def __init__(self, status: int, body: str = "{}", link: str | None = None) -> None:
+    def __init__(
+        self,
+        status: int,
+        body: str = "{}",
+        link: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.status = status
         self._body = body
         self._link = link
+        self._headers = headers or {}
 
     def read(self) -> bytes:
         return self._body.encode()
 
     def getheader(self, name: str) -> str | None:
-        return self._link if name == "Link" else None
+        return self._link if name == "Link" else self._headers.get(name)
 
 
 type HttpOutcome = FakeHttpResponse | OSError
@@ -190,21 +260,28 @@ def _install_http(
     return calls
 
 
-def _api(
-    *,
-    repository: str | None = None,
-    branch: str | None = None,
-    checks: str | None = None,
-    workflow: str | None = None,
-    link: str | None = None,
-) -> FakeApi:
+@dataclass(frozen=True)
+class ApiOverrides:
+    repository: str | None = None
+    branch: str | None = None
+    checks: str | None = None
+    workflow: str | None = None
+    job: str | None = None
+    link: str | None = None
+
+
+def _api(overrides: ApiOverrides | None = None) -> FakeApi:
+    overrides = overrides or ApiOverrides()
     repo_target, branch_target, checks_target, workflow_target = _targets()
     return FakeApi(
         {
-            repo_target: HttpPage(repository or _repository_payload()),
-            branch_target: HttpPage(branch or _branch_payload()),
-            checks_target: HttpPage(checks or _checks_payload(_check_payload()), link),
-            workflow_target: HttpPage(workflow or _workflow_payload()),
+            repo_target: HttpPage(overrides.repository or _repository_payload()),
+            branch_target: HttpPage(overrides.branch or _branch_payload()),
+            checks_target: HttpPage(
+                overrides.checks or _checks_payload(_check_payload()), overrides.link
+            ),
+            _job_target(): HttpPage(overrides.job or _job_payload()),
+            workflow_target: HttpPage(overrides.workflow or _workflow_payload()),
         }
     )
 
@@ -241,9 +318,21 @@ def test_should_reject_stale_or_wrong_named_green_check() -> None:
     assert select_green_dagger(checks, SHA) is None
 
 
+@pytest.mark.parametrize("status", ("in_progress", "completed"))
+def test_should_reject_old_success_when_newer_required_check_is_not_green(status: str) -> None:
+    # Given
+    conclusion = None if status == "in_progress" else "failure"
+    old = _check(id=122, started_at="2026-08-27T00:00:01Z")
+    newer = _check(id=123, status=status, conclusion=conclusion)
+    checks = (old, newer)
+
+    # When / Then
+    assert select_green_dagger(checks, SHA) is None
+
+
 def test_should_reject_duplicate_green_checks() -> None:
     # Given / When / Then
-    with pytest.raises(DuplicateGreenCheckError, match="multiple exact-green"):
+    with pytest.raises(DuplicateGreenCheckError, match="ambiguous"):
         select_green_dagger((_check(), _check(id=124)), SHA)
 
 
@@ -310,6 +399,16 @@ def test_should_sanitize_malformed_check_pages(raw: str) -> None:
         parse_check_runs_response(raw)
 
 
+def test_should_reject_nonpositive_authoritative_provider_identity() -> None:
+    # Given
+    check = _check_payload()
+    check["check_suite"] = {"id": 0}
+
+    # When / Then
+    with pytest.raises(GitHubResponseError, match="required schema"):
+        parse_check_runs_response(_checks_payload(check))
+
+
 def test_should_reject_api_target_outside_fixed_read_only_queries() -> None:
     # Given / When / Then
     with pytest.raises(GitHubPolicyError, match="read-only contract"):
@@ -361,6 +460,100 @@ def test_should_retry_transient_status_then_return_success(
     # Then
     assert page.body == "{}"
     assert len(calls) == 2
+
+
+def test_should_retry_primary_rate_limit_403(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    limited = FakeHttpResponse(
+        http.client.FORBIDDEN,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "0"},
+    )
+    calls = _install_http(monkeypatch, [limited, FakeHttpResponse(http.client.OK)])
+
+    # When
+    page = asyncio.run(
+        github_module._GitHubRestApi("private-value").get(ApiTarget("/repos/owner/repository"))
+    )
+
+    # Then
+    assert page.body == "{}"
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "headers",
+    (
+        {"Retry-After": "0"},
+        {"Retry-After": "malformed"},
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "malformed"},
+    ),
+)
+def test_should_retry_secondary_or_malformed_rate_limit_hints(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    # Given
+    limited = FakeHttpResponse(http.client.FORBIDDEN, headers=headers)
+    calls = _install_http(monkeypatch, [limited, FakeHttpResponse(http.client.OK)])
+
+    # When
+    page = asyncio.run(
+        github_module._GitHubRestApi("private-value").get(ApiTarget("/repos/owner/repository"))
+    )
+
+    # Then
+    assert page.body == "{}"
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "headers"),
+    (
+        (http.client.TOO_MANY_REQUESTS, {"Retry-After": "9999"}),
+        (
+            http.client.FORBIDDEN,
+            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "99999999999"},
+        ),
+    ),
+)
+def test_should_cap_oversized_rate_limit_hint(
+    monkeypatch: pytest.MonkeyPatch, status: int, headers: dict[str, str]
+) -> None:
+    # Given
+    sleeps: list[float] = []
+    limited = FakeHttpResponse(status, headers=headers)
+    _install_http(monkeypatch, [limited, FakeHttpResponse(http.client.OK)])
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    # When
+    page = asyncio.run(
+        github_module._GitHubRestApi("private-value").get(ApiTarget("/repos/owner/repository"))
+    )
+
+    # Then
+    assert page.body == "{}"
+    assert sleeps == [1.0]
+
+
+def test_should_bound_total_rate_limit_wait_and_sanitize_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    sleeps: list[float] = []
+    limited = [
+        FakeHttpResponse(http.client.FORBIDDEN, headers={"Retry-After": "1"}) for _ in range(3)
+    ]
+    _install_http(monkeypatch, limited)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    # When / Then
+    with pytest.raises(GitHubApiError, match="API request failed") as error:
+        asyncio.run(
+            github_module._GitHubRestApi("private-value").get(ApiTarget("/repos/owner/repository"))
+        )
+    assert sleeps == [1.0, 1.0]
+    assert "private-value" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -434,24 +627,157 @@ def test_should_resolve_exact_main_and_app_bound_workflow_evidence() -> None:
     assert evidence.check_run_id == "123"
     assert evidence.workflow_run_id == str(RUN_ID)
     assert evidence.app_id == APP_ID
+    assert evidence.check_suite_id == str(SUITE_ID)
+    assert evidence.workflow_job_id == "123"
+    assert evidence.run_attempt == 1
+    serialized = json.loads(evidence.serialization())
+    assert serialized["check_run_id"] == "123"
+    assert serialized["workflow_run_id"] == str(RUN_ID)
+    assert serialized["run_attempt"] == 1
+
+
+def test_should_reject_evidence_when_main_moves_during_resolution() -> None:
+    # Given
+    branch_target = _targets()[1]
+    api = _api()
+    original_get = api.get
+    samples = iter(
+        (HttpPage(_branch_payload()), HttpPage(_branch_payload(commit={"sha": "b" * 40})))
+    )
+
+    async def moving_get(target: ApiTarget) -> HttpPage:
+        return next(samples) if target == branch_target else await original_get(target)
+
+    api.get = moving_get  # type: ignore[method-assign]
+
+    # When / Then
+    with pytest.raises(GitHubPolicyError, match="main moved"):
+        asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+
+def test_should_reject_completed_attempt_with_reversed_timestamps() -> None:
+    # Given
+    completed_before_start = "2026-08-27T00:00:01Z"
+    job = json.loads(_job_payload())
+    job["completed_at"] = completed_before_start
+    checks = _checks_payload(_check_payload(completed_at=completed_before_start))
+    api = _api(ApiOverrides(checks=checks, job=json.dumps(job)))
+
+    # When / Then
+    with pytest.raises(GitHubPolicyError, match="timestamps"):
+        asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion"),
+    [
+        ("in_progress", None),
+        ("completed", "failure"),
+        ("completed", "cancelled"),
+        ("completed", "skipped"),
+    ],
+)
+def test_should_reject_old_success_when_newer_rerun_is_not_green(
+    status: str, conclusion: str | None
+) -> None:
+    # Given
+    api = _rerun_api(status, conclusion)
+
+    # When / Then
+    with pytest.raises(GitHubPolicyError, match=r"latest.*not successful"):
+        asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+
+def _rerun_api(status: str, conclusion: str | None) -> FakeApi:
+    repo, branch, checks, first_attempt = _targets()
+    second_page = ApiTarget(
+        f"/repos/owner/repository/commits/{SHA}/check-runs?filter=all&per_page=100&page=2"
+    )
+    link = f'<https://api.github.com{second_page.value}>; rel="next"'
+    old = _check_payload(check_id=122, started_at="2026-08-27T00:00:02Z")
+    new = _check_payload(
+        status=status,
+        conclusion=conclusion,
+        started_at="2026-08-27T00:01:02Z",
+        completed_at="2026-08-27T00:01:03Z",
+    )
+    return FakeApi(
+        {
+            repo: HttpPage(_repository_payload()),
+            branch: HttpPage(_branch_payload()),
+            checks: HttpPage(_checks_payload(old, total_count=2), link),
+            second_page: HttpPage(_checks_payload(new, total_count=2)),
+            _job_target(122): HttpPage(_job_payload(job_id=122)),
+            _job_target(): HttpPage(
+                _job_payload(
+                    status=status,
+                    conclusion=conclusion,
+                    run_attempt=2,
+                    started_at="2026-08-27T00:01:02Z",
+                )
+            ),
+            first_attempt: HttpPage(_workflow_payload()),
+            _attempt_target(2): HttpPage(
+                _workflow_payload(
+                    status=status,
+                    conclusion=conclusion,
+                    run_attempt=2,
+                    run_started_at="2026-08-27T00:01:01Z",
+                    updated_at="2026-08-27T00:01:04Z",
+                )
+            ),
+        }
+    )
 
 
 @pytest.mark.parametrize(
     ("api", "message"),
     [
-        (_api(repository=_repository_payload(full_name="foreign/repository")), "repository"),
-        (_api(repository=_repository_payload(default_branch="develop")), "default branch"),
-        (_api(branch=_branch_payload(name="develop")), "branch"),
-        (_api(branch=_branch_payload(commit={"sha": "short"})), "full SHA"),
-        (_api(checks=_checks_payload(_check_payload() | {"head_sha": "b" * 40})), "exact-green"),
-        (_api(checks=_checks_payload(_check_payload(app_id=85455))), "exact-green"),
-        (_api(workflow=_workflow_payload(head_branch="feature")), "workflow"),
-        (_api(workflow=_workflow_payload(head_sha="b" * 40)), "workflow"),
-        (_api(workflow=_workflow_payload(path=".github/workflows/other.yml")), "workflow"),
-        (_api(workflow=_workflow_payload(event="pull_request")), "workflow"),
-        (_api(workflow=_workflow_payload(status="in_progress", conclusion=None)), "workflow"),
         (
-            _api(workflow=_workflow_payload(repository={"full_name": "foreign/repository"})),
+            _api(ApiOverrides(repository=_repository_payload(full_name="foreign/repository"))),
+            "repository",
+        ),
+        (
+            _api(ApiOverrides(repository=_repository_payload(default_branch="develop"))),
+            "default branch",
+        ),
+        (_api(ApiOverrides(branch=_branch_payload(name="develop"))), "branch"),
+        (_api(ApiOverrides(branch=_branch_payload(commit={"sha": "short"}))), "full SHA"),
+        (
+            _api(ApiOverrides(checks=_checks_payload(_check_payload() | {"head_sha": "b" * 40}))),
+            "count",
+        ),
+        (
+            _api(ApiOverrides(checks=_checks_payload(_check_payload() | {"app": _app(85455)}))),
+            "count",
+        ),
+        (_api(ApiOverrides(job=_job_payload(job_id=124))), "job identity"),
+        (
+            _api(ApiOverrides(job=_job_payload(started_at="2026-08-27T00:00:03Z"))),
+            "job identity",
+        ),
+        (_api(ApiOverrides(workflow=_workflow_payload(head_branch="feature"))), "workflow"),
+        (_api(ApiOverrides(workflow=_workflow_payload(head_sha="b" * 40))), "workflow"),
+        (
+            _api(ApiOverrides(workflow=_workflow_payload(path=".github/workflows/other.yml"))),
+            "workflow",
+        ),
+        (_api(ApiOverrides(workflow=_workflow_payload(run_attempt=2))), "workflow"),
+        (_api(ApiOverrides(workflow=_workflow_payload(event="pull_request"))), "workflow"),
+        (
+            _api(ApiOverrides(workflow=_workflow_payload(status="in_progress", conclusion=None))),
+            "workflow",
+        ),
+        (
+            _api(ApiOverrides(workflow=_workflow_payload(updated_at="2026-08-26T23:59:59Z"))),
+            "timestamps",
+        ),
+        (
+            _api(
+                ApiOverrides(
+                    workflow=_workflow_payload(repository={"full_name": "foreign/repository"})
+                )
+            ),
             "workflow",
         ),
     ],
@@ -474,11 +800,38 @@ def test_should_follow_official_link_pagination_to_green_check() -> None:
             repo: HttpPage(_repository_payload()),
             branch: HttpPage(_branch_payload()),
             checks: HttpPage(
-                _checks_payload(_check_payload(check_id=122, status="in_progress"), total_count=2),
+                _checks_payload(
+                    _check_payload(check_id=122, status="in_progress", conclusion=None),
+                    total_count=2,
+                ),
                 link,
             ),
-            second: HttpPage(_checks_payload(_check_payload(), total_count=2)),
+            second: HttpPage(
+                _checks_payload(
+                    _check_payload(
+                        started_at="2026-08-27T00:01:02Z",
+                        completed_at="2026-08-27T00:01:03Z",
+                    ),
+                    total_count=2,
+                )
+            ),
+            _job_target(122): HttpPage(
+                _job_payload(job_id=122, status="in_progress", conclusion=None)
+            ),
+            _job_target(): HttpPage(
+                _job_payload(
+                    run_attempt=2,
+                    started_at="2026-08-27T00:01:02Z",
+                )
+            ),
             workflow: HttpPage(_workflow_payload()),
+            _attempt_target(2): HttpPage(
+                _workflow_payload(
+                    run_attempt=2,
+                    run_started_at="2026-08-27T00:01:01Z",
+                    updated_at="2026-08-27T00:01:04Z",
+                )
+            ),
         }
     )
 
@@ -521,7 +874,7 @@ def test_should_reject_foreign_pagination_origin() -> None:
 
     # When / Then
     with pytest.raises(GitHubPolicyError, match="pagination"):
-        asyncio.run(resolve_green_main_from_api(_api(link=link), REPOSITORY))
+        asyncio.run(resolve_green_main_from_api(_api(ApiOverrides(link=link)), REPOSITORY))
 
 
 def test_should_reject_nonsequential_pagination() -> None:
@@ -531,7 +884,7 @@ def test_should_reject_nonsequential_pagination() -> None:
 
     # When / Then
     with pytest.raises(GitHubPolicyError, match="sequence"):
-        asyncio.run(resolve_green_main_from_api(_api(link=link), REPOSITORY))
+        asyncio.run(resolve_green_main_from_api(_api(ApiOverrides(link=link)), REPOSITORY))
 
 
 def test_should_reject_truncated_check_pagination() -> None:
@@ -540,7 +893,7 @@ def test_should_reject_truncated_check_pagination() -> None:
 
     # When / Then
     with pytest.raises(GitHubPolicyError, match="count"):
-        asyncio.run(resolve_green_main_from_api(_api(checks=checks), REPOSITORY))
+        asyncio.run(resolve_green_main_from_api(_api(ApiOverrides(checks=checks)), REPOSITORY))
 
 
 def test_should_reject_check_details_outside_exact_repository_workflow() -> None:
@@ -552,7 +905,7 @@ def test_should_reject_check_details_outside_exact_repository_workflow() -> None
 
     # When / Then
     with pytest.raises(GitHubPolicyError, match="details URL"):
-        asyncio.run(resolve_green_main_from_api(_api(checks=checks), REPOSITORY))
+        asyncio.run(resolve_green_main_from_api(_api(ApiOverrides(checks=checks)), REPOSITORY))
 
 
 def test_should_reject_duplicate_green_across_pages() -> None:
@@ -596,37 +949,37 @@ def test_should_declare_supported_pydantic_v2_dependency() -> None:
 
 
 @pytest.mark.skipif(os.environ.get("RUN_LIVE_GITHUB") != "1", reason="explicit live test")
-def test_should_resolve_pinned_public_main_through_typed_secret() -> None:
+def test_should_resolve_one_stable_live_evidence_object_through_typed_secret() -> None:
     # Given
     gh, git, dagger_cli = _executable("gh"), _executable("git"), _executable("dagger")
     token = subprocess.run(  # noqa: S603 - fixed read-only credential lookup
         [gh, "auth", "token"], check=True, capture_output=True, text=True
     ).stdout.strip()
-    remote = subprocess.run(  # noqa: S603 - fixed read-only Git query
-        [git, "ls-remote", "origin", "refs/heads/main"],
-        cwd=MODULE,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.split()[0]
     environment = os.environ | {"GITHUB_TOKEN": token}
 
     # When
-    fields = ("commit-sha", "app-id", "repository", "branch", "check-name", "workflow-name")
-    results = tuple(_call_green_field(dagger_cli, environment, field) for field in fields)
-    evidence = tuple(result.stdout.strip() for result in results)
+    before = _remote_main(git)
+    result = _call_green_serialization(dagger_cli, environment)
+    after = _remote_main(git)
 
     # Then
-    assert remote == LIVE_SHA
-    for result in results:
-        assert result.returncode == 0, _sanitized_cli_error(result.stderr, token)
-        assert token not in result.stdout + result.stderr
-        assert "greenMain CACHED" not in result.stderr
-    assert evidence == (LIVE_SHA, str(APP_ID), LIVE_REPOSITORY, "main", CHECK_NAME, WORKFLOW_NAME)
+    assert result.returncode == 0, _classified_live_error(result.stderr, token)
+    evidence = json.loads(result.stdout)
+    assert before == after == evidence["commit_sha"]
+    assert evidence["repository"] == LIVE_REPOSITORY
+    assert evidence["branch"] == "main"
+    assert evidence["check_name"] == CHECK_NAME
+    assert evidence["workflow_name"] == WORKFLOW_NAME
+    assert evidence["app_id"] == APP_ID
+    assert evidence["run_attempt"] >= 1
+    assert evidence["check_run_id"] == evidence["workflow_job_id"]
+    assert token not in result.stdout + result.stderr
+    assert "greenMain CACHED" not in result.stderr
+    assert result.stderr.count("PortfolioFoundation.greenMain(") == 1
 
 
-def _call_green_field(
-    dagger_cli: str, environment: dict[str, str], evidence_field: str
+def _call_green_serialization(
+    dagger_cli: str, environment: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     command = [
         dagger_cli,
@@ -636,15 +989,33 @@ def _call_green_field(
         "green-main",
         "--github-token=env:GITHUB_TOKEN",
         f"--repository={LIVE_REPOSITORY}",
-        evidence_field,
+        "serialization",
     ]
     return subprocess.run(  # noqa: S603 - fixed read-only integration command
         command, cwd=MODULE, env=environment, capture_output=True, text=True, check=False
     )
 
 
-def _sanitized_cli_error(stderr: str, token: str) -> str:
-    return stderr.replace(token, "[REDACTED]")
+def _remote_main(git: str) -> str:
+    result = subprocess.run(  # noqa: S603 - fixed read-only Git query
+        [git, "ls-remote", "origin", "refs/heads/main"],
+        cwd=MODULE,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.split()[0]
+
+
+def _classified_live_error(stderr: str, token: str) -> str:
+    sanitized = stderr.replace(token, "[REDACTED]")
+    if "credential was rejected" in sanitized:
+        category = "credential"
+    elif "network request failed" in sanitized:
+        category = "network"
+    else:
+        category = "policy/provider"
+    return f"live GitHub {category} failure: {sanitized}"
 
 
 def _executable(name: str) -> str:
