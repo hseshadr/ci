@@ -1,8 +1,13 @@
 # hseshadr/ci
 
 **TL;DR:** GitHub delivers events; Dagger owns execution. This repository contains the
-fleet policy used to prove that all eight repositories follow that boundary. It no longer
-publishes reusable workflows, composite actions, or copyable CI templates.
+fleet policy used to prove that all eight repositories follow that boundary, plus typed
+reusable Dagger modules for repository safety and Cloudflare Pages delivery. It does not
+publish reusable workflows, composite actions, or copyable CI templates.
+
+A **Dagger lego** is a typed reusable Dagger module installed at an immutable commit SHA.
+The exact commit makes the shared behavior reviewable and prevents a consumer from changing
+when central `main` moves.
 
 ## Run it now
 
@@ -30,15 +35,35 @@ The first command runs central quality and security checks. The second reads exa
 Any inaccessible or incomplete evidence is an error. A scan that inspected nothing
 cannot report success.
 
+## Reuse the Dagger legos
+
+The shared modules are:
+
+- `portfolio-foundation`: exact source identity, full-history repository guard, deterministic
+  artifact envelopes, envelope verification, and exact-current-`main` GitHub evidence;
+- `cloudflare-pages`: fail-closed Pages preflight, one pinned Wrangler direct upload, and
+  deployment/live convergence bound to the created deployment ID.
+
+Start with the [exact-SHA consumer quickstart](docs/dagger-modules.md#quickstart). It captures
+the central `main` SHA, validates all 40 lowercase hexadecimal characters, and commits that
+literal dependency. The guide also includes a realistic Python composition, typed secret and
+GitHub Environment rules, Python/TypeScript fixture proofs, and cold-engine verification.
+
+The modules and their cross-language composition fixtures are implemented in this repository.
+The guarded central merge establishes the remotely installable SHA. EdgeReco adoption and its
+production canary are separate pending rollout steps; this change does not claim a production
+deployment or fleet-wide module adoption.
+
 ## Execution model
 
-Only three workflows remain:
+Only four workflows remain:
 
 | Workflow | Event ingress | Dagger function |
 |---|---|---|
 | `dagger.yml` | pull request, push to `main`, manual | `ci` |
 | `consumer-drift.yml` | push to `main`, daily, manual | `fleet` |
 | `dagger-security.yml` | weekly, manual | `security` |
+| `module-canary.yml` | weekly, manual | `module-fixtures` |
 
 Each job has exactly two pinned actions:
 
@@ -128,6 +153,7 @@ lives in `.dagger/src/ci/github_fleet.py`. Behavioral tests live in `.dagger/tes
 
 ## Scope
 
-This is a control-plane repository, not a template catalog. Consumer build, deploy, and
-publisher implementations stay in their own Dagger modules. Dependabot may propose
+This is a control-plane repository, not a template catalog. Consumer-specific build and
+publisher implementations stay in their own Dagger modules; consumers compose the shared
+foundation and Pages modules instead of copying their trust mechanics. Dependabot may propose
 dependency updates, but its pull requests are never auto-merged.

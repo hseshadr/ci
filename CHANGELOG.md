@@ -4,6 +4,12 @@
 
 ### Added
 
+- Reusable `portfolio-foundation` and `cloudflare-pages` Dagger modules for exact source
+  identity, repository safety, deterministic artifact evidence, exact-green authorization,
+  and fail-closed Pages delivery.
+- An exact-SHA dependency policy and generated-client composition fixtures for both Python and
+  TypeScript consumers, including isolated cold-engine proof. This change creates no package,
+  version tag, or registry release.
 - A typed Dagger module for central quality, dependency, workflow-security, secret, and
   fleet-policy checks.
 - An authoritative GitHub evidence adapter that fails closed on unreadable source,

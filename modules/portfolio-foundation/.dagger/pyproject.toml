@@ -1,0 +1,64 @@
+[project]
+name = "portfolio-foundation"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["dagger-io", "pydantic>=2.11,<3"]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18.0",
+  "pip-audit>=2.9.0",
+  "poethepoet>=0.38.0",
+  "pytest>=8.4.0",
+  "pytest-cov>=7.0.0",
+  "radon>=6.0.1",
+  "ruff>=0.12.0",
+  "xenon>=0.9.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+dagger-io = { path = "sdk", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C901", "B", "UP", "SIM", "N", "RUF", "ASYNC", "S", "PL"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 5
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_*.py" = ["PLR2004", "S101"]
+"tests/test_bootstrap.py" = ["S603"]
+"tests/test_source_integration.py" = ["S603"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+warn_unreachable = true
+disallow_any_explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = []
+
+[tool.poe.tasks]
+develop = { cmd = "dagger -m .. develop", executor = "simple" }
+sync = { cmd = "uv sync --frozen --all-groups", executor = "simple" }
+bootstrap = ["develop", "sync"]
+lint = { shell = "ruff check src tests && ruff format --check src tests" }
+format = { shell = "ruff check --fix src tests && ruff format src tests" }
+typecheck = "mypy --strict src tests"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src"
+test = "pytest tests --cov=portfolio_foundation --cov-branch --cov-fail-under=90"
+branchrate = { shell = "coverage json -o /tmp/portfolio-foundation-coverage.json && python -c \"import json; data=json.load(open('/tmp/portfolio-foundation-coverage.json'))['files']; values=[item['summary'] for path,item in data.items() if path.startswith('src/portfolio_foundation/')]; covered=sum(item['covered_branches'] for item in values); total=sum(item['num_branches'] for item in values); assert total and covered * 100 >= total * 90, f'branch coverage {covered}/{total} below floor'\"" }
+artifactbranchrate = { shell = "coverage json -o /tmp/portfolio-foundation-coverage.json && python -c \"import json; summary=json.load(open('/tmp/portfolio-foundation-coverage.json'))['files']['src/portfolio_foundation/artifact.py']['summary']; covered=summary['covered_branches']; total=summary['num_branches']; assert total and covered * 100 >= total * 90, f'artifact branch coverage {covered}/{total} below floor'\"" }
+integration = "pytest tests/test_source_integration.py tests/test_guard_integration.py -q"
+schema = "dagger -m .. functions"
+audit = "pip-audit"
+gate = ["lint", "typecheck", "complexity", "test", "branchrate", "artifactbranchrate", "schema"]

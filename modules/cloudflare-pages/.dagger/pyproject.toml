@@ -1,0 +1,64 @@
+[project]
+name = "cloudflare-pages"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["dagger-io", "pydantic>=2.11,<3"]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18.0",
+  "pip-audit>=2.9.0",
+  "poethepoet>=0.38.0",
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+  "pytest-cov>=7.0.0",
+  "radon>=6.0.1",
+  "ruff>=0.12.0",
+  "xenon>=0.9.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+dagger-io = { path = "sdk", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C901", "B", "UP", "SIM", "N", "RUF", "ASYNC", "S", "PL"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 5
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_*.py" = ["PLR2004", "S101"]
+"tests/test_deploy_contract.py" = ["E501", "PLR2004", "S101", "S603"]
+"src/cloudflare_pages/main.py" = ["PLR0913", "PLR0917"]
+"src/cloudflare_pages/models.py" = ["PLR0913", "PLR0917"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+warn_unreachable = true
+disallow_any_explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = []
+
+[tool.poe.tasks]
+develop = { cmd = "dagger -m .. develop", executor = "simple" }
+sync = { cmd = "uv sync --frozen --all-groups", executor = "simple" }
+bootstrap = ["develop", "sync"]
+lint = { shell = "ruff check src tests && ruff format --check src tests" }
+format = { shell = "ruff check --fix src tests && ruff format src tests" }
+typecheck = "mypy --strict src tests"
+complexity = "xenon --max-absolute A --max-modules A --max-average A src"
+test = "pytest tests --cov=cloudflare_pages --cov-branch --cov-fail-under=90"
+branchrate = { shell = "coverage json -o /tmp/cloudflare-pages-coverage.json && python -c \"import json; data=json.load(open('/tmp/cloudflare-pages-coverage.json'))['files']; core={path:item['summary'] for path,item in data.items() if path.startswith('src/cloudflare_pages/') and item['summary']['num_branches']}; bad={path:(value['covered_branches'],value['num_branches']) for path,value in core.items() if value['covered_branches'] * 100 < value['num_branches'] * 90}; assert core and not bad, f'per-core branch coverage below floor: {bad}'\"" }
+audit = "pip-audit"
+schema = "dagger -m .. functions"
+gate = ["lint", "typecheck", "complexity", "test", "branchrate", "schema", "audit"]

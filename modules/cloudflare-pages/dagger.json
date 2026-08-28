@@ -1,17 +1,13 @@
 {
-  "name": "ci",
+  "name": "cloudflare-pages",
   "engineVersion": "v0.21.8",
   "sdk": {
     "source": "python"
   },
-  "include": [
-    ".dagger/pyproject.toml",
-    ".dagger/src/**"
-  ],
   "dependencies": [
     {
       "name": "foundation",
-      "source": "modules/portfolio-foundation"
+      "source": "../portfolio-foundation"
     }
   ],
   "source": ".dagger"

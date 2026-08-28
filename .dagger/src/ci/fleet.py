@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from ci.fleet_policy import PolicyFinding, RepositoryExpectation, validate_repository
 from ci.github_fleet import GitHubHttpTransport, read_repository
@@ -20,28 +21,38 @@ class RepositoryResult:
 def repository_expectations(include_central: bool) -> tuple[RepositoryExpectation, ...]:
     """Return the reviewed fleet contract for the current rollout phase."""
     consumers = (
-        expectation("almamesh"),
-        expectation("aml-filter"),
-        expectation("assay", linear_history=True),
-        expectation("edge-proc"),
-        expectation("edge-reco"),
-        expectation("edgeproc-core"),
-        expectation("privacy-core"),
+        expectation("almamesh", grandfathered_until=date(2026, 12, 15)),
+        expectation("aml-filter", grandfathered_until=date(2026, 12, 31)),
+        expectation("assay", linear_history=True, grandfathered_until=date(2026, 11, 30)),
+        expectation("edge-proc", grandfathered_until=date(2026, 10, 15)),
+        expectation("edge-reco", grandfathered_until=date(2026, 9, 30)),
+        expectation("edgeproc-core", grandfathered_until=date(2026, 10, 31)),
+        expectation("privacy-core", grandfathered_until=date(2026, 11, 15)),
     )
-    central = expectation("ci", conversation_resolution=False)
+    central = expectation("ci", conversation_resolution=False, shared_foundation_required=False)
     return consumers + ((central,) if include_central else ())
 
 
 def expectation(
-    name: str, *, linear_history: bool = False, conversation_resolution: bool = True
+    name: str,
+    *,
+    linear_history: bool = False,
+    conversation_resolution: bool = True,
+    shared_foundation_required: bool = True,
+    grandfathered_until: date | None = None,
 ) -> RepositoryExpectation:
     """Build one sole-Dagger branch-protection expectation."""
-    return RepositoryExpectation(
-        name=name,
-        required_contexts=("Dagger",),
-        linear_history=linear_history,
-        conversation_resolution=conversation_resolution,
-    )
+    protection = (name, ("Dagger",), linear_history, conversation_resolution)
+    rollout = (shared_foundation_required, grandfathered_until)
+    return RepositoryExpectation(*protection, *rollout)
+
+
+def expectation_for(name: str) -> RepositoryExpectation:
+    """Return one explicit rollout contract by repository name."""
+    match = next((item for item in repository_expectations(True) if item.name == name), None)
+    if match is None:
+        raise ValueError(f"unknown fleet repository: {name}")
+    return match
 
 
 def scan_fleet(token: str, include_central: bool) -> tuple[RepositoryResult, ...]:

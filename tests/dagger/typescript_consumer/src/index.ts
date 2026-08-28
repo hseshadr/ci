@@ -1,0 +1,88 @@
+import {
+  Directory,
+  FoundationCheckEvidence,
+  Secret,
+  check,
+  dag,
+  func,
+  object,
+} from "@dagger.io/dagger"
+
+const REPOSITORY = "hseshadr/ci"
+const REPOSITORY_URL = "https://github.com/hseshadr/ci.git"
+const COMMIT_SHA = "842187d3b9e549867375a37011cc75a520dc74a9"
+const CONSUMER = `${REPOSITORY}@${COMMIT_SHA}`
+const PRODUCER = `${"b".repeat(40)}:7`
+const ALLOWED_ROOTS = ["dist"]
+const CACHE_NAMESPACE = "fixture-typescript-v1"
+const SECRET_CANARY = ["typescript", "private", "canary"].join("-")
+const ARTIFACT_NAME = "typescript-artifact.txt"
+const TRANSPORT_MARKERS = ["api.cloudflare.com", "api.github.com", "wrangler"]
+
+@object()
+export class TypescriptConsumer {
+  @func()
+  @check()
+  async contract(): Promise<string> {
+    await sourceGuard()
+    const envelope = await verifiedEnvelope()
+    const secret = dag.setSecret("typescript-fixture-secret", SECRET_CANARY)
+    typedEvidence(secret)
+    await providerRejectsTamper(envelope, secret)
+    await dag.cacheVolume(CACHE_NAMESPACE).id()
+    return "typescript fixture passed"
+  }
+}
+
+async function sourceGuard(): Promise<void> {
+  const history = dag.git(REPOSITORY_URL).commit(COMMIT_SHA).tree({ depth: 0, includeTags: true })
+  const source = dag.foundation().source(history, REPOSITORY, COMMIT_SHA)
+  await source.digest()
+  await dag.foundation().guard(source, REPOSITORY, COMMIT_SHA).sync()
+}
+
+async function verifiedEnvelope(): Promise<Directory> {
+  const artifact = dag.directory().withNewFile(`dist/${ARTIFACT_NAME}`, "typescript artifact")
+  const envelope = dag.foundation().envelope(artifact, CONSUMER, PRODUCER, ALLOWED_ROOTS)
+  const verified = dag.foundation().verifyEnvelope(envelope, CONSUMER, PRODUCER, ALLOWED_ROOTS)
+  const entries = await verified.directory("dist").entries()
+  if (entries.length !== 1 || entries[0] !== ARTIFACT_NAME) {
+    throw new Error("verified TypeScript artifact boundary differs")
+  }
+  return envelope
+}
+
+function typedEvidence(secret: Secret): void {
+  const evidence: FoundationCheckEvidence = dag.foundation().greenMain(secret, REPOSITORY)
+  if (evidence === undefined) throw new Error("generated evidence type was unavailable")
+}
+
+async function providerRejectsTamper(envelope: Directory, secret: Secret): Promise<void> {
+  const tampered = envelope.withNewFile(`artifact/dist/${ARTIFACT_NAME}`, "tampered")
+  try {
+    await preflight(tampered, secret)
+  } catch (error: unknown) {
+    requireSafeTamperError(error)
+    return
+  }
+  throw new Error("provider accepted a tampered envelope")
+}
+
+async function preflight(envelope: Directory, secret: Secret): Promise<string> {
+  return dag.cloudflarePages().preflight(
+    envelope, secret, secret, secret, "7", 1, REPOSITORY, "ci", "main",
+    "example.invalid", "dist", [], CONSUMER, PRODUCER, ALLOWED_ROOTS,
+  )
+}
+
+function requireSafeTamperError(error: unknown): void {
+  if (!(error instanceof Error)) throw error
+  const message = String(error)
+  if (!message.toLowerCase().includes("artifact bytes or modes differ from manifest")) {
+    throw new Error("provider reached transport before envelope rejection")
+  }
+  if (TRANSPORT_MARKERS.some((marker) => message.includes(marker))) {
+    throw new Error("provider emitted a transport marker for a rejected envelope")
+  }
+  if (message.includes(SECRET_CANARY)) throw new Error("provider error disclosed the typed secret")
+}

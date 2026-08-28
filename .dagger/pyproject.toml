@@ -6,6 +6,8 @@ dependencies = [
   "dagger-io",
   "pydantic==2.13.4",
   "PyYAML==6.0.3",
+  "tree-sitter==0.23.2",
+  "tree-sitter-typescript==0.23.2",
 ]
 
 [dependency-groups]
@@ -54,12 +56,14 @@ plugins = ["pydantic.mypy"]
 pythonpath = []
 
 [tool.coverage.run]
-omit = ["src/ci/main.py", "src/ci/fleet_cli.py"]
+branch = true
+omit = ["src/ci/fleet_cli.py"]
 
 [tool.poe.tasks]
 lint = { shell = "ruff check --fix src tests && ruff format src tests" }
 typecheck = "mypy --strict src tests"
 complexity = "xenon --max-absolute A --max-modules A --max-average A src"
-test = "pytest tests --cov=ci --cov-fail-under=90"
+test = "pytest tests --cov=ci --cov-branch --cov-fail-under=90"
+branchrate = { shell = "coverage json -o /tmp/ci-coverage.json && python -c \"import json; data=json.load(open('/tmp/ci-coverage.json'))['files']; values=[item['summary'] for path,item in data.items() if path.startswith('src/ci/')]; covered=sum(item['covered_branches'] for item in values); total=sum(item['num_branches'] for item in values); assert total and covered * 100 >= total * 90, f'branch coverage {covered}/{total} below floor'\"" }
 audit = "pip-audit"
-gate = ["lint", "typecheck", "complexity", "test"]
+gate = ["lint", "typecheck", "complexity", "test", "branchrate"]
