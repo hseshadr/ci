@@ -24,6 +24,7 @@ build-backend = "uv_build"
 dagger-io = { path = "sdk", editable = true }
 
 [tool.ruff]
+extend-include = ["*.py.txt"]
 line-length = 100
 target-version = "py313"
 

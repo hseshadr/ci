@@ -1,0 +1,363 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+import dagger
+from dagger.client._core import Context
+
+from portfolio_foundation import source as source_module
+from portfolio_foundation.identity import CommitIdentity, FullSha, RepositoryRef
+from portfolio_foundation.source import SourceMismatch
+
+FIXTURE_IMAGE = "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
+SCALE_SCRIPT = r"""set -eu
+root=/fixture
+mkdir -p "$root"
+for a in 0 1 2 3 4; do
+  for b in 0 1 2 3 4; do
+    for c in 0 1 2 3 4; do
+      for d in 0 1 2 3 4; do
+        leaf="$root/level-$a/level-$b/level-$c/level-$d"
+        mkdir -p "$leaf"
+        printf "%s" "$a$b$c$d:0" > "$leaf/payload-0.bin"
+        printf "%s" "$a$b$c$d:1" > "$leaf/payload-1.bin"
+      done
+    done
+  done
+done
+newline=$(printf "line\nbreak.txt")
+printf newline > "$root/$newline"
+printf backslash > "$root/slash\name.txt"
+printf "#!/bin/sh\nexit 0\n" > "$root/run"
+chmod 755 "$root/run"
+"""
+
+
+class InventoryExecCounter:
+    def __init__(self) -> None:
+        self.total = 0
+
+    def mark(self) -> int:
+        return self.total
+
+    def since(self, mark: int) -> int:
+        return self.total - mark
+
+
+class ResolvedDirectory(dagger.Directory):
+    def __init__(
+        self,
+        directory: dagger.Directory,
+        directory_id: str,
+        without_git: dagger.Directory | None = None,
+    ) -> None:
+        super().__init__(directory._ctx)
+        self._resolved_id = directory_id
+        self._without_git = without_git if without_git is not None else self
+
+    async def id(self) -> str:
+        return self._resolved_id
+
+    @classmethod
+    def _graphql_name(cls) -> str:
+        return "Directory"
+
+    def without_directory(self, path: str) -> dagger.Directory:
+        if path != ".git":
+            raise ValueError("resolved probe directory only omits .git")
+        return self._without_git
+
+
+COUNTER = InventoryExecCounter()
+ORIGINAL_EXECUTE = Context.execute
+COUNT_FIELDS = (
+    "counter_probe_execs",
+    "fixture_setup_execs",
+    "scale_execs",
+    "scale_count",
+    "scale_depth",
+    "empty_execs",
+    "empty_count",
+    "exact_execs",
+    "tamper_execs",
+    "mode_execs",
+    "symlink_execs",
+    "inventory_count",
+)
+FLAG_FIELDS = (
+    "scale_complete",
+    "scale_newline_seen",
+    "scale_backslash_seen",
+    "newline_seen",
+    "backslash_seen",
+    "complete_paths",
+    "tamper_rejected",
+    "mode_rejected",
+    "symlink_rejected",
+    "git_present",
+)
+
+
+async def counted_execute(self, return_type=None):
+    COUNTER.total += 1
+    return await ORIGINAL_EXECUTE(self, return_type)
+
+
+def initial_result(names_execs: int) -> dict[str, object]:
+    counts = dict.fromkeys((*COUNT_FIELDS, "source_mode"), 0)
+    flags = dict.fromkeys(FLAG_FIELDS, False)
+    return {"names_execs": names_execs, **counts, **flags, "source_contents": ""}
+
+
+async def inventory_names(directory: dagger.Directory) -> tuple[tuple[str, ...], int]:
+    directory = await resolved_without_git(directory)
+    mark = COUNTER.mark()
+    entries = await source_module.DaggerSourceInventory(directory).entries()
+    return tuple(entry.path for entry in entries), COUNTER.since(mark)
+
+
+async def counter_probe(directory: dagger.Directory) -> int:
+    mark = COUNTER.mark()
+    await directory.entries()
+    return COUNTER.since(mark)
+
+
+def scale_fixture(client: dagger.Client) -> dagger.Directory:
+    container = client.container().from_(FIXTURE_IMAGE).with_exec(["sh", "-ec", SCALE_SCRIPT])
+    return container.directory("/fixture")
+
+
+def expected_scale_paths() -> frozenset[str]:
+    leaves = (
+        f"level-{a}/level-{b}/level-{c}/level-{d}/payload-{suffix}.bin"
+        for a in range(5)
+        for b in range(5)
+        for c in range(5)
+        for d in range(5)
+        for suffix in range(2)
+    )
+    return frozenset((*leaves, "line\nbreak.txt", "slash\\name.txt", "run"))
+
+
+async def observe_scale(result: dict[str, object], client: dagger.Client) -> None:
+    mark = COUNTER.mark()
+    directory = await scale_fixture(client).sync()
+    result["fixture_setup_execs"] = COUNTER.since(mark)
+    names, result["scale_execs"] = await inventory_names(directory)
+    result["scale_count"] = len(names)
+    result["scale_complete"] = frozenset(names) == expected_scale_paths()
+    result["scale_depth"] = max(name.count("/") for name in names)
+    result["scale_newline_seen"] = any("\n" in name for name in names)
+    result["scale_backslash_seen"] = any("\\" in name for name in names)
+
+
+async def observe_empty(result: dict[str, object], client: dagger.Client) -> None:
+    names, result["empty_execs"] = await inventory_names(client.directory())
+    result["empty_count"] = len(names)
+
+
+async def bind(
+    source: dagger.Directory, history: dagger.Directory
+) -> tuple[source_module.SourceBinding[dagger.Directory, dagger.Directory], int]:
+    identity = CommitIdentity(RepositoryRef("owner", "repository"), FullSha("a" * 40))
+    source, history = await resolved_pair(source, history)
+    mark = COUNTER.mark()
+    binding = await source_module.bind_dagger_source(source, history, identity)
+    return binding, COUNTER.since(mark)
+
+
+async def mismatch_rejected(
+    source: dagger.Directory, history: dagger.Directory
+) -> tuple[bool, int]:
+    source, history = await resolved_pair(source, history)
+    mark = COUNTER.mark()
+    try:
+        await source_module.bind_dagger_source(source, history, identity())
+    except SourceMismatch:
+        return True, COUNTER.since(mark)
+    return False, COUNTER.since(mark)
+
+
+def identity() -> CommitIdentity:
+    return CommitIdentity(RepositoryRef("owner", "repository"), FullSha("a" * 40))
+
+
+async def resolved_without_git(directory: dagger.Directory) -> dagger.Directory:
+    filtered = directory.without_directory(".git")
+    return ResolvedDirectory(filtered, await filtered.id())
+
+
+async def resolved_source(directory: dagger.Directory) -> dagger.Directory:
+    filtered = directory.without_directory(".git")
+    directory_id, filtered_id = await asyncio.gather(directory.id(), filtered.id())
+    without_git = ResolvedDirectory(filtered, filtered_id)
+    return ResolvedDirectory(directory, directory_id, without_git)
+
+
+async def resolved_pair(
+    source: dagger.Directory,
+    history: dagger.Directory,
+) -> tuple[dagger.Directory, dagger.Directory]:
+    return await asyncio.gather(resolved_source(source), resolved_source(history))
+
+
+def tamper(path: Path) -> bytes:
+    original = path.read_bytes()
+    path.write_bytes(bytes((original[0] ^ 1,)) + original[1:])
+    return original
+
+
+def restore(path: Path, contents: bytes) -> None:
+    path.write_bytes(contents)
+
+
+def expected_paths(depth: int, width: int) -> frozenset[str]:
+    parent = "/".join(f"level-{index:02}" for index in range(depth))
+    payloads = tuple(f"{parent}/payload-{index:04}.bin" for index in range(width))
+    special = (f"{parent}/line\nbreak.txt", f"{parent}/slash\\name.txt", "run.sh")
+    return frozenset((*payloads, *special))
+
+
+def fresh(client: dagger.Client, path: Path) -> dagger.Directory:
+    return client.host().directory(str(path), gitignore=False, no_cache=True)
+
+
+def first_payload(root: Path, depth: int) -> Path:
+    levels = tuple(f"level-{index:02}" for index in range(depth))
+    return root.joinpath(*levels, "payload-0000.bin")
+
+
+def inventory_result(
+    names: tuple[str, ...],
+    names_execs: int,
+    depth: int,
+    width: int,
+) -> dict[str, object]:
+    result = initial_result(names_execs)
+    result["inventory_count"] = len(names)
+    result["complete_paths"] = frozenset(names) == expected_paths(depth, width)
+    result["newline_seen"] = any("\n" in name for name in names)
+    result["backslash_seen"] = any("\\" in name for name in names)
+    return result
+
+
+async def observed_inventory(
+    history: dagger.Directory,
+    depth: int,
+    width: int,
+) -> tuple[tuple[str, ...], dict[str, object]]:
+    probe_execs = await counter_probe(history)
+    names, names_execs = await inventory_names(history.without_directory(".git"))
+    result = inventory_result(names, names_execs, depth, width)
+    result["counter_probe_execs"] = probe_execs
+    return names, result
+
+
+async def observe_exact(
+    result: dict[str, object],
+    client: dagger.Client,
+    source_path: Path,
+    history: dagger.Directory,
+) -> None:
+    source = fresh(client, source_path)
+    binding, result["exact_execs"] = await bind(source, history)
+    result["git_present"] = ".git/" in await binding.source.entries()
+    result["source_mode"] = await binding.source.stat("run.sh").permissions()
+    result["source_contents"] = await binding.source.file("run.sh").contents()
+
+
+async def observe_tamper(
+    result: dict[str, object],
+    client: dagger.Client,
+    source_path: Path,
+    history: dagger.Directory,
+    changed: Path,
+) -> None:
+    original = tamper(changed)
+    result["tamper_rejected"], result["tamper_execs"] = await mismatch_rejected(
+        fresh(client, source_path), history
+    )
+    restore(changed, original)
+
+
+async def observe_mode(
+    result: dict[str, object],
+    client: dagger.Client,
+    source_path: Path,
+    history: dagger.Directory,
+) -> None:
+    executable = source_path / "run.sh"
+    executable.chmod(0o644)
+    result["mode_rejected"], result["mode_execs"] = await mismatch_rejected(
+        fresh(client, source_path), history
+    )
+    executable.chmod(0o755)
+
+
+async def inventory_rejected(directory: dagger.Directory) -> tuple[bool, int]:
+    directory = await resolved_without_git(directory)
+    mark = COUNTER.mark()
+    try:
+        await source_module.canonical_inventory(source_module.DaggerSourceInventory(directory))
+    except SourceMismatch:
+        return True, COUNTER.since(mark)
+    return False, COUNTER.since(mark)
+
+
+async def observe_symlink(
+    result: dict[str, object],
+    client: dagger.Client,
+    source_path: Path,
+) -> None:
+    os.symlink("run.sh", source_path / "linked-run")
+    linked = fresh(client, source_path).without_directory(".git")
+    result["symlink_rejected"], result["symlink_execs"] = await inventory_rejected(linked)
+
+
+def configured_history(client: dagger.Client, path: Path) -> dagger.Directory:
+    source_module.dag = client
+    return client.host().directory(str(path), gitignore=False)
+
+
+async def observe_changes(
+    result: dict[str, object],
+    client: dagger.Client,
+    source_path: Path,
+    history: dagger.Directory,
+    depth: int,
+) -> None:
+    await observe_exact(result, client, source_path, history)
+    changed = first_payload(source_path, depth)
+    await observe_tamper(result, client, source_path, history, changed)
+    await observe_mode(result, client, source_path, history)
+    await observe_symlink(result, client, source_path)
+
+
+async def run(
+    source_path: Path,
+    history_path: Path,
+    depth: int,
+    width: int,
+) -> dict[str, object]:
+    async with dagger.Connection() as client:
+        history = configured_history(client, history_path)
+        _names, result = await observed_inventory(history, depth, width)
+        await observe_scale(result, client)
+        await observe_empty(result, client)
+        if result["names_execs"] != 1:
+            return result
+        await observe_changes(result, client, source_path, history, depth)
+        return result
+
+
+async def main() -> None:
+    Context.execute = counted_execute
+    result = await run(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]))
+    print(json.dumps(result, sort_keys=True))
+
+
+asyncio.run(main())
