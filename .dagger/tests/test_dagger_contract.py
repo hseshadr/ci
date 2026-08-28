@@ -260,19 +260,20 @@ def test_should_delegate_security_guard_with_exact_source_context(
     assert fake_dag.git_calls == []
 
 
-def test_should_run_public_ci_quality_before_security(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_should_run_public_ci_in_protected_order(monkeypatch: pytest.MonkeyPatch) -> None:
     # Given
     events: list[str] = []
     central = Ci.__new__(Ci)
     monkeypatch.setattr(central, "_quality", lambda: FakeSync(events, "quality"))
     monkeypatch.setattr(central, "_security", _security_recorder(events))
+    monkeypatch.setattr(central, "_module_fixtures", _fixture_recorder(events))
 
     # When
     result: str = asyncio.run(central.ci(cast(dagger.Secret, object()), "a" * 40))
 
     # Then
     assert result == "central Dagger gate passed"
-    assert events == ["quality", "security:" + "a" * 40]
+    assert events == ["quality", "security:" + "a" * 40, "module-fixtures"]
 
 
 def test_should_run_public_security_without_quality(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -418,6 +419,14 @@ def test_should_preserve_main_resolution_when_commit_is_omitted(
 def _security_recorder(events: list[str]) -> Callable[[str, dagger.Secret], Awaitable[None]]:
     async def record(commit_sha: str, _: dagger.Secret) -> None:
         events.append("security:" + commit_sha)
+
+    return record
+
+
+def _fixture_recorder(events: list[str]) -> Callable[[], Awaitable[str]]:
+    async def record() -> str:
+        events.append("module-fixtures")
+        return "cross-language Dagger module fixtures passed"
 
     return record
 

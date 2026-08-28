@@ -56,9 +56,10 @@ class Ci:
     @function
     @check
     async def ci(self, github_token: dagger.Secret, commit_sha: str = "") -> str:
-        """Run canonical quality, dependency, workflow, and secret gates."""
+        """Run canonical quality, security, and composition gates."""
         await self._quality().sync()
         await self._security(commit_sha, github_token)
+        await self._module_fixtures()
         return "central Dagger gate passed"
 
     @function
@@ -80,6 +81,9 @@ class Ci:
     @function
     async def module_fixtures(self) -> str:
         """Run both generated-client consumer checks from this source snapshot."""
+        return await self._module_fixtures()
+
+    async def _module_fixtures(self) -> str:
         for path in FIXTURE_MODULES:
             await self._module_fixture(path)
         return "cross-language Dagger module fixtures passed"
