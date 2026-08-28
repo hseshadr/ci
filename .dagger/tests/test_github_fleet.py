@@ -614,6 +614,17 @@ def test_should_name_environment_scope_without_reading_secret_values() -> None:
     ("response", "message"),
     [
         (_content("wrong.json", "{}"), "invalid exact source identity"),
+        (
+            _json(
+                {
+                    "type": "symlink",
+                    "path": "dagger.json",
+                    "encoding": "base64",
+                    "content": "e30=",
+                }
+            ),
+            "invalid exact source identity",
+        ),
         (_content("dagger.json", "{}"), "invalid Dagger config"),
     ],
 )

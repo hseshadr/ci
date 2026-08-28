@@ -243,6 +243,35 @@ def _provider_configs() -> tuple[DaggerConfig, ...]:
     return root, shared, provider_config
 
 
+def _central_root(*dependencies: DaggerDependency) -> DaggerConfig:
+    return DaggerConfig(
+        identity=f"github.com/hseshadr/ci@{SHA}",
+        path="dagger.json",
+        name="ci",
+        engine_version="v0.21.8",
+        dependencies=dependencies,
+    )
+
+
+def _central_foundation(revision: str = SHA) -> DaggerConfig:
+    return DaggerConfig(
+        identity=f"github.com/hseshadr/ci/modules/portfolio-foundation@{revision}",
+        path="modules/portfolio-foundation/dagger.json",
+        name="portfolio-foundation",
+        engine_version="v0.21.8",
+    )
+
+
+def _central_provider(source: str = "../portfolio-foundation") -> DaggerConfig:
+    return DaggerConfig(
+        identity=f"github.com/hseshadr/ci/modules/cloudflare-pages@{SHA}",
+        path="modules/cloudflare-pages/dagger.json",
+        name="cloudflare-pages",
+        engine_version="v0.21.8",
+        dependencies=(DaggerDependency(name="foundation", source=source),),
+    )
+
+
 def _shared_codes(snapshot: RepositorySnapshot, expiry: date | None = None) -> tuple[str, ...]:
     expectation = RepositoryExpectation(
         name="example",
@@ -794,6 +823,127 @@ def test_should_bind_literal_publisher_sha_to_approved_central_identity() -> Non
     # Then the exact central publisher is accepted independently of consumer identity
     assert "remote-module-identity" not in approved_codes
     assert "publisher-module-identity" in hostile_codes
+
+
+def test_should_accept_exact_central_foundation_from_same_snapshot() -> None:
+    # Given hseshadr/ci root and foundation configs come from one exact commit snapshot
+    dependency = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    snapshot = replace(
+        _snapshot(INGRESS),
+        name="ci",
+        dagger_configs=(_central_root(dependency), _central_foundation()),
+    )
+
+    # When the central publisher graph is evaluated
+    codes = _codes(snapshot)
+
+    # Then its exact same-tree foundation edge is accepted
+    assert "shared-module-publisher" not in codes
+
+
+def test_should_accept_exact_central_provider_graph_from_same_snapshot() -> None:
+    # Given the central root installs both reviewed local modules at one revision
+    foundation = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    provider = DaggerDependency(name="cloudflare-pages", source="modules/cloudflare-pages")
+    configs = (_central_root(foundation, provider), _central_foundation(), _central_provider())
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=configs)
+
+    # When all publisher relationships are evaluated
+    codes = _codes(snapshot)
+
+    # Then root-to-modules and provider-to-foundation local edges remain valid
+    assert "shared-module-publisher" not in codes
+    assert "invalid-dagger-dependency" not in codes
+
+
+def test_should_reject_central_local_dependency_from_different_snapshot() -> None:
+    # Given the root points locally but the loaded foundation identity has another revision
+    dependency = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    configs = (_central_root(dependency), _central_foundation("b" * 40))
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=configs)
+
+    # When same-snapshot identity is evaluated
+    codes = _codes(snapshot)
+
+    # Then a cross-revision local edge fails closed
+    assert "invalid-dagger-dependency" in codes
+
+
+def test_should_reject_central_local_dependency_without_loaded_config() -> None:
+    # Given exact central root metadata names a local module absent from the graph
+    dependency = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=(_central_root(dependency),))
+
+    # When local dependency completeness is evaluated
+    codes = _codes(snapshot)
+
+    # Then missing same-snapshot config evidence cannot authorize execution
+    assert "invalid-dagger-dependency" in codes
+
+
+def test_should_reject_renamed_central_shared_module_path() -> None:
+    # Given a shared dependency name is redirected to an unreviewed local path
+    dependency = DaggerDependency(name="foundation", source="modules/foundation-copy")
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=(_central_root(dependency),))
+
+    # When canonical publisher paths are evaluated
+    codes = _codes(snapshot)
+
+    # Then a renamed local module cannot inherit shared-module authority
+    assert "invalid-dagger-dependency" in codes
+
+
+def test_should_reject_unrelated_local_dependency_even_in_central_root() -> None:
+    # Given the exact central root declares an unrelated same-tree module
+    dependency = DaggerDependency(name="unrelated", source="modules/unrelated")
+    unrelated = DaggerConfig(
+        identity=f"github.com/hseshadr/ci/modules/unrelated@{SHA}",
+        path="modules/unrelated/dagger.json",
+        name="unrelated",
+        engine_version="v0.21.8",
+    )
+    snapshot = replace(
+        _snapshot(INGRESS), name="ci", dagger_configs=(_central_root(dependency), unrelated)
+    )
+
+    # When the local allowlist boundary is evaluated
+    codes = _codes(snapshot)
+
+    # Then central ownership alone cannot authorize arbitrary local code
+    assert "invalid-dagger-dependency" in codes
+
+
+def test_should_reject_unreviewed_local_edge_from_central_provider() -> None:
+    # Given the reviewed provider redirects its foundation name to another local module
+    snapshot = replace(
+        _snapshot(INGRESS),
+        name="ci",
+        dagger_configs=(_central_provider("../foundation-copy"),),
+    )
+
+    # When provider-to-foundation identity is evaluated
+    codes = _codes(snapshot)
+
+    # Then an approved provider identity cannot broaden the local allowlist
+    assert "invalid-dagger-dependency" in codes
+
+
+def test_should_reject_local_dependency_from_consumer_repository() -> None:
+    # Given a consumer tries to install an arbitrary repository-local module
+    root = DaggerConfig(
+        identity=f"github.com/hseshadr/example@{SHA}",
+        path="dagger.json",
+        name="example",
+        engine_version="v0.21.8",
+        dependencies=(DaggerDependency(name="unrelated", source="modules/unrelated"),),
+    )
+    snapshot = replace(_snapshot(INGRESS), dagger_configs=(root,))
+
+    # When consumer dependency provenance is evaluated
+    codes = _codes(snapshot)
+
+    # Then consumers must use immutable remote modules instead of local executable code
+    assert "invalid-dagger-dependency" in codes
 
 
 def test_should_reject_arbitrary_command_dagger_argument() -> None:
