@@ -1,0 +1,8 @@
+/.venv
+/**/__pycache__
+/sdk
+/.env
+/.coverage
+/.mypy_cache
+/.pytest_cache
+/.ruff_cache
