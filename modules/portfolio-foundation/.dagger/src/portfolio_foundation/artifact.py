@@ -13,7 +13,15 @@ import dagger
 from dagger import dag
 
 from .identity import CommitIdentity, FullSha, RepositoryRef
-from .source import HASH_IMAGE, EntryType, InventoryEntry, _dagger_paths, _dagger_sha256
+from .source import (
+    HASH_IMAGE,
+    INVENTORY_TRAILER,
+    EntryType,
+    InventoryEntry,
+    SourceMismatch,
+    _parse_inventory,
+    _require_unique_entry_paths,
+)
 
 ENGINE_VERSION: Final = "v0.21.8"
 EPOCH: Final = 0
@@ -26,6 +34,53 @@ TOOLCHAIN: Final = ("dagger-engine:v0.21.8", f"artifact-hasher:{HASH_IMAGE}")
 RUN_ID_PATTERN: Final = re.compile(r"[1-9][0-9]*")
 SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 NORMAL_MODES: Final = frozenset((0o644, 0o755))
+ARTIFACT_INVENTORY_SCRIPT: Final = r"""set -eu
+zero=$(printf '%064d' 0)
+records=/tmp/portfolio-foundation-inventory
+output=/normalized
+: > "$records"
+mkdir -p "$output"
+find /source -mindepth 1 -exec sh -c '
+records=$1
+zero=$2
+output=$3
+shift 3
+for full_path do
+  path=${full_path#/source/}
+  if [ -L "$full_path" ]; then
+    kind=symlink
+    digest=$zero
+    permissions=0
+  elif [ -f "$full_path" ]; then
+    kind=regular
+    digest=$(sha256sum "$full_path")
+    digest=${digest%% *}
+    permissions=$(stat -c "%a" "$full_path")
+    target=$output/$path
+    mkdir -p "$(dirname "$target")"
+    cp "$full_path" "$target"
+    mode=644
+    if [ $((0$permissions & 0111)) -ne 0 ]; then mode=755; fi
+    chmod "$mode" "$target"
+  elif [ -d "$full_path" ]; then
+    kind=directory
+    digest=$zero
+    permissions=0
+  else
+    kind=unknown
+    digest=$zero
+    permissions=0
+  fi
+  encoded=$(printf "%s" "$path" | base64 | tr -d "\n")
+  printf "%s\t%s\t%s\t%s\n" "$kind" "$permissions" "$digest" "$encoded" >> "$records"
+done
+' sh "$records" "$zero" "$output" {} +
+count=$(wc -l < "$records" | tr -d "[:space:]")
+digest=$(sha256sum "$records")
+digest=${digest%% *}
+cat "$records"
+printf "%s\t%s\t%s\n" "$INVENTORY_TRAILER" "$count" "$digest"
+"""
 
 
 class ArtifactEnvelopeError(ValueError):
@@ -122,6 +177,14 @@ class ArtifactEvidence:
 
     directory: dagger.Directory
     manifest: ArtifactManifest
+
+
+@dataclass(frozen=True)
+class _ArtifactInventory:
+    """Authenticated nodes and normalized bytes from one utility step."""
+
+    nodes: tuple[ArtifactNode, ...]
+    directory: dagger.Directory
 
 
 def build_manifest(files: tuple[ArtifactFile, ...], context: ArtifactContext) -> ArtifactManifest:
@@ -262,37 +325,52 @@ async def collect_artifact_evidence(
     producing_run_id: str,
 ) -> ArtifactEvidence:
     """Observe all nodes, reject gaps, and normalize accepted artifact output."""
-    nodes = await _artifact_nodes(artifact)
-    _validate_nodes(nodes, allowed_roots)
-    files = _normalized_files(nodes)
+    inventory = await _artifact_inventory(artifact)
+    _validate_nodes(inventory.nodes, allowed_roots)
+    files = _normalized_files(inventory.nodes)
     context = ArtifactContext(identity, module_sha, allowed_roots, producing_run_id)
-    return ArtifactEvidence(_normalized_directory(artifact, files), build_manifest(files, context))
+    return ArtifactEvidence(inventory.directory, build_manifest(files, context))
 
 
 async def _artifact_nodes(directory: dagger.Directory) -> tuple[ArtifactNode, ...]:
     """Return every Dagger node including directories, links, modes, and file digests."""
-    paths = await _dagger_paths(directory, "")
-    return tuple(await asyncio.gather(*(_artifact_node(directory, path) for path in paths)))
+    return (await _artifact_inventory(directory)).nodes
 
 
-async def _artifact_node(directory: dagger.Directory, path: str) -> ArtifactNode:
-    """Read one node without following links and hash only regular-file bytes."""
-    stat = directory.stat(path, do_not_follow_symlinks=True)
-    file_type, permissions = await asyncio.gather(stat.file_type(), stat.permissions())
-    entry_type = _entry_type(file_type)
-    digest = await _dagger_sha256(directory, path) if entry_type is EntryType.REGULAR else "0" * 64
-    return ArtifactNode(path, entry_type, digest, permissions)
+async def _artifact_inventory(directory: dagger.Directory) -> _ArtifactInventory:
+    """Inventory and bulk-normalize one tree through a shared pinned step."""
+    container = _artifact_inventory_container(directory)
+    entries = await _artifact_inventory_entries(container)
+    nodes = tuple(sorted((_artifact_node(entry) for entry in entries), key=lambda node: node.path))
+    return _ArtifactInventory(nodes, _normalized_directory(container))
 
 
-def _entry_type(file_type: dagger.FileType | None) -> EntryType:
-    """Map Dagger's complete node vocabulary into this envelope's closed set."""
-    if file_type is dagger.FileType.DIRECTORY:
-        return EntryType.DIRECTORY
-    if file_type is dagger.FileType.REGULAR:
-        return EntryType.REGULAR
-    if file_type is dagger.FileType.SYMLINK:
-        return EntryType.SYMLINK
-    return EntryType.UNKNOWN
+async def _artifact_inventory_entries(
+    container: dagger.Container,
+) -> tuple[InventoryEntry, ...]:
+    """Parse and authenticate every raw artifact inventory record."""
+    try:
+        entries = _parse_inventory(await container.stdout())
+        _require_unique_entry_paths(entries)
+    except SourceMismatch as error:
+        raise ArtifactEnvelopeError("artifact inventory output is malformed") from error
+    return entries
+
+
+def _artifact_node(entry: InventoryEntry) -> ArtifactNode:
+    """Adapt one authenticated raw inventory record to artifact policy."""
+    return ArtifactNode(entry.path, entry.entry_type, entry.sha256, entry.permissions)
+
+
+def _artifact_inventory_container(directory: dagger.Directory) -> dagger.Container:
+    """Inventory and normalize one read-only tree in one pinned execution."""
+    return (
+        dag.container()
+        .from_(HASH_IMAGE)
+        .with_env_variable("INVENTORY_TRAILER", INVENTORY_TRAILER)
+        .with_mounted_directory("/source", directory, read_only=True)
+        .with_exec(["sh", "-ec", ARTIFACT_INVENTORY_SCRIPT])
+    )
 
 
 def _validate_nodes(nodes: tuple[ArtifactNode, ...], roots: tuple[str, ...]) -> None:
@@ -350,14 +428,9 @@ def _normalized_file(node: ArtifactNode) -> ArtifactFile:
     return ArtifactFile(node.path, node.sha256, 0o755 if node.permissions & 0o111 else 0o644)
 
 
-def _normalized_directory(
-    source: dagger.Directory, files: tuple[ArtifactFile, ...]
-) -> dagger.Directory:
-    """Copy only manifest files with canonical modes and epoch timestamp zero."""
-    output = dag.directory()
-    for file in files:
-        output = output.with_file(file.path, source.file(file.path), permissions=file.mode)
-    return output.with_timestamps(EPOCH)
+def _normalized_directory(container: dagger.Container) -> dagger.Directory:
+    """Return the bulk-normalized output from the authenticated inventory step."""
+    return container.directory("/normalized").with_timestamps(EPOCH)
 
 
 def sha256_sums(manifest: ArtifactManifest) -> str:
