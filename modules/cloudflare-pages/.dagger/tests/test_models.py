@@ -21,10 +21,18 @@ def test_should_bind_repository_project_branch_and_domain() -> None:
         project="edge-reco",
         branch="main",
         live_domain="edge-reco.com",
+        deploy_root="dist",
     )
 
     # Then
     assert target.repository.name == target.project
+    assert target.deploy_root == "dist"
+
+
+@pytest.mark.parametrize("root", ("", ".", "../dist", "dist/", "dist/site"))
+def test_should_reject_noncanonical_deploy_root(root: str) -> None:
+    with pytest.raises(ValueError, match="deploy root"):
+        PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", root)
 
 
 def test_should_reject_mixed_foreign_target() -> None:
@@ -35,6 +43,7 @@ def test_should_reject_mixed_foreign_target() -> None:
             project="almamesh",
             branch="main",
             live_domain="edge-reco.com",
+            deploy_root="dist",
         )
 
 
@@ -78,6 +87,40 @@ def test_should_reject_abbreviated_source_identity() -> None:
         GitHubEvidence.model_validate(payload)
 
 
+@pytest.mark.parametrize("value", ("x" + "a" * 40, "a" * 40 + "y", "a" * 40 + "\n"))
+def test_should_reject_embedded_source_identity(value: str) -> None:
+    with pytest.raises(ValidationError):
+        GitHubEvidence.model_validate(_github_evidence() | {"commit_sha": value})
+
+
+@pytest.mark.parametrize("value", ("x41", "41x", "41\n"))
+def test_should_reject_embedded_numeric_identity(value: str) -> None:
+    with pytest.raises(ValidationError):
+        GitHubEvidence.model_validate(_github_evidence() | {"check_run_id": value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("app_id", 1),
+        ("check_name", "Other"),
+        ("workflow_name", "Other"),
+        ("workflow_path", "other.yml"),
+        ("branch", "release"),
+    ),
+)
+def test_should_reject_non_dagger_foundation_evidence(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        GitHubEvidence.model_validate(_github_evidence() | {field: value})
+
+
+def test_should_reject_incoherent_foundation_timestamps() -> None:
+    with pytest.raises(ValidationError, match="timestamps are incoherent"):
+        GitHubEvidence.model_validate(
+            _github_evidence() | {"check_completed_at": "2026-08-27T19:00:00Z"}
+        )
+
+
 def test_should_reject_unknown_external_project_field() -> None:
     # Given
     payload = {
@@ -96,7 +139,7 @@ def test_should_reject_unknown_external_project_field() -> None:
 
 def test_should_keep_target_immutable() -> None:
     # Given
-    target = PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com")
+    target = PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist")
 
     # When / Then
     with pytest.raises(AttributeError):
@@ -107,7 +150,7 @@ def test_should_keep_target_immutable() -> None:
 def test_should_reject_noncanonical_repository_text(repository: str) -> None:
     # Given / When / Then
     with pytest.raises(ValueError, match="repository"):
-        PagesTarget(repository, "edge-reco", "main", "edge-reco.com")
+        PagesTarget(repository, "edge-reco", "main", "edge-reco.com", "dist")
 
 
 def test_should_reject_git_suffix_repository_component() -> None:
@@ -129,7 +172,7 @@ def test_should_reject_noncanonical_target_parts(
 ) -> None:
     # Given / When / Then
     with pytest.raises(ValueError):
-        PagesTarget("hseshadr/edge-reco", "edge-reco", branch, domain, domains)
+        PagesTarget("hseshadr/edge-reco", "edge-reco", branch, domain, "dist", domains)
 
 
 @pytest.mark.parametrize(("run_id", "attempt"), (("0", 1), ("44", 0)))

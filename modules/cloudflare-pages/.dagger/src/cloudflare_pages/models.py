@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 OWNER_PATTERN: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
 REPOSITORY_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -16,8 +17,10 @@ DOMAIN_PATTERN: Final = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
 )
 CLOSED_MODEL: Final = ConfigDict(extra="forbid", frozen=True, strict=True)
-FULL_SHA_TEXT: Final = r"[0-9a-f]{40}"
-NUMERIC_ID_TEXT: Final = r"[1-9][0-9]*"
+FULL_SHA_TEXT: Final = r"\A[0-9a-f]{40}\z"
+NUMERIC_ID_TEXT: Final = r"\A[1-9][0-9]*\z"
+TIMESTAMP_TEXT: Final = r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\z"
+DEPLOY_ROOT_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 class ClosedModel(BaseModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
@@ -29,28 +32,38 @@ class ClosedModel(BaseModel):  # type: ignore[explicit-any]  # Pydantic v2 base 
 class GitHubEvidence(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
     """The complete non-secret exact-green serialization from foundation."""
 
-    app_id: int = Field(gt=0)
-    branch: str
-    check_completed_at: str
-    check_name: str
+    app_id: Literal[15368]
+    branch: Literal["main"]
+    check_completed_at: str = Field(pattern=TIMESTAMP_TEXT)
+    check_name: Literal["Dagger"]
     check_run_id: str = Field(pattern=NUMERIC_ID_TEXT)
-    check_started_at: str
+    check_started_at: str = Field(pattern=TIMESTAMP_TEXT)
     check_suite_id: str = Field(pattern=NUMERIC_ID_TEXT)
     commit_sha: str = Field(pattern=FULL_SHA_TEXT)
     repository: str
     run_attempt: int = Field(gt=0)
-    workflow_created_at: str
+    workflow_created_at: str = Field(pattern=TIMESTAMP_TEXT)
     workflow_job_id: str = Field(pattern=NUMERIC_ID_TEXT)
-    workflow_name: str
-    workflow_path: str
+    workflow_name: Literal["Dagger"]
+    workflow_path: Literal[".github/workflows/dagger.yml"]
     workflow_run_id: str = Field(pattern=NUMERIC_ID_TEXT)
-    workflow_started_at: str
-    workflow_updated_at: str
+    workflow_started_at: str = Field(pattern=TIMESTAMP_TEXT)
+    workflow_updated_at: str = Field(pattern=TIMESTAMP_TEXT)
 
     @property
     def attempt_identity(self) -> tuple[str, int]:
         """Return the exact Actions run and attempt that authorized delivery."""
         return self.workflow_run_id, self.run_attempt
+
+    @model_validator(mode="after")
+    def require_chronology(self) -> GitHubEvidence:
+        check = _ordered(self.check_started_at, self.check_completed_at)
+        workflow = _ordered(
+            self.workflow_created_at, self.workflow_started_at, self.workflow_updated_at
+        )
+        if not check or not workflow:
+            raise ValueError("foundation evidence timestamps are incoherent")
+        return self
 
 
 class PagesSourceConfig(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
@@ -122,6 +135,7 @@ class PagesDeployment(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2
     """Projected raw deployment fields needed for exact verification."""
 
     id: str
+    short_id: str = Field(pattern=r"\A[a-f0-9]{8}\z")
     url: str
     project_id: str
     project_name: str
@@ -159,6 +173,17 @@ class DeploymentsResponse(ClosedModel):  # type: ignore[explicit-any]  # Pydanti
     result_info: ResultInfo
 
 
+class WranglerOutput(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """Pinned Wrangler 4.103.0 pages-deploy JSONL record."""
+
+    type: Literal["pages-deploy"]
+    version: Literal[1]
+    pages_project: str
+    deployment_id: str
+    url: str
+    timestamp: str = Field(pattern=TIMESTAMP_TEXT)
+
+
 @dataclass(frozen=True)
 class RepositoryIdentity:
     """Canonical GitHub owner and repository components."""
@@ -186,6 +211,7 @@ class PagesTarget:
     project: str
     branch: str
     live_domain: str
+    deploy_root: str
     domains: tuple[str, ...]
 
     def __init__(
@@ -194,15 +220,19 @@ class PagesTarget:
         project: str,
         branch: str,
         live_domain: str,
+        deploy_root: str,
         domains: tuple[str, ...] = (),
     ) -> None:
         identity = RepositoryIdentity.parse(repository)
         required_domains = _canonical_domains(live_domain, domains)
         _require_target_binding(identity, project, branch)
+        if DEPLOY_ROOT_PATTERN.fullmatch(deploy_root) is None:
+            raise ValueError("deploy root must be one canonical directory name")
         object.__setattr__(self, "repository", identity)
         object.__setattr__(self, "project", project)
         object.__setattr__(self, "branch", branch)
         object.__setattr__(self, "live_domain", live_domain)
+        object.__setattr__(self, "deploy_root", deploy_root)
         object.__setattr__(self, "domains", required_domains)
 
 
@@ -214,7 +244,7 @@ class AttemptIdentity:
     run_attempt: int
 
     def __post_init__(self) -> None:
-        valid_run = re.fullmatch(NUMERIC_ID_TEXT, self.workflow_run_id) is not None
+        valid_run = re.fullmatch(r"[1-9][0-9]*", self.workflow_run_id) is not None
         if not valid_run or self.run_attempt <= 0:
             raise ValueError("attempt identity must use a numeric run and positive attempt")
 
@@ -233,10 +263,23 @@ class ProviderDeploymentEvidence:
     attempt_identity: AttemptIdentity
 
 
+@dataclass(frozen=True)
+class CreatedDeployment:
+    """The immutable deployment identity returned by this Wrangler upload."""
+
+    deployment_id: str
+    deployment_url: str
+
+
 def _valid_repository(owner: str, name: str) -> bool:
     owner_valid = OWNER_PATTERN.fullmatch(owner) is not None
     name_valid = REPOSITORY_PATTERN.fullmatch(name) is not None and not name.endswith(".git")
     return owner_valid and name_valid
+
+
+def _ordered(*values: str) -> bool:
+    timestamps = tuple(datetime.fromisoformat(value.replace("Z", "+00:00")) for value in values)
+    return timestamps == tuple(sorted(timestamps))
 
 
 def _canonical_domains(primary: str, aliases: tuple[str, ...]) -> tuple[str, ...]:

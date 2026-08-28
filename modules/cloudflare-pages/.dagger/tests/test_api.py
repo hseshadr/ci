@@ -26,7 +26,7 @@ PROJECT_ID = "7b162ea7-7367-4d4a-a28a-cb84f88f6"
 
 
 def _target() -> PagesTarget:
-    return PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com")
+    return PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist")
 
 
 def _problem() -> dict[str, object]:
@@ -69,6 +69,7 @@ def _project_payload() -> str:
 def _deployment(commit_sha: str = FULL_SHA) -> dict[str, object]:
     return {
         "id": "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+        "short_id": "f64788e9",
         "url": "https://f64788e9.edge-reco.pages.dev",
         "project_id": "7b162ea7-7367-4d4a-a28a-cb84f88f6",
         "project_name": "edge-reco",
@@ -237,13 +238,22 @@ def test_should_reject_credential_bearing_deployment_url() -> None:
         select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
 
 
-def test_should_reject_ambiguous_exact_sha() -> None:
+def test_should_reject_hostname_not_equal_to_documented_short_id() -> None:
+    deployment = _deployment()
+    deployment["url"] = "https://foreign.edge-reco.pages.dev"
+    response = parse_deployments_response(_deployments_payload(deployment))
+    with pytest.raises(CloudflarePolicyError, match="deployment identity"):
+        select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
+
+
+def test_should_select_latest_when_same_sha_has_prior_deployments() -> None:
     # Given
     response = parse_deployments_response(_deployments_payload(_deployment(), _deployment()))
 
     # When / Then
-    with pytest.raises(CloudflarePolicyError, match="ambiguous"):
-        select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
+    selected = select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
+    assert selected is not None
+    assert selected.id == "f64788e9-fccd-4d4a-a28a-cb84f88f6"
 
 
 @pytest.mark.parametrize("status", ("failure", "canceled"))

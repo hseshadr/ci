@@ -26,12 +26,11 @@ from cloudflare_pages.api import (
 )
 from cloudflare_pages.main import (
     CurlPagesOperations,
-    TargetInputs,
-    _provider_context,
     wrangler_deploy_args,
 )
 from cloudflare_pages.models import (
     AttemptIdentity,
+    CreatedDeployment,
     GitHubEvidence,
     PagesTarget,
     ProviderDeploymentEvidence,
@@ -49,10 +48,11 @@ import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-ACCOUNT = "a" * 32
+ACCOUNT = "0123456789abcdef0123456789abcdef"
 PROJECT = "/client/v4/accounts/" + ACCOUNT + "/pages/projects/edge-reco"
 EVENTS: list[str] = []
 DEPLOYMENT_READS = 0
+GIT_DISABLED = False
 SHA = "a" * 40
 
 def project(enabled: bool = True, preview: str = "all") -> dict[str, object]:
@@ -65,6 +65,7 @@ def project(enabled: bool = True, preview: str = "all") -> dict[str, object]:
 
 def deployment() -> dict[str, object]:
     return {"id": "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+        "short_id": "f64788e9",
         "url": "https://f64788e9.edge-reco.pages.dev",
         "project_id": "7b162ea7-7367-4d4a-a28a-cb84f88f6", "project_name": "edge-reco",
         "environment": "production", "latest_stage": {"name": "deploy", "status": "success"},
@@ -87,21 +88,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self) -> None:
         if self.path == "/": self.send({}); return
-        if self.path == PROJECT: EVENTS.append("get-project"); self.send(project()); return
+        if self.path == PROJECT:
+            EVENTS.append("get-project"); self.send(project(not GIT_DISABLED, "none" if GIT_DISABLED else "all")); return
         if self.path == PROJECT + "/deployments?env=production&per_page=10":
             EVENTS.append("get-deployments"); self.send(deployments()); return
-        if self.path.endswith("/__mock/events"): self.send(EVENTS); return
+        if self.path.endswith("/__mock/events"):
+            payload = project(False, "none"); payload["result"]["domains"] = EVENTS
+            self.send(payload); return
+        if self.path.endswith("/__mock/preflight"):
+            EVENTS.append("wrangler-preflight"); self.send(project()); return
+        if self.path.endswith("/__mock/upload"):
+            EVENTS.append("upload"); self.send(project(False, "none")); return
         self.send_error(404)
     def do_PATCH(self) -> None:
+        global GIT_DISABLED
         size = int(self.headers.get("Content-Length", "0")); body = self.rfile.read(size)
         if self.path == PROJECT:
             payload = json.loads(body); config = payload["source"]["config"]
             assert config == {"preview_deployment_setting": "none", "production_deployments_enabled": False}
-            EVENTS.append("disable-git"); self.send(project(False, "none")); return
-        if self.path.endswith("/__mock/preflight"): EVENTS.append("wrangler-preflight"); self.send({}); return
-        if self.path.endswith("/__mock/upload"):
-            assert json.loads(body) == {"artifact": "verified", "sha": SHA}
-            EVENTS.append("upload"); self.send({}); return
+            GIT_DISABLED = True; EVENTS.append("disable-git"); self.send(project(False, "none")); return
         self.send_error(404)
 
 health = HTTPServer(("0.0.0.0", 8080), Handler)
@@ -116,22 +121,43 @@ import json
 import dagger
 from dagger import dag, function, object_type
 from cloudflare_pages.api import deploy_verified_artifact
-from cloudflare_pages.main import CurlPagesOperations, _verify_envelope
-from cloudflare_pages.models import AttemptIdentity, GitHubEvidence, PagesTarget
+from cloudflare_pages.main import (CurlPagesOperations, WRANGLER_OUTPUT_PATH, _jq_binary,
+  _uncached, _verify_envelope, _wrangler_script, wrangler_deploy_args)
+from cloudflare_pages.models import AttemptIdentity, CreatedDeployment, GitHubEvidence, PagesTarget
 
 PYTHON_IMAGE = "python:3.13.14-slim@sha256:9662417aace5ae7b8e2609cce472b72a8958e134ba372808abe9cc1a0c0125e6"
 SHA = "a" * 40
 MOCK_SERVER = __MOCK_SERVER__
 CA_CERT = __CA_CERT__
 PRIVATE_KEY = __PRIVATE_KEY__
+FAKE_WRANGLER = r'''#!/bin/sh
+set -eu
+[ "$1 $2 $3" = "pages deploy /artifact" ]
+[ "$(find /artifact -mindepth 1 -maxdepth 1 -printf '%f\n')" = "index.html" ]
+[ "$(cat /artifact/index.html)" = "verified artifact" ]
+cat > "$WRANGLER_OUTPUT_FILE_PATH" <<'EOF'
+{"type":"pages-deploy","version":1,"pages_project":"edge-reco","deployment_id":"f64788e9-fccd-4d4a-a28a-cb84f88f6","url":"https://f64788e9.edge-reco.pages.dev","timestamp":"2026-08-27T20:00:00Z"}
+{"type":"pages-deploy-detailed","version":1,"pages_project":"edge-reco","deployment_id":"f64788e9-fccd-4d4a-a28a-cb84f88f6","url":"https://f64788e9.edge-reco.pages.dev","timestamp":"2026-08-27T20:00:00Z"}
+EOF
+'''
 
 class MockOperations(CurlPagesOperations):
     async def wrangler_preflight(self) -> None:
-        await super().wrangler_preflight(); await self._request("PATCH", "/__mock/preflight", "{}")
-    async def upload(self, artifact: dagger.Directory, source_sha: str) -> None:
-        assert await artifact.file("dist/index.html").contents() == "verified artifact"
-        body = json.dumps({"artifact": "verified", "sha": source_sha}, separators=(",", ":"))
-        await self._request("PATCH", "/__mock/upload", body)
+        await super().wrangler_preflight(); await self._request("GET", "/__mock/preflight")
+    async def upload(self, artifact: dagger.Directory, source_sha: str) -> CreatedDeployment:
+        created = await super().upload(artifact, source_sha)
+        await self._request("GET", "/__mock/upload")
+        return created
+    def _upload_container(self, artifact: dagger.Directory, source_sha: str) -> dagger.Container:
+        base = dag.container(platform=dagger.Platform("linux/amd64")).from_(PYTHON_IMAGE)
+        base = base.with_new_file("/usr/local/bin/wrangler", FAKE_WRANGLER, permissions=0o755)
+        base = base.with_mounted_directory("/artifact", artifact, read_only=True)
+        base = base.with_mounted_temp("/run/provider-output")
+        base = base.with_mounted_temp("/run/provider-cache").with_mounted_temp("/run/provider-config")
+        base = base.with_env_variable("WRANGLER_OUTPUT_FILE_PATH", WRANGLER_OUTPUT_PATH)
+        base = base.with_mounted_file("/run/jq", _jq_binary())
+        command = ["/bin/sh", "-euc", _wrangler_script(), "--"]
+        return _uncached(base).with_exec([*command, *wrangler_deploy_args(self.target, source_sha)])
 
 def evidence() -> GitHubEvidence:
     return GitHubEvidence.model_validate({"app_id":15368,"branch":"main",
@@ -162,12 +188,12 @@ class ProviderContract:
         artifact = dag.directory().with_new_file("dist/index.html", "verified artifact")
         envelope = dag.foundation().envelope(artifact, "hseshadr/edge-reco@" + SHA, "b" * 40 + ":44", ["dist"])
         verified = await _verify_envelope(envelope, "hseshadr/edge-reco@" + SHA, "b" * 40 + ":44", ["dist"])
-        token = dag.set_secret("token", "t" * 32); account = dag.set_secret("account", "a" * 32)
+        token = dag.set_secret("token", "t" * 32); account = dag.set_secret("account", "0123456789abcdef0123456789abcdef")
         mock = service(); await mock.start()
-        operations = MockOperations(token, account, PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com"), mock, fixture_files().file("ca.pem"))
-        result = await deploy_verified_artifact(operations, verified, operations.target, evidence(), AttemptIdentity("44", 2))
-        events = json.loads(await operations._request("GET", "/__mock/events"))
-        assert events == ["get-project", "get-deployments", "disable-git", "wrangler-preflight", "upload", "get-deployments"]
+        operations = MockOperations(token, account, PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist"), mock, fixture_files().file("ca.pem"))
+        result = await deploy_verified_artifact(operations, verified.directory("dist"), operations.target, evidence(), AttemptIdentity("44", 2))
+        events = json.loads(await operations._request("GET", "/__mock/events"))["result"]["domains"]
+        assert events == ["wrangler-preflight", "get-project", "get-deployments", "disable-git", "get-project", "upload", "get-deployments"]
         assert result.source_sha == SHA
         tampered = envelope.with_new_file("artifact/dist/index.html", "tampered")
         try: await _verify_envelope(tampered, "hseshadr/edge-reco@" + SHA, "b" * 40 + ":44", ["dist"])
@@ -177,7 +203,7 @@ class ProviderContract:
 
 
 def _target() -> PagesTarget:
-    return PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com")
+    return PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist")
 
 
 def _github_evidence() -> GitHubEvidence:
@@ -249,10 +275,23 @@ def _deployment_payload(status: str = "success") -> str:
     )
 
 
-def _deployment(status: str) -> dict[str, object]:
+def _deployments_payload(*results: dict[str, object]) -> str:
+    payload = json.loads(_deployment_payload("absent"))
+    payload["result"] = list(results)
+    payload["result_info"]["count"] = len(results)
+    payload["result_info"]["total_count"] = len(results)
+    payload["result_info"]["total_pages"] = int(bool(results))
+    return json.dumps(payload)
+
+
+def _deployment(
+    status: str, deployment_id: str = "f64788e9-fccd-4d4a-a28a-cb84f88f6"
+) -> dict[str, object]:
+    short_id = deployment_id[:8]
     return {
-        "id": "f64788e9-fccd-4d4a-a28a-cb84f88f6",
-        "url": "https://f64788e9.edge-reco.pages.dev",
+        "id": deployment_id,
+        "short_id": short_id,
+        "url": f"https://{short_id}.edge-reco.pages.dev",
         "project_id": "7b162ea7-7367-4d4a-a28a-cb84f88f6",
         "project_name": "edge-reco",
         "environment": "production",
@@ -288,6 +327,7 @@ class FakeOperations:
     deployments: list[str]
     project: str = field(default_factory=_project_payload)
     patched_project: str | None = None
+    revalidated_project: str | None = None
     disable_production: bool = True
     disable_preview: bool = True
     events: list[str] = field(default_factory=list)
@@ -296,6 +336,8 @@ class FakeOperations:
 
     async def get_project(self) -> str:
         self.events.append("get-project")
+        if "disable-git" in self.events and self.revalidated_project is not None:
+            return self.revalidated_project
         return self.project
 
     async def get_deployments(self) -> str:
@@ -310,14 +352,19 @@ class FakeOperations:
             config["production_deployments_enabled"] = False
         if self.disable_preview:
             config["preview_deployment_setting"] = "none"
-        return json.dumps(payload)
+        self.project = json.dumps(payload)
+        return self.project
 
     async def wrangler_preflight(self) -> None:
         self.events.append("wrangler-preflight")
 
-    async def upload(self, artifact: object, source_sha: str) -> None:
+    async def upload(self, artifact: object, source_sha: str) -> CreatedDeployment:
         self.events.append(f"upload:{source_sha}")
         self.uploaded_artifact = artifact
+        return CreatedDeployment(
+            "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+            "https://f64788e9.edge-reco.pages.dev",
+        )
 
     async def sleep(self, seconds: int) -> None:
         self.events.append(f"sleep:{seconds}")
@@ -332,6 +379,19 @@ class ImmediateTimeout:
 
     async def __aexit__(self, error_type: object, error: object, traceback: object) -> None:
         return None
+
+
+@dataclass
+class FakeDirectory:
+    selected: str = ""
+    digested: bool = False
+
+    def directory(self, path: str) -> FakeDirectory:
+        return FakeDirectory(path)
+
+    async def digest(self) -> str:
+        self.digested = True
+        return "sha256:fixture"
 
 
 @dataclass(frozen=True)
@@ -362,11 +422,14 @@ class FakeContainer:
         return self.output
 
     def file(self, path: str) -> FakeContainer:
-        assert path == "/work/cloudflare-response.json"
+        assert path in {"/work/cloudflare-response.json", main_module.WRANGLER_OUTPUT_PATH}
         return self
 
     async def contents(self) -> str:
         return self.response
+
+    async def size(self) -> int:
+        return len(self.response.encode())
 
     async def sync(self) -> None:
         self.synced = True
@@ -394,20 +457,26 @@ class FakeRequestContainer:
     def with_workdir(self, *_: object, **__: object) -> Self:
         return self._record("workdir")
 
+    def with_mounted_temp(self, *_: object, **__: object) -> Self:
+        return self._record("temp")
+
     def with_mounted_secret(self, *_: object, **__: object) -> Self:
         return self._record("secret")
 
     def with_service_binding(self, *_: object, **__: object) -> Self:
         return self._record("service")
 
-    def with_file(self, *_: object, **__: object) -> Self:
-        return self._record("ca")
+    def with_mounted_file(self, path: object, *_: object, **__: object) -> Self:
+        return self._record("ca" if path == "/run/mock-ca.pem" else "jq")
 
     def with_env_variable(self, *_: object, **__: object) -> Self:
         return self._record("nonce")
 
     def with_exec(self, *_: object, **__: object) -> Self:
         return self._record("exec")
+
+    def file(self, *_: object, **__: object) -> Self:
+        return self._record("file")
 
 
 @dataclass(frozen=True)
@@ -418,12 +487,53 @@ class FakeDag:
         return self.container_value
 
 
+@dataclass
+class FakeGreenEvidence:
+    value: str
+
+    async def serialization(self) -> str:
+        return self.value
+
+
+@dataclass
+class FakeFoundation:
+    value: str
+    calls: list[tuple[object, str]] = field(default_factory=list)
+
+    def green_main(self, github_token: object, repository: str) -> FakeGreenEvidence:
+        self.calls.append((github_token, repository))
+        return FakeGreenEvidence(self.value)
+
+
+@dataclass(frozen=True)
+class FakeEvidenceDag:
+    foundation_value: FakeFoundation
+
+    def foundation(self) -> FakeFoundation:
+        return self.foundation_value
+
+
 def test_should_bind_foundation_evidence_to_explicit_attempt() -> None:
     # Given
     attempt = AttemptIdentity("44", 2)
 
     # When / Then
     require_evidence_binding(_target(), _github_evidence(), attempt)
+
+
+@pytest.mark.asyncio
+async def test_should_obtain_exact_green_from_local_foundation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foundation = FakeFoundation(_github_evidence().model_dump_json())
+    monkeypatch.setattr(main_module, "dag", FakeEvidenceDag(foundation))
+    token = cast(dagger.Secret, object())
+    inputs = main_module.TargetInputs(
+        "hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist", ()
+    )
+    context = await main_module._provider_context(token, "44", 2, inputs)
+    assert foundation.calls == [(token, "hseshadr/edge-reco")]
+    assert context.github.commit_sha == FULL_SHA
 
 
 def test_should_reject_wrong_explicit_attempt() -> None:
@@ -445,18 +555,6 @@ def test_should_reject_foreign_foundation_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_should_reject_attempt_before_envelope_or_provider_work() -> None:
-    # Given / When / Then
-    with pytest.raises(CloudflarePolicyError, match="attempt identity"):
-        await _provider_context(
-            _github_evidence().model_dump_json(),
-            "44",
-            3,
-            TargetInputs("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", ()),
-        )
-
-
-@pytest.mark.asyncio
 async def test_should_deploy_one_verified_artifact_in_required_order() -> None:
     # Given
     artifact = object()
@@ -469,16 +567,48 @@ async def test_should_deploy_one_verified_artifact_in_required_order() -> None:
 
     # Then
     assert operations.events == [
+        "wrangler-preflight",
         "get-project",
         "get-deployments",
         "disable-git",
-        "wrangler-preflight",
+        "get-project",
         f"upload:{FULL_SHA}",
         "get-deployments",
     ]
     assert operations.uploaded_artifact is artifact
     assert evidence.source_sha == FULL_SHA
     assert evidence.attempt_identity == AttemptIdentity("44", 2)
+
+
+@pytest.mark.asyncio
+async def test_should_ignore_old_same_sha_and_wait_for_created_id() -> None:
+    old = _deployment("success", "11111111-fccd-4d4a-a28a-cb84f88f6")
+    pending = _deployment("active")
+    current = _deployment("success")
+    operations = FakeOperations(
+        [
+            _deployments_payload(old),
+            _deployments_payload(old, pending),
+            _deployments_payload(old, current),
+        ]
+    )
+    evidence = await deploy_verified_artifact(
+        operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+    )
+    assert evidence.deployment_id == "f64788e9-fccd-4d4a-a28a-cb84f88f6"
+    assert operations.sleeps == [1]
+
+
+@pytest.mark.asyncio
+async def test_should_report_created_failure_despite_old_same_sha_success() -> None:
+    old = _deployment("success", "11111111-fccd-4d4a-a28a-cb84f88f6")
+    failed = _deployment("failure")
+    operations = FakeOperations([_deployments_payload(old), _deployments_payload(old, failed)])
+    with pytest.raises(CloudflarePolicyError, match="deployment failed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert operations.events.count("disable-git") == 1
 
 
 @pytest.mark.asyncio
@@ -556,7 +686,7 @@ async def test_should_not_mutate_foreign_project() -> None:
         await deploy_verified_artifact(
             operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
         )
-    assert operations.events == ["get-project"]
+    assert operations.events == ["wrangler-preflight", "get-project"]
 
 
 @pytest.mark.asyncio
@@ -574,7 +704,12 @@ async def test_should_reject_project_change_after_single_patch() -> None:
         await deploy_verified_artifact(
             operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
         )
-    assert operations.events == ["get-project", "get-deployments", "disable-git"]
+    assert operations.events == [
+        "wrangler-preflight",
+        "get-project",
+        "get-deployments",
+        "disable-git",
+    ]
 
 
 @pytest.mark.asyncio
@@ -599,6 +734,18 @@ async def test_should_reject_git_preview_mode_left_enabled() -> None:
         await deploy_verified_artifact(
             operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
         )
+
+
+@pytest.mark.asyncio
+async def test_should_revalidate_disabled_project_immediately_before_upload() -> None:
+    operations = FakeOperations(
+        [_deployment_payload("absent")], revalidated_project=_project_payload()
+    )
+    with pytest.raises(CloudflarePolicyError, match="production deployment remains"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert not any(event.startswith("upload:") for event in operations.events)
 
 
 @pytest.mark.asyncio
@@ -748,7 +895,7 @@ async def test_should_sanitize_transport_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
-    container = FakeContainer("500", '{"errors":[]}')
+    container = FakeContainer('500\n{"errors":[]}', "")
     operations = CurlPagesOperations(
         cast(dagger.Secret, object()), cast(dagger.Secret, object()), _target()
     )
@@ -768,7 +915,7 @@ async def test_should_read_successful_transport_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
-    container = FakeContainer("200\n", "provider-body")
+    container = FakeContainer("200\nprovider-body", "")
     operations = CurlPagesOperations(
         cast(dagger.Secret, object()), cast(dagger.Secret, object()), _target()
     )
@@ -783,11 +930,44 @@ async def test_should_read_successful_transport_response(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "limit"),
+    (("200", main_module.API_RESPONSE_BYTES), ("500", main_module.API_ERROR_BYTES)),
+)
+async def test_should_reject_oversized_provider_response(status: str, limit: int) -> None:
+    container = FakeContainer(status + "\n" + "x" * (limit + 1), "")
+    with pytest.raises(api_module.CloudflareApiError, match="byte limit"):
+        await main_module._request_result(cast(dagger.Container, container))
+
+
+@pytest.mark.asyncio
+async def test_should_reject_unframed_provider_response() -> None:
+    with pytest.raises(api_module.CloudflareApiError, match="framing"):
+        await main_module._request_result(cast(dagger.Container, FakeContainer("200")))
+
+
+def test_should_require_exactly_one_verified_deploy_root() -> None:
+    main_module._require_deploy_root(_target(), ["dist"])
+    with pytest.raises(CloudflarePolicyError, match="only envelope root"):
+        main_module._require_deploy_root(_target(), ["dist", "reports"])
+
+
+@pytest.mark.asyncio
 async def test_should_upload_with_bounded_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
-    container = FakeContainer()
+    output = json.dumps(
+        {
+            "type": "pages-deploy",
+            "version": 1,
+            "pages_project": "edge-reco",
+            "deployment_id": "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+            "url": "https://f64788e9.edge-reco.pages.dev",
+            "timestamp": "2026-08-27T20:00:00Z",
+        }
+    )
+    container = FakeContainer(output=output)
     operations = CurlPagesOperations(
         cast(dagger.Secret, object()), cast(dagger.Secret, object()), _target()
     )
@@ -798,10 +978,10 @@ async def test_should_upload_with_bounded_adapter(
     )
 
     # When
-    await operations.upload(cast(dagger.Directory, object()), FULL_SHA)
+    created = await operations.upload(cast(dagger.Directory, object()), FULL_SHA)
 
     # Then
-    assert container.synced
+    assert created.deployment_id == "f64788e9-fccd-4d4a-a28a-cb84f88f6"
 
 
 @pytest.mark.asyncio
@@ -816,15 +996,64 @@ async def test_should_sleep_only_requested_backoff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_should_reject_malformed_foundation_serialization() -> None:
-    # Given / When / Then
-    with pytest.raises(CloudflarePolicyError, match="evidence schema"):
-        await _provider_context(
-            "{}",
-            "44",
-            2,
-            TargetInputs("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", ()),
+@pytest.mark.parametrize("consumer_matches", (True, False))
+async def test_should_bind_verified_envelope_to_internal_green_evidence(
+    monkeypatch: pytest.MonkeyPatch, consumer_matches: bool
+) -> None:
+    verified = FakeDirectory()
+    context = main_module.ProviderContext(_target(), _github_evidence(), AttemptIdentity("44", 2))
+
+    async def verify(*_: object) -> FakeDirectory:
+        return verified
+
+    async def provider(*_: object) -> main_module.ProviderContext:
+        return context
+
+    monkeypatch.setattr(main_module, "_verify_envelope", verify)
+    monkeypatch.setattr(main_module, "_provider_context", provider)
+    consumer = f"hseshadr/edge-reco@{FULL_SHA}" if consumer_matches else "foreign"
+    inputs = main_module.TargetInputs(
+        "hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist", ()
+    )
+    arguments = (
+        cast(dagger.Directory, object()),
+        cast(dagger.Secret, object()),
+        "44",
+        2,
+        inputs,
+        consumer,
+        "b" * 40 + ":44",
+        ["dist"],
+    )
+    if not consumer_matches:
+        with pytest.raises(CloudflarePolicyError, match="Envelope source identity"):
+            await main_module._verified_context(*arguments)
+        return
+    artifact, result = await main_module._verified_context(*arguments)
+    assert cast(FakeDirectory, artifact).selected == "dist"
+    assert result == context
+
+
+def test_should_reject_malformed_wrangler_output() -> None:
+    with pytest.raises(CloudflarePolicyError, match="output schema"):
+        main_module._parse_wrangler_output("{}", _target())
+
+
+def test_should_reject_multiple_matching_wrangler_records() -> None:
+    record = main_module._wrangler_records(
+        json.dumps(
+            {
+                "type": "pages-deploy",
+                "version": 1,
+                "pages_project": "edge-reco",
+                "deployment_id": "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+                "url": "https://f64788e9.edge-reco.pages.dev",
+                "timestamp": "2026-08-27T20:00:00Z",
+            }
         )
+    )[0]
+    with pytest.raises(CloudflarePolicyError, match="created deployment identity"):
+        main_module._one_wrangler_record((record, record))
 
 
 def test_should_materialize_complete_public_evidence() -> None:
@@ -864,6 +1093,52 @@ def test_should_expose_only_uncached_provider_functions() -> None:
     # Then
     assert {method.name for method in methods} == {"preflight", "deploy", "verify"}
     assert cache_values == ["never", "never", "never"]
+
+
+def test_should_not_accept_forgeable_public_github_json() -> None:
+    tree = ast.parse(MAIN.read_text())
+    methods = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in {"preflight", "deploy", "verify"}
+    ]
+    arguments = {argument.arg for method in methods for argument in method.args.args}
+    assert "github_evidence" not in arguments
+    assert "github_token" in arguments
+    assert all(
+        {
+            "envelope",
+            "consumer_identity",
+            "producing_identity",
+            "allowed_roots",
+            "deploy_root",
+        }.issubset({arg.arg for arg in method.args.args})
+        for method in methods
+    )
+
+
+def test_should_verify_envelope_before_internal_green_main() -> None:
+    tree = ast.parse(MAIN.read_text())
+    helper = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_verified_context"
+    )
+    calls = [
+        node.func.id
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert calls.index("_verify_envelope") < calls.index("_provider_context")
+
+
+def test_should_use_temporary_mounts_and_method_specific_retries() -> None:
+    source = MAIN.read_text()
+    assert source.count("with_mounted_temp") >= 3
+    script = main_module._curl_script()
+    assert 'if [ "$method" = GET ]' in script
+    assert "retry = 0" in script
+    assert "WRANGLER_OUTPUT_FILE_PATH" in source
 
 
 def test_should_reject_public_url_or_command_escape_hatches() -> None:

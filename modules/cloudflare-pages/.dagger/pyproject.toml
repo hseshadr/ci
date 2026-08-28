@@ -38,6 +38,7 @@ max-complexity = 5
 "tests/test_*.py" = ["PLR2004", "S101"]
 "tests/test_deploy_contract.py" = ["E501", "PLR2004", "S101", "S603"]
 "src/cloudflare_pages/main.py" = ["PLR0913", "PLR0917"]
+"src/cloudflare_pages/models.py" = ["PLR0913", "PLR0917"]
 
 [tool.mypy]
 strict = true

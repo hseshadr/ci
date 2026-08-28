@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from .models import (
     ApiProblem,
     AttemptIdentity,
+    CreatedDeployment,
     DeploymentsResponse,
     GitHubEvidence,
     PagesDeployment,
@@ -53,7 +54,7 @@ class PagesOperations[ArtifactT](Protocol):
 
     async def wrangler_preflight(self) -> None: ...
 
-    async def upload(self, artifact: ArtifactT, source_sha: str) -> None: ...
+    async def upload(self, artifact: ArtifactT, source_sha: str) -> CreatedDeployment: ...
 
     async def sleep(self, seconds: int) -> None: ...
 
@@ -136,14 +137,17 @@ def select_deployment(
     target: PagesTarget,
     expected_sha: str,
     expected_project_id: str,
+    expected_deployment_id: str | None = None,
 ) -> PagesDeployment | None:
     """Select one exact successful direct upload or signal convergence."""
     _require_pagination(response)
-    matching = tuple(item for item in response.result if _deployment_sha(item) == expected_sha)
+    matching = tuple(
+        item
+        for item in response.result
+        if _deployment_matches(item, expected_sha, expected_deployment_id)
+    )
     if not matching:
         return None
-    if len(matching) != 1:
-        raise CloudflarePolicyError("Cloudflare deployment identity is ambiguous")
     return _qualified_deployment(matching[0], target, expected_project_id)
 
 
@@ -174,11 +178,16 @@ async def deploy_verified_artifact[ArtifactT](
 ) -> ProviderDeploymentEvidence:
     """Run one ordered direct-upload transaction on an already verified tree."""
     require_evidence_binding(target, github, attempt)
+    await operations.wrangler_preflight()
     project = await _read_preflight(operations, target)
     await _disable_git(operations, target, project.id)
-    await operations.wrangler_preflight()
-    await operations.upload(artifact, github.commit_sha)
-    deployment = await _converge(operations, target, github.commit_sha, project.id)
+    await _revalidate_disabled_project(operations, target, project.id)
+    created = await operations.upload(artifact, github.commit_sha)
+    deployment = await _converge(
+        operations, target, github.commit_sha, project.id, created.deployment_id
+    )
+    if deployment.url != created.deployment_url:
+        raise CloudflarePolicyError("Cloudflare created deployment identity differs")
     return _deployment_evidence(deployment, target, github, attempt)
 
 
@@ -228,15 +237,32 @@ async def _disable_git[ArtifactT](
         raise CloudflarePolicyError("Cloudflare Git preview deployment remains enabled")
 
 
+async def _revalidate_disabled_project[ArtifactT](
+    operations: PagesOperations[ArtifactT], target: PagesTarget, project_id: str
+) -> None:
+    project = parse_project_response(await operations.get_project())
+    require_project_binding(project, target)
+    if project.id != project_id:
+        raise CloudflarePolicyError("Cloudflare project identity changed before upload")
+    source = project.source
+    if source is None or source.config.production_deployments_enabled:
+        raise CloudflarePolicyError("Cloudflare Git production deployment remains enabled")
+    if source.config.preview_deployment_setting != "none":
+        raise CloudflarePolicyError("Cloudflare Git preview deployment remains enabled")
+
+
 async def _converge[ArtifactT](
     operations: PagesOperations[ArtifactT],
     target: PagesTarget,
     source_sha: str,
     project_id: str,
+    deployment_id: str | None = None,
 ) -> PagesDeployment:
     try:
         async with asyncio.timeout(60):
-            return await _bounded_convergence(operations, target, source_sha, project_id)
+            return await _bounded_convergence(
+                operations, target, source_sha, project_id, deployment_id
+            )
     except TimeoutError:
         raise CloudflarePolicyError(
             "Cloudflare deployment did not converge within 60 seconds"
@@ -248,13 +274,18 @@ async def _bounded_convergence[ArtifactT](
     target: PagesTarget,
     source_sha: str,
     project_id: str,
+    deployment_id: str | None,
 ) -> PagesDeployment:
     for delay in (1, 2, 4, 8):
-        deployment = await _current_deployment(operations, target, source_sha, project_id)
+        deployment = await _current_deployment(
+            operations, target, source_sha, project_id, deployment_id
+        )
         if deployment is not None:
             return deployment
         await operations.sleep(delay)
-    deployment = await _current_deployment(operations, target, source_sha, project_id)
+    deployment = await _current_deployment(
+        operations, target, source_sha, project_id, deployment_id
+    )
     if deployment is None:
         raise CloudflarePolicyError("Cloudflare deployment did not converge within 60 seconds")
     return deployment
@@ -279,9 +310,10 @@ async def _current_deployment[ArtifactT](
     target: PagesTarget,
     source_sha: str,
     project_id: str,
+    deployment_id: str | None = None,
 ) -> PagesDeployment | None:
     response = parse_deployments_response(await operations.get_deployments())
-    return select_deployment(response, target, source_sha, project_id)
+    return select_deployment(response, target, source_sha, project_id, deployment_id)
 
 
 def _deployment_evidence(
@@ -335,23 +367,30 @@ def _deployment_identity(deployment: PagesDeployment, target: PagesTarget) -> tu
         deployment.deployment_trigger.type,
         deployment.project_id,
         metadata.commit_dirty,
-        _valid_deployment_url(deployment.url, target),
+        _valid_deployment_url(deployment.url, target, deployment.short_id),
     )
 
 
-def _valid_deployment_url(value: str, target: PagesTarget) -> bool:
+def _valid_deployment_url(value: str, target: PagesTarget, short_id: str) -> bool:
     parsed = urlsplit(value)
-    suffix = f".{target.project}.pages.dev"
+    hostname = f"{short_id}.{target.project}.pages.dev"
     identity = (
         parsed.scheme,
-        str(parsed.hostname).endswith(suffix),
+        parsed.hostname,
         parsed.username,
         parsed.password,
         parsed.query,
         parsed.fragment,
         parsed.port,
     )
-    return identity == ("https", True, None, None, "", "", None)
+    return identity == ("https", hostname, None, None, "", "", None)
+
+
+def _deployment_matches(
+    deployment: PagesDeployment, source_sha: str, deployment_id: str | None
+) -> bool:
+    sha_matches = _deployment_sha(deployment) == source_sha
+    return sha_matches and (deployment_id is None or deployment.id == deployment_id)
 
 
 def _require_source_binding(owner: str, repository: str, target: PagesTarget) -> None:
@@ -407,7 +446,7 @@ def _source_result(value: JsonValue) -> dict[str, JsonValue]:
 
 def _deployment_result(value: JsonValue) -> dict[str, JsonValue]:
     deployment = _object(value)
-    names = ("id", "url", "project_id", "project_name", "environment")
+    names = ("id", "short_id", "url", "project_id", "project_name", "environment")
     fields = _project(deployment, names)
     fields["latest_stage"] = _stage_result(deployment)
     fields["deployment_trigger"] = _trigger_result(deployment)
