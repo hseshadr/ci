@@ -43,6 +43,9 @@ The shared modules are:
   artifact envelopes, envelope verification, and exact-current-`main` GitHub evidence;
 - `cloudflare-pages`: fail-closed Pages preflight, one pinned Wrangler direct upload, and
   deployment/live convergence bound to the created deployment ID.
+- `python-package`: frozen dependency audit, non-root pure-Python wheel and sdist build,
+  metadata-derived tag verification, and a Foundation envelope for a separate source-free
+  official PyPA publisher job. The module never publishes to a registry.
 
 Start with the [exact-SHA consumer quickstart](docs/dagger-modules.md#quickstart). It captures
 the central `main` SHA, validates all 40 lowercase hexadecimal characters, and commits that
@@ -153,7 +156,8 @@ lives in `.dagger/src/ci/github_fleet.py`. Behavioral tests live in `.dagger/tes
 
 ## Scope
 
-This is a control-plane repository, not a template catalog. Consumer-specific build and
-publisher implementations stay in their own Dagger modules; consumers compose the shared
-foundation and Pages modules instead of copying their trust mechanics. Dependabot may propose
-dependency updates, but its pull requests are never auto-merged.
+This is a control-plane repository, not a template catalog. Consumer-specific application builds
+stay local; consumers compose Foundation, Pages, and the closed Python package candidate Lego
+instead of copying shared trust mechanics. Privileged publisher jobs stay source-free and use
+official registry actions outside Dagger. Dependabot may propose dependency updates, but its pull
+requests are never auto-merged.

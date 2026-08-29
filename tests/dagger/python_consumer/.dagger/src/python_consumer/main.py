@@ -35,6 +35,12 @@ PAYLOAD_PARTS: Final = (
     "666978747572652d7369676e65723030",
 )
 EXPECTED_FINDINGS: Final = 2
+PACKAGE_REPOSITORY: Final = "hseshadr/edgeproc-core"
+PACKAGE_URL: Final = "https://github.com/hseshadr/edgeproc-core.git"
+PACKAGE_SHA: Final = "fa1da057024e2c41a1fb17641f0383f51a5628f0"
+PACKAGE_PROJECT: Final = "edgeproc-core"
+PACKAGE_VERSION: Final = "0.4.2"
+PACKAGE_PRODUCT_COUNT: Final = 2
 
 
 @object_type
@@ -51,6 +57,7 @@ class PythonConsumer:
         secret = dag.set_secret("python-fixture-secret", SECRET_CANARY)
         _typed_evidence(secret)
         await _provider_rejects_tamper(envelope, secret)
+        await _package_build()
         await dag.cache_volume(CACHE_NAMESPACE).id()
         return "python fixture passed"
 
@@ -160,6 +167,15 @@ def _typed_evidence(secret: dagger.Secret) -> None:
     evidence: dagger.FoundationCheckEvidence = dag.foundation().green_main(secret, REPOSITORY)
     if evidence is None:
         raise ValueError("generated evidence type was unavailable")
+
+
+async def _package_build() -> None:
+    history = dag.git(PACKAGE_URL).commit(PACKAGE_SHA).tree(depth=0, include_tags=True)
+    package = dag.python_package().build(history, PACKAGE_REPOSITORY, PACKAGE_SHA, PACKAGE_PROJECT)
+    version = await package.version()
+    entries = await package.directory().entries()
+    if version != PACKAGE_VERSION or len(entries) != PACKAGE_PRODUCT_COUNT:
+        raise ValueError("Python package build evidence differs")
 
 
 async def _provider_rejects_tamper(envelope: dagger.Directory, secret: dagger.Secret) -> None:

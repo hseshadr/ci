@@ -1,0 +1,14 @@
+{
+  "name": "python-package",
+  "engineVersion": "v0.21.8",
+  "sdk": {
+    "source": "python"
+  },
+  "dependencies": [
+    {
+      "name": "foundation",
+      "source": "../portfolio-foundation"
+    }
+  ],
+  "source": ".dagger"
+}

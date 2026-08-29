@@ -226,6 +226,7 @@ def _expected_dependencies() -> tuple[tuple[str, str], ...]:
     return (
         ("foundation", "../../../modules/portfolio-foundation"),
         ("cloudflare-pages", "../../../modules/cloudflare-pages"),
+        ("python-package", "../../../modules/python-package"),
     )
 
 

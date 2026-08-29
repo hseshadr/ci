@@ -272,6 +272,16 @@ def _central_provider(source: str = "../portfolio-foundation") -> DaggerConfig:
     )
 
 
+def _central_python_package(source: str = "../portfolio-foundation") -> DaggerConfig:
+    return DaggerConfig(
+        identity=f"github.com/hseshadr/ci/modules/python-package@{SHA}",
+        path="modules/python-package/dagger.json",
+        name="python-package",
+        engine_version="v0.21.8",
+        dependencies=(DaggerDependency(name="foundation", source=source),),
+    )
+
+
 def _shared_codes(snapshot: RepositorySnapshot, expiry: date | None = None) -> tuple[str, ...]:
     expectation = RepositoryExpectation(
         name="example",
@@ -854,6 +864,36 @@ def test_should_accept_exact_central_provider_graph_from_same_snapshot() -> None
     # Then root-to-modules and provider-to-foundation local edges remain valid
     assert "shared-module-publisher" not in codes
     assert "invalid-dagger-dependency" not in codes
+
+
+def test_should_accept_exact_central_python_package_graph_from_same_snapshot() -> None:
+    # Given the central root and package Lego share one snapshot and Foundation edge
+    foundation = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    package = DaggerDependency(name="python-package", source="modules/python-package")
+    configs = (_central_root(foundation, package), _central_foundation(), _central_python_package())
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=configs)
+
+    # When the publisher graph is evaluated
+    codes = _codes(snapshot)
+
+    # Then both local edges remain exact and approved
+    assert "shared-module-publisher" not in codes
+    assert "invalid-dagger-dependency" not in codes
+
+
+def test_should_reject_python_package_with_unreviewed_foundation_edge() -> None:
+    # Given the package Lego redirects its Foundation dependency outside the reviewed tree
+    foundation = DaggerDependency(name="foundation", source="modules/portfolio-foundation")
+    package = DaggerDependency(name="python-package", source="modules/python-package")
+    configs = (
+        _central_root(foundation, package),
+        _central_foundation(),
+        _central_python_package("../../lookalike"),
+    )
+    snapshot = replace(_snapshot(INGRESS), name="ci", dagger_configs=configs)
+
+    # When / Then same-repository placement cannot authorize an unreviewed edge
+    assert "invalid-dagger-dependency" in _codes(snapshot)
 
 
 def test_should_reject_central_local_dependency_from_different_snapshot() -> None:

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "static-candidate"
+version = "1.2.3"
+description = "Static-version integration fixture for the Python package Dagger Lego"
+requires-python = ">=3.13"
+
+[dependency-groups]
+build = ["hatchling==1.27.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/static_candidate"]

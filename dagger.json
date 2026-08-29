@@ -12,6 +12,10 @@
     {
       "name": "foundation",
       "source": "modules/portfolio-foundation"
+    },
+    {
+      "name": "python-package",
+      "source": "modules/python-package"
     }
   ],
   "source": ".dagger"
