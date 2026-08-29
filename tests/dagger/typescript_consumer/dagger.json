@@ -12,6 +12,10 @@
     {
       "name": "cloudflare-pages",
       "source": "../../../modules/cloudflare-pages"
+    },
+    {
+      "name": "python-package",
+      "source": "../../../modules/python-package"
     }
   ]
 }

@@ -18,6 +18,11 @@ const CACHE_NAMESPACE = "fixture-typescript-v1"
 const SECRET_CANARY = ["typescript", "private", "canary"].join("-")
 const ARTIFACT_NAME = "typescript-artifact.txt"
 const TRANSPORT_MARKERS = ["api.cloudflare.com", "api.github.com", "wrangler"]
+const PACKAGE_REPOSITORY = "hseshadr/edgeproc-core"
+const PACKAGE_URL = "https://github.com/hseshadr/edgeproc-core.git"
+const PACKAGE_SHA = "fa1da057024e2c41a1fb17641f0383f51a5628f0"
+const PACKAGE_PROJECT = "edgeproc-core"
+const PACKAGE_VERSION = "0.4.2"
 
 @object()
 export class TypescriptConsumer {
@@ -29,6 +34,7 @@ export class TypescriptConsumer {
     const secret = dag.setSecret("typescript-fixture-secret", SECRET_CANARY)
     typedEvidence(secret)
     await providerRejectsTamper(envelope, secret)
+    await packageBuild()
     await dag.cacheVolume(CACHE_NAMESPACE).id()
     return "typescript fixture passed"
   }
@@ -55,6 +61,18 @@ async function verifiedEnvelope(): Promise<Directory> {
 function typedEvidence(secret: Secret): void {
   const evidence: FoundationCheckEvidence = dag.foundation().greenMain(secret, REPOSITORY)
   if (evidence === undefined) throw new Error("generated evidence type was unavailable")
+}
+
+async function packageBuild(): Promise<void> {
+  const history = dag.git(PACKAGE_URL).commit(PACKAGE_SHA).tree({ depth: 0, includeTags: true })
+  const built = dag.pythonPackage().build(
+    history, PACKAGE_REPOSITORY, PACKAGE_SHA, PACKAGE_PROJECT,
+  )
+  const version = await built.version()
+  const entries = await built.directory().entries()
+  if (version !== PACKAGE_VERSION || entries.length !== 2) {
+    throw new Error("TypeScript package build evidence differs")
+  }
 }
 
 async function providerRejectsTamper(envelope: Directory, secret: Secret): Promise<void> {

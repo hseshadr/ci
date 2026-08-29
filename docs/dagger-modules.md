@@ -62,6 +62,108 @@ dagger install \
 dagger develop
 ```
 
+Python package consumers install the candidate builder from that same reviewed commit:
+
+```bash
+dagger install \
+  "github.com/hseshadr/ci/modules/python-package@$FOUNDATION_SHA" \
+  --name python-package
+dagger develop
+```
+
+The public module accepts only source, repository, commit, canonical project, central module,
+workflow run, and run-attempt identities. There is no public image, path, command, tag, registry,
+or publisher input. It derives `vMAJOR.MINOR.PATCH` from the built wheel and sdist metadata,
+requires that exact public Git tag to resolve to the requested commit, and produces a Foundation
+envelope containing only `dist/` plus `metadata/python-candidate.json`.
+
+The build is dependency-frozen and backend-agnostic: the consumer locks its PEP 517 backend in a
+dependency group, the Lego installs that frozen graph without installing the project, and the
+build then runs without network-resolved isolation. For Hatchling, add this before `uv lock`:
+
+```toml
+[dependency-groups]
+build = ["hatchling==1.27.0"]
+```
+
+Use the equivalent exact backend requirement for Flit, setuptools, or another backend. Merely
+declaring the backend under `[build-system].requires` is insufficient because that declaration
+does not place it in the frozen project environment.
+
+Candidate construction must name the exact successful Dagger run attempt that made the commit
+green. From a consumer module that exposes the same closed function, this manual proof fetches
+that identity and runs the candidate locally:
+
+```bash
+set -euo pipefail
+export GITHUB_TOKEN="$(gh auth token)"
+REPOSITORY="owner/python-project"
+PROJECT="python-project"
+WORKFLOW="dagger.yml"
+CENTRAL_SHA="$(jq -er '.dependencies[] | select(.name == "python-package") | .pin' dagger.json)"
+CONSUMER_SHA="$(git rev-parse HEAD)"
+GREEN_JSON="$(
+  gh api --method GET "repos/$REPOSITORY/actions/workflows/$WORKFLOW/runs" \
+    -f branch=main -f head_sha="$CONSUMER_SHA" -f status=success -f per_page=1
+)"
+GREEN_RUN_ID="$(jq -er '.workflow_runs[0].id' <<<"$GREEN_JSON")"
+GREEN_RUN_ATTEMPT="$(jq -er '.workflow_runs[0].run_attempt' <<<"$GREEN_JSON")"
+test "$(jq -er '.workflow_runs[0].head_sha' <<<"$GREEN_JSON")" = "$CONSUMER_SHA"
+
+dagger call candidate \
+  --source=. \
+  --github-token=env:GITHUB_TOKEN \
+  --repository="$REPOSITORY" \
+  --commit-sha="$CONSUMER_SHA" \
+  --project-name="$PROJECT" \
+  --central-module-sha="$CENTRAL_SHA" \
+  --workflow-run-id="$GREEN_RUN_ID" \
+  --run-attempt="$GREEN_RUN_ATTEMPT" \
+  envelope export --path=release-candidate
+```
+
+The Dagger job is unprivileged: it receives a read-only GitHub token only for exact-green
+evidence, never an OIDC token or PyPI credential. The unprivileged candidate workflow uploads the
+envelope as
+`python-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}`. A separate
+`workflow_run` bridge then binds its download to that producing run and SHA. This privileged
+GitHub Environment job has no checkout, setup, install, build, test, shell, or Dagger step:
+
+```yaml
+name: Publish Python candidate
+on:
+  workflow_run:
+    workflows: [Python package candidate]
+    types: [completed]
+permissions: {}
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-candidate-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: candidate
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: candidate/artifact/dist
+          attestations: true
+```
+
+GitHub/PyPI Trusted Publishing remains configured against this concrete consumer workflow and
+environment. Do not put the OIDC publication boundary in a reusable workflow or Dagger module.
+
 ## One realistic consumer flow
 
 This complete Python Dagger object shows the trust chain without hiding any identity. Its release
@@ -220,6 +322,8 @@ uv run --directory modules/portfolio-foundation/.dagger poe gate
 uv run --directory modules/portfolio-foundation/.dagger poe audit
 uv run --directory modules/cloudflare-pages/.dagger poe gate
 uv run --directory modules/cloudflare-pages/.dagger poe audit
+uv run --directory modules/python-package/.dagger poe gate
+uv run --directory modules/python-package/.dagger poe audit
 DAGGER_NO_NAG=1 dagger call module-fixtures
 git diff --check
 ```
@@ -234,6 +338,7 @@ file alone is not release evidence.
 Shipped in this central change:
 
 - reusable foundation and Pages module implementations;
+- reusable Python package candidate implementation with source-free official PyPA boundary;
 - exact-SHA dependency and production-environment policy;
 - deterministic Python and TypeScript composition fixtures;
 - real local-TLS provider tests and isolated cold-engine proof.

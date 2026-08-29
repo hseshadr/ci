@@ -95,6 +95,7 @@ SHARED_MODULES: Final[Mapping[str, str]] = MappingProxyType(
         "cloudflare-pages": "github.com/hseshadr/ci/modules/cloudflare-pages@",
         "foundation": "github.com/hseshadr/ci/modules/portfolio-foundation@",
         "portfolio-foundation": "github.com/hseshadr/ci/modules/portfolio-foundation@",
+        "python-package": "github.com/hseshadr/ci/modules/python-package@",
     }
 )
 SECRET_REFERENCE: Final = re.compile(
@@ -205,10 +206,26 @@ CENTRAL_LOCAL_DEPENDENCIES: Final[tuple[LocalDependencyRule, ...]] = (
     LocalDependencyRule(
         "dagger.json",
         "ci",
+        "python-package",
+        "modules/python-package",
+        "modules/python-package/dagger.json",
+        "python-package",
+    ),
+    LocalDependencyRule(
+        "dagger.json",
+        "ci",
         "cloudflare-pages",
         "modules/cloudflare-pages",
         "modules/cloudflare-pages/dagger.json",
         "cloudflare-pages",
+    ),
+    LocalDependencyRule(
+        "modules/python-package/dagger.json",
+        "python-package",
+        "foundation",
+        "../portfolio-foundation",
+        "modules/portfolio-foundation/dagger.json",
+        "portfolio-foundation",
     ),
     LocalDependencyRule(
         "modules/cloudflare-pages/dagger.json",

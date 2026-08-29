@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dynamic-candidate"
+dynamic = ["version"]
+description = "Dynamic-version integration fixture for the Python package Dagger Lego"
+requires-python = ">=3.13"
+
+[dependency-groups]
+build = ["hatchling==1.27.0"]
+
+[tool.hatch.version]
+path = "src/dynamic_candidate/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dynamic_candidate"]
