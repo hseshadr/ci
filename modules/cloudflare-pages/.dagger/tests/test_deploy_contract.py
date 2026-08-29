@@ -334,6 +334,18 @@ def _deployment(
     }
 
 
+def _with_commit_sha(deployment: dict[str, object], sha: str) -> dict[str, object]:
+    trigger = cast(dict[str, object], deployment["deployment_trigger"])
+    metadata = cast(dict[str, object], trigger["metadata"])
+    metadata["commit_hash"] = sha
+    return deployment
+
+
+def _with_stage(deployment: dict[str, object], name: str, status: str) -> dict[str, object]:
+    deployment["latest_stage"] = {"name": name, "status": status}
+    return deployment
+
+
 def _provider_evidence() -> ProviderDeploymentEvidence:
     return ProviderDeploymentEvidence(
         "f64788e9-fccd-4d4a-a28a-cb84f88f6",
@@ -771,6 +783,40 @@ async def test_should_ignore_old_same_sha_and_wait_for_created_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_should_upload_when_historical_rows_have_empty_commit_sha() -> None:
+    # Given
+    legacy = _with_commit_sha(_deployment("success", "11111111-fccd-4d4a-a28a-cb84f88f6"), "")
+    current = _deployment("success")
+    operations = FakeOperations(
+        [_deployments_payload(legacy), _deployments_payload(legacy, current)]
+    )
+
+    # When
+    evidence = await deploy_verified_artifact(
+        operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+    )
+
+    # Then
+    assert evidence.deployment_id == "f64788e9-fccd-4d4a-a28a-cb84f88f6"
+    assert f"upload:{FULL_SHA}" in operations.events
+
+
+@pytest.mark.asyncio
+async def test_should_timeout_when_created_deployment_has_empty_commit_sha() -> None:
+    # Given
+    empty_created = _with_commit_sha(_deployment("success"), "")
+    responses = [_deployments_payload()] + [_deployments_payload(empty_created)] * 5
+    operations = FakeOperations(responses)
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="did not converge"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert operations.sleeps == [1, 2, 4, 8]
+
+
+@pytest.mark.asyncio
 async def test_should_report_created_failure_despite_old_same_sha_success() -> None:
     old = _deployment("success", "11111111-fccd-4d4a-a28a-cb84f88f6")
     failed = _deployment("failure")
@@ -790,6 +836,27 @@ async def test_should_converge_with_bounded_exponential_delays() -> None:
             _deployment_payload("absent"),
             _deployment_payload("active"),
             _deployment_payload("active"),
+            _deployment_payload(),
+        ]
+    )
+
+    # When
+    await deploy_verified_artifact(
+        operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+    )
+
+    # Then
+    assert operations.sleeps == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_should_poll_through_documented_predeploy_stages() -> None:
+    # Given
+    operations = FakeOperations(
+        [
+            _deployment_payload("absent"),
+            _deployments_payload(_with_stage(_deployment("active"), "queued", "idle")),
+            _deployments_payload(_with_stage(_deployment("active"), "build", "active")),
             _deployment_payload(),
         ]
     )

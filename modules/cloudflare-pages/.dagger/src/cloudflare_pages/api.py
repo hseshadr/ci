@@ -16,6 +16,7 @@ from .models import (
     CreatedDeployment,
     DeploymentsResponse,
     GitHubEvidence,
+    ListedPagesDeployment,
     PagesDeployment,
     PagesProject,
     PagesTarget,
@@ -25,6 +26,7 @@ from .models import (
 
 API_ORIGIN: Final = "https://api.cloudflare.com/client/v4"
 DEPLOYMENT_PAGE_SIZE: Final = 10
+PRE_DEPLOYMENT_STAGES: Final = frozenset({"queued", "initialize", "clone_repo", "build"})
 ACCOUNT_REF_PATTERN: Final = re.compile(r"[A-Za-z0-9]{1,32}")
 CONTROL_PATTERN: Final = re.compile(r"[\x00-\x1f\x7f]+")
 BEARER_PATTERN: Final = re.compile(r"(?i)bearer\s+\S+")
@@ -141,14 +143,10 @@ def select_deployment(
 ) -> PagesDeployment | None:
     """Select one exact successful direct upload or signal convergence."""
     _require_pagination(response)
-    matching = tuple(
-        item
-        for item in response.result
-        if _deployment_matches(item, expected_sha, expected_deployment_id)
-    )
-    if not matching:
+    candidate = _matching_candidate(response.result, expected_sha, expected_deployment_id)
+    if candidate is None:
         return None
-    return _qualified_deployment(matching[0], target, expected_project_id)
+    return _qualified_deployment(_strict_deployment(candidate), target, expected_project_id)
 
 
 def sanitize_error(error: ApiProblem) -> str:
@@ -356,13 +354,13 @@ def _qualified_deployment(
 ) -> PagesDeployment | None:
     _require_deployment_identity(deployment, target, project_id)
     stage = deployment.latest_stage
+    if stage.status in ("failure", "canceled"):
+        raise CloudflarePolicyError("Cloudflare deployment failed")
+    if stage.name in PRE_DEPLOYMENT_STAGES:
+        return None
     if stage.name != "deploy":
         raise CloudflarePolicyError("Cloudflare deployment identity differs")
-    if stage.status in ("idle", "active"):
-        return None
-    if stage.status != "success":
-        raise CloudflarePolicyError("Cloudflare deployment failed")
-    return deployment
+    return deployment if stage.status == "success" else None
 
 
 def _require_deployment_identity(
@@ -395,18 +393,36 @@ def _valid_deployment_url(value: str, target: PagesTarget, short_id: str) -> boo
         parsed.hostname,
         parsed.username,
         parsed.password,
+        parsed.path,
         parsed.query,
         parsed.fragment,
         parsed.port,
     )
-    return identity == ("https", hostname, None, None, "", "", None)
+    return identity == ("https", hostname, None, None, "", "", "", None)
 
 
 def _deployment_matches(
-    deployment: PagesDeployment, source_sha: str, deployment_id: str | None
+    deployment: ListedPagesDeployment, source_sha: str, deployment_id: str | None
 ) -> bool:
     sha_matches = _deployment_sha(deployment) == source_sha
     return sha_matches and (deployment_id is None or deployment.id == deployment_id)
+
+
+def _matching_candidate(
+    deployments: tuple[ListedPagesDeployment, ...], source_sha: str, deployment_id: str | None
+) -> ListedPagesDeployment | None:
+    matching = tuple(
+        item for item in deployments if _deployment_matches(item, source_sha, deployment_id)
+    )
+    return _one_matching_deployment(matching, deployment_id) if matching else None
+
+
+def _one_matching_deployment(
+    matching: tuple[ListedPagesDeployment, ...], deployment_id: str | None
+) -> ListedPagesDeployment:
+    if deployment_id is not None and len(matching) != 1:
+        raise CloudflarePolicyError("Cloudflare deployment identity differs")
+    return matching[0]
 
 
 def _require_source_binding(owner: str, repository: str, target: PagesTarget) -> None:
@@ -423,8 +439,15 @@ def _require_pagination(response: DeploymentsResponse) -> None:
         raise CloudflarePolicyError("Cloudflare deployment pagination differs")
 
 
-def _deployment_sha(deployment: PagesDeployment) -> str:
+def _deployment_sha(deployment: ListedPagesDeployment) -> str:
     return deployment.deployment_trigger.metadata.commit_hash
+
+
+def _strict_deployment(deployment: ListedPagesDeployment) -> PagesDeployment:
+    try:
+        return PagesDeployment.model_validate_json(deployment.model_dump_json())
+    except (ValidationError, ValueError, TypeError):
+        raise CloudflarePolicyError("Cloudflare response schema mismatch") from None
 
 
 def _require_account_ref(value: str) -> None:
