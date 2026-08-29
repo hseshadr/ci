@@ -196,7 +196,7 @@ def test_should_wait_for_exact_full_sha_and_successful_deploy_stage() -> None:
     (
         ("environment", "preview"),
         ("project_name", "almamesh"),
-        ("latest_stage", {"name": "build", "status": "success"}),
+        ("latest_stage", {"name": "promote", "status": "success"}),
         (
             "deployment_trigger",
             {
@@ -223,6 +223,63 @@ def test_should_ignore_wrong_sha_while_provider_converges() -> None:
 
     # When / Then
     assert select_deployment(response, _target(), FULL_SHA, PROJECT_ID) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "status"),
+    (("queued", "idle"), ("initialize", "active"), ("clone_repo", "success"), ("build", "active")),
+)
+def test_should_wait_for_recognized_predeploy_stage(name: str, status: str) -> None:
+    # Given
+    deployment = _deployment()
+    deployment["latest_stage"] = {"name": name, "status": status}
+    response = parse_deployments_response(_deployments_payload(deployment))
+
+    # When / Then
+    assert select_deployment(response, _target(), FULL_SHA, PROJECT_ID) is None
+
+
+def test_should_ignore_historical_empty_sha_even_for_requested_deployment_id() -> None:
+    # Given
+    legacy = _deployment("")
+    deployment_id = legacy["id"]
+    assert isinstance(deployment_id, str)
+    response = parse_deployments_response(_deployments_payload(legacy))
+
+    # When
+    selected = select_deployment(response, _target(), FULL_SHA, PROJECT_ID, deployment_id)
+
+    # Then
+    assert selected is None
+
+
+@pytest.mark.parametrize("commit_sha", (None, " ", "a" * 39, "A" * 40, "g" * 40))
+def test_should_reject_noncanonical_deployment_commit_sha(commit_sha: object) -> None:
+    # Given
+    deployment = _deployment()
+    trigger = deployment["deployment_trigger"]
+    assert isinstance(trigger, dict)
+    metadata = trigger["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["commit_hash"] = commit_sha
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="schema"):
+        parse_deployments_response(_deployments_payload(deployment))
+
+
+def test_should_reject_missing_deployment_commit_sha() -> None:
+    # Given
+    deployment = _deployment()
+    trigger = deployment["deployment_trigger"]
+    assert isinstance(trigger, dict)
+    metadata = trigger["metadata"]
+    assert isinstance(metadata, dict)
+    metadata.pop("commit_hash")
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="schema"):
+        parse_deployments_response(_deployments_payload(deployment))
 
 
 def test_should_reject_wrong_page_size() -> None:
@@ -268,6 +325,17 @@ def test_should_reject_credential_bearing_deployment_url() -> None:
         select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
 
 
+def test_should_reject_deployment_url_with_path() -> None:
+    # Given
+    deployment = _deployment()
+    deployment["url"] = "https://f64788e9.edge-reco.pages.dev/foreign"
+    response = parse_deployments_response(_deployments_payload(deployment))
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="deployment identity"):
+        select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
+
+
 def test_should_reject_hostname_not_equal_to_documented_short_id() -> None:
     deployment = _deployment()
     deployment["url"] = "https://foreign.edge-reco.pages.dev"
@@ -284,6 +352,22 @@ def test_should_select_latest_when_same_sha_has_prior_deployments() -> None:
     selected = select_deployment(response, _target(), FULL_SHA, PROJECT_ID)
     assert selected is not None
     assert selected.id == "f64788e9-fccd-4d4a-a28a-cb84f88f6"
+
+
+def test_should_reject_duplicate_exact_created_deployment_id() -> None:
+    # Given
+    deployment = _deployment()
+    response = parse_deployments_response(_deployments_payload(deployment, deployment))
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="deployment identity"):
+        select_deployment(
+            response,
+            _target(),
+            FULL_SHA,
+            PROJECT_ID,
+            "f64788e9-fccd-4d4a-a28a-cb84f88f6",
+        )
 
 
 @pytest.mark.parametrize("status", ("failure", "canceled"))

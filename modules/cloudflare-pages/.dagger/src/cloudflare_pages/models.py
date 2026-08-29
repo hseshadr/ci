@@ -18,6 +18,7 @@ DOMAIN_PATTERN: Final = re.compile(
 )
 CLOSED_MODEL: Final = ConfigDict(extra="forbid", frozen=True, strict=True)
 FULL_SHA_TEXT: Final = r"\A[0-9a-f]{40}\z"
+PAGES_COMMIT_SHA_TEXT: Final = r"\A(?:[0-9a-f]{40})?\z"
 NUMERIC_ID_TEXT: Final = r"\A[1-9][0-9]*\z"
 TIMESTAMP_TEXT: Final = r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\z"
 DEPLOY_ROOT_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -124,11 +125,26 @@ class DeploymentMetadata(ClosedModel):  # type: ignore[explicit-any]  # Pydantic
     commit_dirty: bool
 
 
+class ListedDeploymentMetadata(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """Provider-list metadata including Cloudflare's historical empty hash."""
+
+    branch: str
+    commit_hash: str = Field(pattern=PAGES_COMMIT_SHA_TEXT)
+    commit_dirty: bool
+
+
 class DeploymentTrigger(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
     """Documented direct-upload trigger and source metadata."""
 
     type: str
     metadata: DeploymentMetadata
+
+
+class ListedDeploymentTrigger(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """Projected trigger for a Pages deployment-list row."""
+
+    type: str
+    metadata: ListedDeploymentMetadata
 
 
 class PagesDeployment(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
@@ -142,6 +158,19 @@ class PagesDeployment(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2
     environment: Literal["production", "preview"]
     latest_stage: DeploymentStage
     deployment_trigger: DeploymentTrigger
+
+
+class ListedPagesDeployment(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """Strict provider-list row awaiting exact-SHA candidate promotion."""
+
+    id: str
+    short_id: str = Field(pattern=r"\A[a-f0-9]{8}\z")
+    url: str
+    project_id: str
+    project_name: str
+    environment: Literal["production", "preview"]
+    latest_stage: DeploymentStage
+    deployment_trigger: ListedDeploymentTrigger
 
 
 class ResultInfo(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
@@ -168,7 +197,7 @@ class DeploymentsResponse(ClosedModel):  # type: ignore[explicit-any]  # Pydanti
 
     errors: tuple[ApiProblem, ...]
     messages: tuple[ApiProblem, ...]
-    result: tuple[PagesDeployment, ...]
+    result: tuple[ListedPagesDeployment, ...]
     success: bool
     result_info: ResultInfo
 
