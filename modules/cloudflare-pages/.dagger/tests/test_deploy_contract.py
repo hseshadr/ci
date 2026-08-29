@@ -256,6 +256,33 @@ def _project_payload(project: str = "edge-reco") -> str:
     )
 
 
+def _direct_upload_project_payload() -> str:
+    payload = json.loads(_project_payload())
+    payload["result"]["source"] = None
+    return json.dumps(payload)
+
+
+def _project_payload_with_foreign_domain() -> str:
+    payload = json.loads(_direct_upload_project_payload())
+    payload["result"]["domains"] = ["edge-reco.pages.dev"]
+    return json.dumps(payload)
+
+
+def _direct_upload_project_payload_with_domain_drift() -> str:
+    payload = json.loads(_direct_upload_project_payload())
+    payload["result"]["domains"] = ["edge-reco.com", "attacker.example"]
+    return json.dumps(payload)
+
+
+def _git_project_payload_with_domain_drift() -> str:
+    payload = json.loads(_project_payload())
+    payload["result"]["domains"] = ["edge-reco.com", "attacker.example"]
+    config = payload["result"]["source"]["config"]
+    config["production_deployments_enabled"] = False
+    config["preview_deployment_setting"] = "none"
+    return json.dumps(payload)
+
+
 def _deployment_payload(status: str = "success") -> str:
     result = [] if status == "absent" else [_deployment(status)]
     return json.dumps(
@@ -333,10 +360,12 @@ class FakeOperations:
     events: list[str] = field(default_factory=list)
     sleeps: list[int] = field(default_factory=list)
     uploaded_artifact: object | None = None
+    project_reads: int = 0
 
     async def get_project(self) -> str:
         self.events.append("get-project")
-        if "disable-git" in self.events and self.revalidated_project is not None:
+        self.project_reads += 1
+        if self.project_reads > 1 and self.revalidated_project is not None:
             return self.revalidated_project
         return self.project
 
@@ -347,7 +376,11 @@ class FakeOperations:
     async def disable_git(self) -> str:
         self.events.append("disable-git")
         payload = json.loads(self.patched_project or self.project)
-        config = payload["result"]["source"]["config"]
+        source = payload["result"]["source"]
+        if source is None:
+            self.project = json.dumps(payload)
+            return self.project
+        config = source["config"]
         if self.disable_production:
             config["production_deployments_enabled"] = False
         if self.disable_preview:
@@ -578,6 +611,144 @@ async def test_should_deploy_one_verified_artifact_in_required_order() -> None:
     assert operations.uploaded_artifact is artifact
     assert evidence.source_sha == FULL_SHA
     assert evidence.attempt_identity == AttemptIdentity("44", 2)
+
+
+@pytest.mark.asyncio
+async def test_should_deploy_existing_direct_upload_without_git_patch() -> None:
+    # Given
+    project = _direct_upload_project_payload()
+    operations = FakeOperations(
+        [_deployment_payload("absent"), _deployment_payload()], project=project
+    )
+
+    # When
+    await deploy_verified_artifact(
+        operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+    )
+
+    # Then
+    assert operations.events == [
+        "wrangler-preflight",
+        "get-project",
+        "get-deployments",
+        "get-project",
+        f"upload:{FULL_SHA}",
+        "get-deployments",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_direct_upload_identity_drift_before_upload() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")],
+        project=_direct_upload_project_payload(),
+        revalidated_project=_project_payload_with_foreign_domain(),
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="target binding"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert operations.events == [
+        "wrangler-preflight",
+        "get-project",
+        "get-deployments",
+        "get-project",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_direct_upload_domain_set_drift_before_upload() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")],
+        project=_direct_upload_project_payload(),
+        revalidated_project=_direct_upload_project_payload_with_domain_drift(),
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="domains changed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert not any(event.startswith("upload:") for event in operations.events)
+
+
+@pytest.mark.asyncio
+async def test_should_reject_direct_upload_source_added_before_upload() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")],
+        project=_direct_upload_project_payload(),
+        revalidated_project=_project_payload(),
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="delivery mode changed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert not any(event.startswith("upload:") for event in operations.events)
+
+
+@pytest.mark.asyncio
+async def test_should_reject_git_source_removed_by_patch() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")], patched_project=_direct_upload_project_payload()
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="delivery mode changed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert operations.events == [
+        "wrangler-preflight",
+        "get-project",
+        "get-deployments",
+        "disable-git",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_git_source_removed_before_upload() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")],
+        revalidated_project=_direct_upload_project_payload(),
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="delivery mode changed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert operations.events == [
+        "wrangler-preflight",
+        "get-project",
+        "get-deployments",
+        "disable-git",
+        "get-project",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_git_domain_set_drift_before_upload() -> None:
+    # Given
+    operations = FakeOperations(
+        [_deployment_payload("absent")],
+        revalidated_project=_git_project_payload_with_domain_drift(),
+    )
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="domains changed"):
+        await deploy_verified_artifact(
+            operations, object(), _target(), _github_evidence(), AttemptIdentity("44", 2)
+        )
+    assert not any(event.startswith("upload:") for event in operations.events)
 
 
 @pytest.mark.asyncio
