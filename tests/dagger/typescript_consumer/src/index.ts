@@ -14,6 +14,7 @@ const COMMIT_SHA = "842187d3b9e549867375a37011cc75a520dc74a9"
 const CONSUMER = `${REPOSITORY}@${COMMIT_SHA}`
 const PRODUCER = `${"b".repeat(40)}:7`
 const ALLOWED_ROOTS = ["dist"]
+const FUNCTIONS_ROOTS = ["dist", "functions"]
 const CACHE_NAMESPACE = "fixture-typescript-v1"
 const SECRET_CANARY = ["typescript", "private", "canary"].join("-")
 const ARTIFACT_NAME = "typescript-artifact.txt"
@@ -33,6 +34,7 @@ export class TypescriptConsumer {
     const envelope = await verifiedEnvelope()
     const secret = dag.setSecret("typescript-fixture-secret", SECRET_CANARY)
     typedEvidence(secret)
+    typedPagesEvidence(envelope, secret)
     await providerRejectsTamper(envelope, secret)
     await packageBuild()
     await dag.cacheVolume(CACHE_NAMESPACE).id()
@@ -61,6 +63,29 @@ async function verifiedEnvelope(): Promise<Directory> {
 function typedEvidence(secret: Secret): void {
   const evidence: FoundationCheckEvidence = dag.foundation().greenMain(secret, REPOSITORY)
   if (evidence === undefined) throw new Error("generated evidence type was unavailable")
+}
+
+function typedPagesEvidence(envelope: Directory, secret: Secret): void {
+  void pagesEvidenceRoundTrip
+  void envelope
+  void secret
+}
+
+async function pagesEvidenceRoundTrip(envelope: Directory, secret: Secret): Promise<void> {
+  const evidence = dag.cloudflarePages().deploy(
+    envelope, secret, secret, secret, "7", 1, REPOSITORY, "ci", "main",
+    "example.invalid", "dist", [], CONSUMER, PRODUCER, FUNCTIONS_ROOTS,
+    { pagesFunctions: true },
+  )
+  const evidenceId = await evidence.id()
+  const reloaded = dag.loadCloudflarePagesDeploymentEvidenceFromID(evidenceId)
+  const [deploymentId, deploymentUrl] = await Promise.all([
+    reloaded.deploymentId(),
+    reloaded.deploymentUrl(),
+  ])
+  if (deploymentId.length === 0 || deploymentUrl.length === 0) {
+    throw new Error("reloaded Pages evidence was incomplete")
+  }
 }
 
 async function packageBuild(): Promise<void> {

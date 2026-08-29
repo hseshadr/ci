@@ -41,8 +41,9 @@ The shared modules are:
 
 - `portfolio-foundation`: exact source identity, full-history repository guard, deterministic
   artifact envelopes, envelope verification, and exact-current-`main` GitHub evidence;
-- `cloudflare-pages`: fail-closed Pages preflight, one pinned Wrangler direct upload, and
-  deployment/live convergence bound to the created deployment ID.
+- `cloudflare-pages`: fail-closed Pages preflight, one pinned Wrangler direct upload,
+  deployment/live convergence bound to the created deployment ID, and an opt-in compiler for
+  authenticated Pages Functions sources.
 - `python-package`: frozen dependency audit, non-root pure-Python wheel and sdist build,
   metadata-derived tag verification, and a Foundation envelope for a separate source-free
   official PyPA publisher job. The module never publishes to a registry.

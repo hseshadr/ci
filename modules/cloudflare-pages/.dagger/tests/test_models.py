@@ -11,6 +11,7 @@ from cloudflare_pages.models import (
     PagesProject,
     PagesTarget,
     RepositoryIdentity,
+    WranglerBuildMetadata,
 )
 
 
@@ -27,6 +28,34 @@ def test_should_bind_repository_project_branch_and_domain() -> None:
     # Then
     assert target.repository.name == target.project
     assert target.deploy_root == "dist"
+    assert target.pages_functions is False
+
+
+def test_should_opt_into_pages_functions_without_changing_static_default() -> None:
+    target = PagesTarget(
+        "hseshadr/edge-reco",
+        "edge-reco",
+        "main",
+        "edge-reco.com",
+        "dist",
+        pages_functions=True,
+    )
+
+    assert target.pages_functions is True
+
+
+def test_should_parse_only_typed_wrangler_build_inputs() -> None:
+    metadata = WranglerBuildMetadata.model_validate_json(
+        '{"inputs":{"functions/api/hello.js":{"bytes":42}},"outputs":{}}'
+    )
+
+    assert tuple(metadata.inputs) == ("functions/api/hello.js",)
+
+
+@pytest.mark.parametrize("value", ('{"inputs":[]}', '{"inputs":{"route.js":{"bytes":-1}}}'))
+def test_should_reject_malformed_wrangler_build_metadata(value: str) -> None:
+    with pytest.raises(ValidationError):
+        WranglerBuildMetadata.model_validate_json(value)
 
 
 @pytest.mark.parametrize("root", ("", ".", "../dist", "dist/", "dist/site"))

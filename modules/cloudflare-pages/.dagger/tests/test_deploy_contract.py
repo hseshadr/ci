@@ -120,9 +120,10 @@ FIXTURE_MAIN = r"""from __future__ import annotations
 import json
 import dagger
 from dagger import dag, function, object_type
-from cloudflare_pages.api import deploy_verified_artifact
+from cloudflare_pages.api import CloudflarePolicyError, deploy_verified_artifact
 from cloudflare_pages.main import (CurlPagesOperations, WRANGLER_OUTPUT_PATH, _jq_binary,
-  _uncached, _verify_envelope, _wrangler_script, wrangler_deploy_args)
+  _prepare_deploy_artifact, _uncached, _verify_envelope, _wrangler_script,
+  wrangler_deploy_args)
 from cloudflare_pages.models import AttemptIdentity, CreatedDeployment, GitHubEvidence, PagesTarget
 
 PYTHON_IMAGE = "python:3.13.14-slim@sha256:9662417aace5ae7b8e2609cce472b72a8958e134ba372808abe9cc1a0c0125e6"
@@ -133,8 +134,16 @@ PRIVATE_KEY = __PRIVATE_KEY__
 FAKE_WRANGLER = r'''#!/bin/sh
 set -eu
 [ "$1 $2 $3" = "pages deploy /artifact" ]
-[ "$(find /artifact -mindepth 1 -maxdepth 1 -printf '%f\n')" = "index.html" ]
-[ "$(cat /artifact/index.html)" = "verified artifact" ]
+entries=$(find /artifact -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+if [ -f /artifact/_worker.js ]; then
+  [ "$entries" = "_routes.json
+_worker.js
+index.html" ]
+  grep -q hello-from-functions /artifact/_worker.js
+else
+  [ "$entries" = "index.html" ]
+  [ "$(cat /artifact/index.html)" = "verified artifact" ]
+fi
 cat > "$WRANGLER_OUTPUT_FILE_PATH" <<'EOF'
 {"type":"pages-deploy","version":1,"pages_project":"edge-reco","deployment_id":"f64788e9-fccd-4d4a-a28a-cb84f88f6","url":"https://f64788e9.edge-reco.pages.dev","timestamp":"2026-08-27T20:00:00Z"}
 {"type":"pages-deploy-detailed","version":1,"pages_project":"edge-reco","deployment_id":"f64788e9-fccd-4d4a-a28a-cb84f88f6","url":"https://f64788e9.edge-reco.pages.dev","timestamp":"2026-08-27T20:00:00Z"}
@@ -181,6 +190,46 @@ def fixture_files() -> dagger.Directory:
     source = source.with_new_file("ca.pem", CA_CERT)
     return source.with_new_file("key.pem", PRIVATE_KEY)
 
+async def functions_transaction(envelope: dagger.Directory, operations: MockOperations,
+    target: PagesTarget) -> CreatedDeployment:
+    verified = await _verify_envelope(envelope, "hseshadr/edge-reco@" + SHA,
+      "b" * 40 + ":44", ["dist", "functions"])
+    prepared = await _prepare_deploy_artifact(verified, target)
+    return await deploy_verified_artifact(operations, prepared, target, evidence(), AttemptIdentity("44", 2))
+
+async def reject_functions_escape(source: dagger.Directory, target: PagesTarget,
+    specifier: str) -> None:
+    code = f'import pkg from "{specifier}"; export const onRequest=()=>new Response(pkg.name)'
+    escaped = source.with_new_file("functions/api/hello.js", code)
+    try: await _prepare_deploy_artifact(escaped, target)
+    except CloudflarePolicyError as error:
+        assert "escaped authenticated roots" in str(error); return
+    raise ValueError("outside import reached provider transport")
+
+async def functions_contract(token: dagger.Secret, account: dagger.Secret,
+    mock: dagger.Service, cert: dagger.File) -> None:
+    target = PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist", pages_functions=True)
+    source = dag.directory().with_new_file("dist/index.html", "verified artifact")
+    source = source.with_new_file("functions/api/hello.js", 'export const onRequest=()=>new Response("hello-from-functions")')
+    missing = source.with_new_file("functions/api/hello.js", 'import value from "not-present"; export const onRequest=()=>new Response(value)')
+    try: await _prepare_deploy_artifact(missing, target)
+    except CloudflarePolicyError: pass
+    else: raise ValueError("missing bare import reached provider transport")
+    await reject_functions_escape(source, target, "/usr/local/lib/node_modules/wrangler/package.json")
+    await reject_functions_escape(source, target, "../../../usr/local/lib/node_modules/wrangler/package.json")
+    operations = MockOperations(token, account, target, mock, cert)
+    envelope = dag.foundation().envelope(source, "hseshadr/edge-reco@" + SHA,
+      "b" * 40 + ":44", ["dist", "functions"])
+    for path in ("artifact/dist/index.html", "artifact/functions/api/hello.js"):
+        tampered = envelope.with_new_file(path, "tampered")
+        try: await functions_transaction(tampered, operations, target)
+        except dagger.QueryError: pass
+        else: raise ValueError("tampered Functions envelope reached provider transport")
+    result = await functions_transaction(envelope, operations, target)
+    assert result.source_sha == SHA
+    events = json.loads(await operations._request("GET", "/__mock/events"))["result"]["domains"]
+    assert events.count("upload") == 2
+
 @object_type
 class ProviderContract:
     @function
@@ -195,15 +244,23 @@ class ProviderContract:
         events = json.loads(await operations._request("GET", "/__mock/events"))["result"]["domains"]
         assert events == ["wrangler-preflight", "get-project", "get-deployments", "disable-git", "get-project", "upload", "get-deployments"]
         assert result.source_sha == SHA
+        await functions_contract(token, account, mock, fixture_files().file("ca.pem"))
         tampered = envelope.with_new_file("artifact/dist/index.html", "tampered")
         try: await _verify_envelope(tampered, "hseshadr/edge-reco@" + SHA, "b" * 40 + ":44", ["dist"])
-        except dagger.QueryError: return "mock provider order and envelope tamper rejection passed"
+        except dagger.QueryError: return "provider order, functions route, missing import, and tamper rejection passed"
         raise ValueError("tampered envelope was accepted")
 """
 
 
-def _target() -> PagesTarget:
-    return PagesTarget("hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist")
+def _target(*, pages_functions: bool = False) -> PagesTarget:
+    return PagesTarget(
+        "hseshadr/edge-reco",
+        "edge-reco",
+        "main",
+        "edge-reco.com",
+        "dist",
+        pages_functions=pages_functions,
+    )
 
 
 def _github_evidence() -> GitHubEvidence:
@@ -427,16 +484,131 @@ class ImmediateTimeout:
 
 
 @dataclass
+class FakeFile:
+    contents_value: str
+
+    async def contents(self) -> str:
+        return self.contents_value
+
+    async def size(self) -> int:
+        return len(self.contents_value.encode())
+
+
+@dataclass
+class OversizedMetadataFile:
+    contents_read: bool = False
+
+    async def size(self) -> int:
+        return main_module.FUNCTIONS_METADATA_BYTES + 1
+
+    async def contents(self) -> str:
+        self.contents_read = True
+        raise AssertionError("CONTENTS_READ_BEFORE_LIMIT")
+
+
+@dataclass(frozen=True)
+class OversizedMetadataDirectory:
+    metadata: OversizedMetadataFile
+
+    def file(self, path: str) -> OversizedMetadataFile:
+        assert path == main_module.FUNCTIONS_METADATA_NAME
+        return self.metadata
+
+
+@dataclass
 class FakeDirectory:
     selected: str = ""
+    entries_by_path: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    contents_by_path: dict[str, str] = field(default_factory=dict)
     digested: bool = False
+    added_files: list[tuple[str, object]] = field(default_factory=list)
+    filters: list[tuple[str, ...]] = field(default_factory=list)
+    added_directories: list[str] = field(default_factory=list)
 
     def directory(self, path: str) -> FakeDirectory:
-        return FakeDirectory(path)
+        selected = f"{self.selected}/{path}".strip("/")
+        return FakeDirectory(
+            selected,
+            self.entries_by_path,
+            self.contents_by_path,
+            added_files=self.added_files,
+        )
+
+    def file(self, path: str) -> object:
+        selected = f"{self.selected}/{path}".strip("/")
+        if selected in self.contents_by_path:
+            return FakeFile(self.contents_by_path[selected])
+        return (self.selected, path)
+
+    def with_file(self, path: str, value: object) -> FakeDirectory:
+        self.added_files.append((path, value))
+        return self
+
+    def filter(self, *, exclude: list[str]) -> FakeDirectory:
+        self.filters.append(tuple(exclude))
+        return self
+
+    def with_new_directory(self, path: str) -> FakeDirectory:
+        self.added_directories.append(path)
+        return self
+
+    async def entries(self) -> list[str]:
+        return list(self.entries_by_path.get(self.selected, ()))
 
     async def digest(self) -> str:
         self.digested = True
         return "sha256:fixture"
+
+
+@dataclass
+class FakeFunctionsContainer:
+    """Record the closed Pages Functions compiler boundary."""
+
+    events: list[tuple[str, object]] = field(default_factory=list)
+    derived: FakeDirectory = field(
+        default_factory=lambda: FakeDirectory(entries_by_path={"": ("_routes.json", "_worker.js")})
+    )
+
+    def with_mounted_directory(self, path: str, value: object, *, read_only: bool = False) -> Self:
+        self.events.append(("mount", (path, value, read_only)))
+        return self
+
+    def with_mounted_temp(self, path: str) -> Self:
+        self.events.append(("temp", path))
+        return self
+
+    def with_directory(self, path: str, value: object) -> Self:
+        self.events.append(("seed-directory", (path, value)))
+        return self
+
+    def with_workdir(self, path: str) -> Self:
+        self.events.append(("workdir", path))
+        return self
+
+    def with_env_variable(self, name: str, value: str) -> Self:
+        self.events.append(("env", (name, value)))
+        return self
+
+    def with_exec(self, command: list[str]) -> Self:
+        self.events.append(("exec", command))
+        return self
+
+    def directory(self, path: str) -> FakeDirectory:
+        self.events.append(("directory", path))
+        return self.derived
+
+
+class FailingFunctionsDirectory(FakeDirectory):
+    async def entries(self) -> list[str]:
+        raise TimeoutError("consumer source detail must stay private")
+
+
+def _derived_with_metadata(*inputs: str) -> FakeDirectory:
+    metadata = json.dumps({"inputs": {path: {"bytes": 1} for path in inputs}, "outputs": {}})
+    return FakeDirectory(
+        entries_by_path={"": ("_build-metadata.json", "_routes.json", "_worker.js")},
+        contents_by_path={"_build-metadata.json": metadata},
+    )
 
 
 @dataclass(frozen=True)
@@ -647,6 +819,88 @@ async def test_should_deploy_existing_direct_upload_without_git_patch() -> None:
         f"upload:{FULL_SHA}",
         "get-deployments",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("project", "expected"),
+    (
+        (
+            _project_payload(),
+            [
+                "compile-functions",
+                "wrangler-preflight",
+                "get-project",
+                "get-deployments",
+                "disable-git",
+                "get-project",
+                f"upload:{FULL_SHA}",
+                "get-deployments",
+            ],
+        ),
+        (
+            _direct_upload_project_payload(),
+            [
+                "compile-functions",
+                "wrangler-preflight",
+                "get-project",
+                "get-deployments",
+                "get-project",
+                f"upload:{FULL_SHA}",
+                "get-deployments",
+            ],
+        ),
+    ),
+)
+async def test_should_compile_functions_before_git_or_direct_provider_transport(
+    monkeypatch: pytest.MonkeyPatch, project: str, expected: list[str]
+) -> None:
+    artifact = cast(dagger.Directory, object())
+    target = _target(pages_functions=True)
+    context = main_module.ProviderContext(target, _github_evidence(), AttemptIdentity("44", 2))
+    operations = FakeOperations(
+        [_deployment_payload("absent"), _deployment_payload()], project=project
+    )
+
+    async def verified(*_: object) -> tuple[dagger.Directory, main_module.ProviderContext]:
+        return artifact, context
+
+    async def prepare(source: dagger.Directory, _: PagesTarget) -> dagger.Directory:
+        operations.events.append("compile-functions")
+        return source
+
+    monkeypatch.setattr(main_module, "_verified_context", verified)
+    monkeypatch.setattr(main_module, "_prepare_deploy_artifact", prepare)
+    monkeypatch.setattr(main_module, "CurlPagesOperations", lambda *_: operations)
+    pages = main_module.CloudflarePages.__new__(main_module.CloudflarePages)
+
+    await pages.deploy(
+        artifact,
+        cast(dagger.Secret, object()),
+        cast(dagger.Secret, object()),
+        cast(dagger.Secret, object()),
+        "44",
+        2,
+        "hseshadr/edge-reco",
+        "edge-reco",
+        "main",
+        "edge-reco.com",
+        "dist",
+        [],
+        f"hseshadr/edge-reco@{FULL_SHA}",
+        "b" * 40 + ":44",
+        ["dist", "functions"],
+        True,
+    )
+
+    assert operations.events == expected
+
+
+@pytest.mark.asyncio
+async def test_should_keep_static_artifact_preparation_as_exact_identity() -> None:
+    artifact = cast(dagger.Directory, object())
+
+    assert await main_module._prepare_deploy_artifact(artifact, _target()) is artifact
 
 
 @pytest.mark.asyncio
@@ -1114,6 +1368,29 @@ async def test_should_validate_pinned_wrangler_help(
 
 
 @pytest.mark.asyncio
+async def test_should_validate_pinned_functions_build_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = " ".join(
+        (*main_module.WRANGLER_REQUIRED_FLAGS, *main_module.WRANGLER_FUNCTIONS_REQUIRED_FLAGS)
+    )
+    container = FakeContainer(output)
+    monkeypatch.setattr(main_module, "_wrangler_base", lambda: container)
+    operations = CurlPagesOperations(
+        cast(dagger.Secret, object()),
+        cast(dagger.Secret, object()),
+        _target(pages_functions=True),
+    )
+
+    await operations.wrangler_preflight()
+
+    assert container.commands == [
+        ["wrangler", "pages", "deploy", "--help"],
+        ["wrangler", "pages", "functions", "build", "--help"],
+    ]
+
+
+@pytest.mark.asyncio
 async def test_should_reject_changed_wrangler_help(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1184,10 +1461,194 @@ async def test_should_reject_unframed_provider_response() -> None:
         await main_module._request_result(cast(dagger.Container, FakeContainer("200")))
 
 
-def test_should_require_exactly_one_verified_deploy_root() -> None:
+def test_should_keep_static_envelope_root_contract_unchanged() -> None:
     main_module._require_deploy_root(_target(), ["dist"])
     with pytest.raises(CloudflarePolicyError, match="only envelope root"):
         main_module._require_deploy_root(_target(), ["dist", "reports"])
+
+
+@pytest.mark.parametrize(
+    "roots",
+    (
+        ["dist"],
+        ["functions", "dist"],
+        ["dist", "functions", "reports"],
+        ["dist", "Functions"],
+    ),
+)
+def test_should_require_exact_pages_functions_root_matrix(roots: list[str]) -> None:
+    target = _target(pages_functions=True)
+    with pytest.raises(CloudflarePolicyError, match=r"dist.*functions"):
+        main_module._require_deploy_root(target, roots)
+
+
+def test_should_accept_only_ordered_pages_functions_roots() -> None:
+    main_module._require_deploy_root(_target(pages_functions=True), ["dist", "functions"])
+
+
+def test_should_build_pages_functions_from_one_read_only_project_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = FakeFunctionsContainer()
+    artifact = FakeDirectory()
+    empty_directory = object()
+    monkeypatch.setattr(main_module, "_wrangler_base", lambda: container)
+    monkeypatch.setattr(main_module, "_empty_directory", lambda: empty_directory)
+
+    result = cast(
+        FakeFunctionsContainer,
+        main_module._functions_build_container(cast(dagger.Directory, artifact)),
+    )
+
+    assert result is container
+    assert container.events == [
+        ("mount", ("/project", artifact, True)),
+        ("temp", "/project/.wrangler/tmp"),
+        ("seed-directory", ("/derived", empty_directory)),
+        ("temp", "/run/functions-cache"),
+        ("temp", "/run/functions-config"),
+        ("env", ("WRANGLER_CACHE_DIR", "/run/functions-cache")),
+        ("env", ("XDG_CONFIG_HOME", "/run/functions-config")),
+        ("workdir", "/project"),
+        ("exec", main_module.functions_build_args()),
+    ]
+
+
+def test_should_remove_consumer_packages_and_configs_from_compiler_input() -> None:
+    source = FakeDirectory()
+
+    result = cast(FakeDirectory, main_module._functions_source(cast(dagger.Directory, source)))
+
+    assert result is source
+    assert source.filters == [
+        (
+            "**/node_modules",
+            "**/package.json",
+            "**/package-lock.json",
+            "**/pnpm-lock.yaml",
+            "**/yarn.lock",
+            "**/wrangler.toml",
+            "**/wrangler.json",
+            "**/wrangler.jsonc",
+        )
+    ]
+    assert source.added_directories == [".wrangler/tmp"]
+
+
+def test_should_use_fixed_pinned_functions_build_without_dependency_inputs() -> None:
+    assert main_module.functions_build_args() == [
+        "wrangler",
+        "pages",
+        "functions",
+        "build",
+        "functions",
+        "--outfile=/derived/_worker.js",
+        "--output-routes-path=/derived/_routes.json",
+        "--project-directory=/project",
+        "--build-output-directory=/project/dist",
+        "--metafile=/derived/_build-metadata.json",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_stage_only_compiled_worker_and_routes() -> None:
+    source = FakeDirectory(entries_by_path={"dist": ("index.html",)})
+    derived = _derived_with_metadata(
+        "api/hello.js",
+        "../.wrangler/tmp/functionsRoutes-fixed.mjs",
+        "../../usr/local/lib/node_modules/wrangler/node_modules/path-to-regexp/dist.es2015/index.js",
+        "../../usr/local/lib/node_modules/wrangler/templates/pages-template-worker.ts",
+    )
+    container = FakeFunctionsContainer(derived=derived)
+
+    staged = await main_module._compiled_pages_artifact(
+        cast(dagger.Directory, source), cast(dagger.Container, container), "dist"
+    )
+
+    assert cast(FakeDirectory, staged).selected == "dist"
+    assert cast(FakeDirectory, staged).added_files == [
+        ("_worker.js", ("", "_worker.js")),
+        ("_routes.json", ("", "_routes.json")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_changed_functions_build_outputs() -> None:
+    source = FakeDirectory(entries_by_path={"dist": ("index.html",)})
+    derived = FakeDirectory(entries_by_path={"": ("_worker.js", "foreign.txt")})
+    container = FakeFunctionsContainer(derived=derived)
+
+    with pytest.raises(CloudflarePolicyError, match="derived outputs differ"):
+        await main_module._compiled_pages_artifact(
+            cast(dagger.Directory, source), cast(dagger.Container, container), "dist"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outside", ("/outside.mjs", "../outside.mjs"))
+async def test_should_reject_resolved_inputs_outside_authenticated_roots(outside: str) -> None:
+    derived = _derived_with_metadata("api/hello.js", outside)
+
+    with pytest.raises(CloudflarePolicyError, match="escaped authenticated roots"):
+        await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+
+
+@pytest.mark.asyncio
+async def test_should_accept_only_authenticated_and_fixed_compiler_inputs() -> None:
+    derived = _derived_with_metadata(
+        "api/hello.js",
+        "../dist/shared.js",
+        "../.wrangler/tmp/functionsRoutes-fixed.mjs",
+        "../../usr/local/lib/node_modules/wrangler/node_modules/path-to-regexp/dist.es2015/index.js",
+        "../../usr/local/lib/node_modules/wrangler/templates/pages-template-worker.ts",
+    )
+
+    await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+
+
+@pytest.mark.asyncio
+async def test_should_reject_unlisted_pinned_image_input() -> None:
+    derived = _derived_with_metadata(
+        "api/hello.js",
+        "../../usr/local/lib/node_modules/wrangler/package.json",
+    )
+
+    with pytest.raises(CloudflarePolicyError, match="escaped authenticated roots"):
+        await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+
+
+@pytest.mark.asyncio
+async def test_should_reject_oversized_build_metadata_before_reading_contents() -> None:
+    metadata = OversizedMetadataFile()
+    derived = OversizedMetadataDirectory(metadata)
+
+    with pytest.raises(CloudflarePolicyError, match="build metadata differs"):
+        await main_module._functions_build_metadata(cast(dagger.Directory, derived))
+    assert metadata.contents_read is False
+
+
+def test_should_resolve_metadata_from_fixed_functions_working_directory() -> None:
+    assert main_module._resolved_functions_input("api/hello.js").as_posix() == (
+        "/project/functions/api/hello.js"
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_sanitize_functions_build_failure_before_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = FakeFunctionsContainer(derived=FailingFunctionsDirectory())
+    monkeypatch.setattr(
+        main_module,
+        "_functions_build_container",
+        lambda _: cast(dagger.Container, container),
+    )
+
+    with pytest.raises(CloudflarePolicyError, match="Pages Functions build failed") as error:
+        await main_module._prepare_deploy_artifact(
+            cast(dagger.Directory, FakeDirectory()), _target(pages_functions=True)
+        )
+    assert "consumer source detail" not in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -1234,12 +1695,16 @@ async def test_should_sleep_only_requested_backoff() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("consumer_matches", (True, False))
+@pytest.mark.parametrize(
+    ("consumer_matches", "pages_functions"),
+    ((True, False), (False, False), (True, True)),
+)
 async def test_should_bind_verified_envelope_to_internal_green_evidence(
-    monkeypatch: pytest.MonkeyPatch, consumer_matches: bool
+    monkeypatch: pytest.MonkeyPatch, consumer_matches: bool, pages_functions: bool
 ) -> None:
-    verified = FakeDirectory()
-    context = main_module.ProviderContext(_target(), _github_evidence(), AttemptIdentity("44", 2))
+    verified = FakeDirectory(entries_by_path={"dist": ("index.html",), "functions": ("api",)})
+    target = _target(pages_functions=pages_functions)
+    context = main_module.ProviderContext(target, _github_evidence(), AttemptIdentity("44", 2))
 
     async def verify(*_: object) -> FakeDirectory:
         return verified
@@ -1251,8 +1716,15 @@ async def test_should_bind_verified_envelope_to_internal_green_evidence(
     monkeypatch.setattr(main_module, "_provider_context", provider)
     consumer = f"hseshadr/edge-reco@{FULL_SHA}" if consumer_matches else "foreign"
     inputs = main_module.TargetInputs(
-        "hseshadr/edge-reco", "edge-reco", "main", "edge-reco.com", "dist", ()
+        "hseshadr/edge-reco",
+        "edge-reco",
+        "main",
+        "edge-reco.com",
+        "dist",
+        (),
+        pages_functions,
     )
+    allowed_roots = ["dist", "functions"] if pages_functions else ["dist"]
     arguments = (
         cast(dagger.Directory, object()),
         cast(dagger.Secret, object()),
@@ -1261,15 +1733,71 @@ async def test_should_bind_verified_envelope_to_internal_green_evidence(
         inputs,
         consumer,
         "b" * 40 + ":44",
-        ["dist"],
+        allowed_roots,
     )
     if not consumer_matches:
         with pytest.raises(CloudflarePolicyError, match="Envelope source identity"):
             await main_module._verified_context(*arguments)
         return
     artifact, result = await main_module._verified_context(*arguments)
-    assert cast(FakeDirectory, artifact).selected == "dist"
+    expected = "" if pages_functions else "dist"
+    assert cast(FakeDirectory, artifact).selected == expected
     assert result == context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ("_worker.js", "_routes.json"))
+async def test_should_reject_derived_conflict_before_green_main(
+    monkeypatch: pytest.MonkeyPatch,
+    conflict: str,
+) -> None:
+    verified = FakeDirectory(
+        entries_by_path={"dist": (conflict, "index.html"), "functions": ("api",)}
+    )
+    green_called = False
+
+    async def verify(*_: object) -> FakeDirectory:
+        return verified
+
+    async def provider(*_: object) -> main_module.ProviderContext:
+        nonlocal green_called
+        green_called = True
+        raise AssertionError("green-main must not run for a conflicting envelope")
+
+    monkeypatch.setattr(main_module, "_verify_envelope", verify)
+    monkeypatch.setattr(main_module, "_provider_context", provider)
+    inputs = main_module.TargetInputs(
+        "hseshadr/edge-reco",
+        "edge-reco",
+        "main",
+        "edge-reco.com",
+        "dist",
+        (),
+        True,
+    )
+
+    with pytest.raises(CloudflarePolicyError, match=rf"{conflict}.*functions"):
+        await main_module._verified_context(
+            cast(dagger.Directory, object()),
+            cast(dagger.Secret, object()),
+            "44",
+            2,
+            inputs,
+            f"hseshadr/edge-reco@{FULL_SHA}",
+            "b" * 40 + ":44",
+            ["dist", "functions"],
+        )
+    assert green_called is False
+
+
+@pytest.mark.asyncio
+async def test_should_reject_empty_functions_root_before_provider_transport() -> None:
+    verified = FakeDirectory(entries_by_path={"dist": ("index.html",), "functions": ()})
+
+    with pytest.raises(CloudflarePolicyError, match="functions root must not be empty"):
+        await main_module._require_pages_functions_source(
+            cast(dagger.Directory, verified), _target(pages_functions=True)
+        )
 
 
 def test_should_reject_malformed_wrangler_output() -> None:
@@ -1355,6 +1883,22 @@ def test_should_not_accept_forgeable_public_github_json() -> None:
     )
 
 
+def test_should_expose_pages_functions_as_one_default_false_option() -> None:
+    tree = ast.parse(MAIN.read_text())
+    methods = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in {"preflight", "deploy", "verify"}
+    ]
+
+    for method in methods:
+        names = [argument.arg for argument in method.args.args]
+        assert names[-1] == "pages_functions"
+        default = method.args.defaults[-1]
+        assert isinstance(default, ast.Constant)
+        assert default.value is False
+
+
 def test_should_verify_envelope_before_internal_green_main() -> None:
     tree = ast.parse(MAIN.read_text())
     helper = next(
@@ -1393,6 +1937,19 @@ def test_should_reject_public_url_or_command_escape_hatches() -> None:
 
     # Then
     assert not arguments.intersection({"url", "origin", "command", "cmd", "script"})
+
+
+def test_real_fixture_should_cover_closed_two_root_functions_transaction() -> None:
+    required = (
+        '["dist", "functions"]',
+        "artifact/dist/index.html",
+        "artifact/functions/api/hello.js",
+        "/usr/local/lib/node_modules/wrangler/package.json",
+        "deploy_verified_artifact(",
+        'events.count("upload") == 2',
+    )
+
+    assert all(value in FIXTURE_MAIN for value in required)
 
 
 def _cache_value(method: ast.AsyncFunctionDef) -> str | None:
@@ -1483,4 +2040,7 @@ def test_should_run_real_dagger_mock_provider_contract(tmp_path: Path) -> None:
 
     # Then
     _require_success(result)
-    assert "mock provider order and envelope tamper rejection passed" in result.stdout
+    assert (
+        "provider order, functions route, missing import, and tamper rejection passed"
+        in result.stdout
+    )
