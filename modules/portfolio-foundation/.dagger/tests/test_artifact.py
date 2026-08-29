@@ -30,6 +30,7 @@ from portfolio_foundation.artifact import (
     UnsupportedArtifactNode,
     artifact_files,
     build_manifest,
+    canonical_roots,
     parse_consumer_identity,
     parse_manifest,
     parse_producing_identity,
@@ -48,6 +49,12 @@ MODULE_SHA = "b" * 40
 RUN_ID = "12345"
 ROOTS = ("dist",)
 CONTEXT = ArtifactContext(IDENTITY, MODULE_SHA, ROOTS, RUN_ID)
+UINT64_MAX = 18_446_744_073_709_551_615
+OVERSIZED_ROOT_SETS = (
+    tuple(f"root-{index:02}" for index in range(33)),
+    ("a" * 256,),
+    tuple(f"{index:02}-{'a' * 128}" for index in range(32)),
+)
 
 
 def _file(path: str, contents: bytes) -> ArtifactFile:
@@ -208,6 +215,38 @@ def test_should_reject_malformed_producing_identity_when_enveloping(producer: st
     # Given / When / Then
     with pytest.raises(ValueError):
         parse_producing_identity(producer)
+
+
+def test_should_accept_largest_unsigned_64_bit_producing_run_identity() -> None:
+    # Given / When
+    module_sha, run_id = parse_producing_identity(f"{'b' * 40}:{UINT64_MAX}")
+
+    # Then
+    assert (module_sha, run_id) == (MODULE_SHA, str(UINT64_MAX))
+
+
+@pytest.mark.parametrize("run_id", ("9" * 21, str(UINT64_MAX + 1)))
+def test_should_reject_producing_run_identity_outside_unsigned_64_bit(run_id: str) -> None:
+    # Given / When / Then
+    with pytest.raises(ManifestParseError, match="run ID"):
+        parse_producing_identity(f"{'b' * 40}:{run_id}")
+
+
+@pytest.mark.parametrize("roots", OVERSIZED_ROOT_SETS)
+def test_should_reject_allowed_roots_that_exceed_scalar_bounds(
+    roots: tuple[str, ...],
+) -> None:
+    # Given / When / Then
+    with pytest.raises(UnexpectedArtifactPath, match="roots"):
+        canonical_roots(roots)
+
+
+def test_should_accept_allowed_root_at_per_root_byte_boundary() -> None:
+    # Given
+    roots = ("a" * 255,)
+
+    # When / Then
+    assert canonical_roots(roots) == roots
 
 
 @pytest.mark.parametrize("paths", (("dist/index.html", "debug.log"), ("debug.log",)))
@@ -722,6 +761,23 @@ def test_should_envelope_nested_directory_and_reject_unexpected_input(tmp_path: 
     _assert_exported_envelope(output)
     assert rejected.returncode != 0
     assert "debug.log" in rejected.stderr
+
+
+def test_should_order_manifest_paths_by_canonical_posix_string(tmp_path: Path) -> None:
+    # Given
+    source, envelope = tmp_path / "artifact", tmp_path / "envelope"
+    (source / "dist/a").mkdir(parents=True)
+    (source / "dist/a-z").write_text("flat")
+    (source / "dist/a/b").write_text("nested")
+
+    # When
+    created = _run_envelope(source, envelope)
+
+    # Then
+    assert created.returncode == 0, created.stderr
+    manifest = json.loads((envelope / "evidence/artifact-manifest.json").read_text())
+    assert [record["path"] for record in manifest["files"]] == ["dist/a-z", "dist/a/b"]
+    assert _run_verifier(envelope, tmp_path / "verified").returncode == 0
 
 
 def test_should_verify_actual_envelope_and_reject_each_mutated_member(tmp_path: Path) -> None:

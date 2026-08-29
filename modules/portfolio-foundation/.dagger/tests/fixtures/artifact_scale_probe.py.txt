@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from collections.abc import Iterable, Mapping, Sequence
 
 import dagger
 from dagger.client._core import Context
 
 from portfolio_foundation import artifact as artifact_module
-from portfolio_foundation.artifact import parse_manifest, verify_envelope_directory
+from portfolio_foundation.artifact import (
+    ArtifactEnvelopeError,
+    ArtifactManifest,
+    parse_manifest,
+    sha256_sums,
+    verify_envelope_directory,
+)
 from portfolio_foundation.identity import CommitIdentity, FullSha, RepositoryRef
 
 FIXTURE_IMAGE = "alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
@@ -48,6 +56,40 @@ class Counter:
         return self.total - self.mark
 
 
+class SelectionObserver:
+    def __init__(self) -> None:
+        self.hashes: set[str] = set()
+        self.maximum_bytes = 0
+
+    def observe(self, context: Context) -> None:
+        for selection in context.selections:
+            for value in selection.args.values():
+                self._observe_value(value)
+
+    def contains(self, text: str) -> bool:
+        return _text_digest(text) in self.hashes
+
+    def _observe_value(self, value: object) -> None:
+        if isinstance(value, str):
+            self._record(value)
+            return
+        if isinstance(value, Mapping):
+            self._observe_values(value.values())
+            return
+        if isinstance(value, Sequence):
+            self._observe_values(value)
+
+    def _observe_values(self, values: object) -> None:
+        if isinstance(values, Iterable):
+            for item in values:
+                self._observe_value(item)
+
+    def _record(self, text: str) -> None:
+        size = len(text.encode())
+        self.maximum_bytes = max(self.maximum_bytes, size)
+        self.hashes.add(_text_digest(text))
+
+
 class ResolvedDirectory(dagger.Directory):
     def __init__(self, directory: dagger.Directory, directory_id: str) -> None:
         super().__init__(directory._ctx)
@@ -62,10 +104,12 @@ class ResolvedDirectory(dagger.Directory):
 
 
 COUNTER = Counter()
+SELECTIONS = SelectionObserver()
 ORIGINAL_EXECUTE = Context.execute
 
 
 async def counted_execute(self, return_type=None):
+    SELECTIONS.observe(self)
     COUNTER.total += 1
     if COUNTER.budgeted and COUNTER.total - COUNTER.mark > EXECUTION_BUDGET:
         raise TerminalBudgetExceededError("artifact graph terminal budget exceeded")
@@ -111,10 +155,19 @@ async def verify(envelope: dagger.Directory) -> tuple[dagger.Directory | None, i
 async def evidence_result(
     envelope: dagger.Directory, verified: dagger.Directory
 ) -> dict[str, object]:
-    text = await envelope.file("evidence/artifact-manifest.json").contents()
-    manifest = parse_manifest(text)
+    text, sums, manifest = await _evidence(envelope)
     paths = tuple(file.path for file in manifest.files)
     mode = await verified.stat(_executable_path(), do_not_follow_symlinks=True).permissions()
+    return _artifact_metrics(paths, mode) | _evidence_metrics(text, sums, manifest)
+
+
+async def _evidence(envelope: dagger.Directory) -> tuple[str, str, ArtifactManifest]:
+    text = await envelope.file("evidence/artifact-manifest.json").contents()
+    sums = await envelope.file("evidence/SHA256SUMS").contents()
+    return text, sums, parse_manifest(text)
+
+
+def _artifact_metrics(paths: tuple[str, ...], mode: int) -> dict[str, object]:
     return {
         "file_count": len(paths),
         "directory_count": _directory_count(paths),
@@ -122,6 +175,17 @@ async def evidence_result(
         "newline_seen": any("\n" in path for path in paths),
         "backslash_seen": any("\\" in path for path in paths),
         "mode": mode,
+    }
+
+
+def _evidence_metrics(text: str, sums: str, manifest: ArtifactManifest) -> dict[str, object]:
+    return {
+        "manifest_bytes": len(text.encode()),
+        "sums_bytes": len(sums.encode()),
+        "maximum_selection_string_bytes": SELECTIONS.maximum_bytes,
+        "manifest_scalar_ingress": SELECTIONS.contains(text),
+        "sums_scalar_ingress": SELECTIONS.contains(sums),
+        "evidence_exact": text == manifest.to_json() and sums == sha256_sums(manifest),
     }
 
 
@@ -140,6 +204,57 @@ def _executable_path() -> str:
     return f"dist/{levels}/payload-000.bin"
 
 
+def _text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+async def _variant(directory: dagger.Directory, run_id: str) -> dagger.Directory:
+    envelope = await artifact_module.envelope_directory(
+        directory, identity(), "b" * 40, ("dist",), run_id
+    )
+    return await envelope.sync()
+
+
+async def _variant_evidence(
+    directory: dagger.Directory, original: dagger.Directory
+) -> dict[str, bool]:
+    same = await _variant(directory, "12345")
+    changed_byte = await _variant(directory.with_new_file(_executable_path(), "changed"), "12345")
+    changed_context = await _variant(directory, "12346")
+    original_id, same_id = await asyncio.gather(original.id(), same.id())
+    byte_id, context_id = await asyncio.gather(changed_byte.id(), changed_context.id())
+    return {
+        "same_input_deterministic": original_id == same_id,
+        "changed_byte_diverges": original_id != byte_id,
+        "changed_context_diverges": original_id != context_id,
+    }
+
+
+def _oversized_contexts() -> tuple[tuple[tuple[str, ...], str], ...]:
+    too_many = tuple(f"root-{index:02}" for index in range(33))
+    too_large = tuple(f"{index:02}-{'a' * 128}" for index in range(32))
+    return (
+        (too_many, "12345"),
+        (("a" * 256,), "12345"),
+        (too_large, "12345"),
+        (("dist",), "9" * 21),
+    )
+
+
+async def _oversized_context_evidence(directory: dagger.Directory) -> dict[str, object]:
+    before = COUNTER.total
+    rejections = 0
+    for roots, run_id in _oversized_contexts():
+        try:
+            await artifact_module.envelope_directory(directory, identity(), "b" * 40, roots, run_id)
+        except ArtifactEnvelopeError:
+            rejections += 1
+    return {
+        "oversized_context_rejected": rejections == len(_oversized_contexts()),
+        "oversized_context_execs": COUNTER.total - before,
+    }
+
+
 async def run() -> dict[str, object]:
     async with dagger.Connection() as client:
         artifact_module.dag = client
@@ -150,8 +265,24 @@ async def run() -> dict[str, object]:
         verified, verify_execs, error = await verify(envelope)
         if verified is None:
             return _failure("verify", verify_execs, error, create_execs)
-        result = await evidence_result(envelope, verified)
-        return {**result, "create_execs": create_execs, "verify_execs": verify_execs, "error": ""}
+        return await _success(directory, envelope, verified, create_execs, verify_execs)
+
+
+async def _success(
+    directory: dagger.Directory,
+    envelope: dagger.Directory,
+    verified: dagger.Directory,
+    create_execs: int,
+    verify_execs: int,
+) -> dict[str, object]:
+    result = await evidence_result(envelope, verified)
+    variants = await _variant_evidence(directory, envelope)
+    oversized = await _oversized_context_evidence(directory)
+    return result | variants | oversized | _success_counts(create_execs, verify_execs)
+
+
+def _success_counts(create_execs: int, verify_execs: int) -> dict[str, object]:
+    return {"create_execs": create_execs, "verify_execs": verify_execs, "error": ""}
 
 
 def _failure(phase: str, execs: int, error: str, create_execs: int = 0) -> dict[str, object]:

@@ -30,6 +30,17 @@ class ArtifactScaleResult(BaseModel):  # type: ignore[explicit-any]  # Pydantic 
     newline_seen: bool
     backslash_seen: bool
     mode: int
+    manifest_bytes: int
+    sums_bytes: int
+    maximum_selection_string_bytes: int
+    manifest_scalar_ingress: bool
+    sums_scalar_ingress: bool
+    evidence_exact: bool
+    same_input_deterministic: bool
+    changed_byte_diverges: bool
+    changed_context_diverges: bool
+    oversized_context_rejected: bool
+    oversized_context_execs: int
     create_execs: int
     verify_execs: int
     error: str
@@ -63,11 +74,38 @@ def _assert_old_graph_crosses_hosted_boundary() -> None:
 
 def _assert_scale_result(result: ArtifactScaleResult) -> None:
     _assert_old_graph_crosses_hosted_boundary()
+    _assert_scale_shape(result)
+    _assert_evidence_boundary(result)
+    _assert_reproducibility(result)
+    _assert_terminal_budget(result)
+
+
+def _assert_scale_shape(result: ArtifactScaleResult) -> None:
     assert result.error == ""
     assert (result.file_count, result.directory_count) == (SCALE_FILES, SCALE_DIRECTORIES)
     assert result.depth == 11
     assert result.newline_seen and result.backslash_seen
     assert result.mode == 0o755
+
+
+def _assert_evidence_boundary(result: ArtifactScaleResult) -> None:
+    assert result.manifest_bytes > 65_536
+    assert result.sums_bytes > 65_536
+    assert result.maximum_selection_string_bytes < 65_536
+    assert not result.manifest_scalar_ingress
+    assert not result.sums_scalar_ingress
+    assert result.evidence_exact
+    assert result.oversized_context_rejected
+    assert result.oversized_context_execs == 0
+
+
+def _assert_reproducibility(result: ArtifactScaleResult) -> None:
+    assert result.same_input_deterministic
+    assert result.changed_byte_diverges
+    assert result.changed_context_diverges
+
+
+def _assert_terminal_budget(result: ArtifactScaleResult) -> None:
     # Create: inventory stdout + normalized directory ID + envelope sync.
     assert result.create_execs == 3
     # Verify: two layout reads + manifest + artifact ID + inventory + sums + return sync.
