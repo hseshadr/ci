@@ -14,8 +14,8 @@ ACTIONLINT_IMAGE: Final = (
     "ef8299f97635c4c30e2298f48f30763ab782a4ad2c95b744649439a039421e36"
 )
 GITLEAKS_IMAGE: Final = (
-    "ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:"
-    "aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a"
+    "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:"
+    "c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 )
 ACTIONLINT_PATH: Final = "/usr/local/bin/actionlint"
 CANARY_EXIT_CODE: Final = 86
@@ -76,7 +76,7 @@ def _snapshot_commands() -> tuple[str, ...]:
     return (
         'test -n "$(find /snapshot -type f -print -quit)"',
         "echo guard-snapshot-nonempty >&2",
-        _gitleaks("/snapshot", no_git=True),
+        *_configured_gitleaks("/snapshot", no_git=True),
     )
 
 
@@ -88,8 +88,17 @@ def _history_commands(commit_sha: str) -> tuple[str, ...]:
         'test -n "$(git -C /repo rev-list --all)"',
         "git -C /repo fsck --full --no-dangling",
         "echo guard-history-verified >&2",
-        _gitleaks("/repo", log_options="--all"),
+        *_configured_gitleaks("/repo", log_options="--all"),
     )
+
+
+def _configured_gitleaks(
+    source: str, *, no_git: bool = False, log_options: str | None = None
+) -> tuple[str, ...]:
+    config = f"{source}/.gitleaks.toml"
+    configured = _gitleaks(source, no_git=no_git, log_options=log_options, config=config)
+    default = _gitleaks(source, no_git=no_git, log_options=log_options)
+    return (f"if test -f {config}; then", f"  {configured}", "else", f"  {default}", "fi")
 
 
 def _gitleaks(
@@ -98,10 +107,12 @@ def _gitleaks(
     no_git: bool = False,
     exit_code: int | None = None,
     log_options: str | None = None,
+    config: str | None = None,
 ) -> str:
     options: tuple[str, ...] = ("gitleaks", "detect", "--source", source)
     options += _no_git_flag(no_git)
     options += _log_options_flag(log_options)
+    options += _config_flag(config)
     options += ("--redact", "--no-banner")
     options += _exit_code_flag(exit_code)
     return " ".join(options)
@@ -116,6 +127,12 @@ def _no_git_flag(enabled: bool) -> tuple[str, ...]:
 def _log_options_flag(options: str | None) -> tuple[str, ...]:
     if options is not None:
         return (f"--log-opts={options}",)
+    return ()
+
+
+def _config_flag(path: str | None) -> tuple[str, ...]:
+    if path is not None:
+        return ("--config", path)
     return ()
 
 

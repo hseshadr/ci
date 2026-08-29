@@ -151,6 +151,18 @@ def test_should_contract_tamper_failure_before_provider_transport() -> None:
     assert all(all(marker in source for marker in markers) for source in sources)
 
 
+def test_should_run_exact_alma_detector_adversary_in_python_fixture() -> None:
+    # Given the hosted generated-client fixture and its production guard
+    python = _python_source()
+    guard = _foundation_guard_source()
+
+    # When / Then the hosted contract runs every exact pinned Alma proof
+    assert "await _alma_gitleaks_contract()" in python
+    assert "76cfea53cb96d215278048a326bd4aab91af9949" in python
+    assert _gitleaks_image(python) == _gitleaks_image(guard)
+    assert all(marker in python for marker in ("fresh-copy", "snapshot-copy"))
+
+
 def test_should_run_both_fixture_checks_from_the_explicit_root_source() -> None:
     # Given an explicit root source and observable dynamic module checks
     events: list[str] = []
@@ -224,6 +236,18 @@ def _ignores_sdk(path: Path) -> bool:
 
 def _python_source() -> str:
     return (FIXTURES / "python_consumer/.dagger/src/python_consumer/main.py").read_text()
+
+
+def _foundation_guard_source() -> str:
+    path = ROOT / "modules/portfolio-foundation/.dagger/src/portfolio_foundation/guard.py"
+    return path.read_text()
+
+
+def _gitleaks_image(source: str) -> str:
+    pattern = r"ghcr\.io/gitleaks/gitleaks:v8\.30\.1@sha256:[0-9a-f]+"
+    match = re.search(pattern, source.replace('"\n    "', ""))
+    assert match is not None
+    return match.group()
 
 
 def _typescript_source() -> str:

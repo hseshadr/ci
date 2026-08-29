@@ -132,6 +132,17 @@ def test_should_scan_nonempty_snapshot_and_all_canonical_history() -> None:
     assert "--source /repo --log-opts=--all" in command
 
 
+def test_should_apply_repository_config_to_snapshot_and_history() -> None:
+    # Given
+    command = secret_scan_command("c" * 40)
+
+    # When / Then
+    assert "test -f /snapshot/.gitleaks.toml" in command
+    assert "--config /snapshot/.gitleaks.toml" in command
+    assert "test -f /repo/.gitleaks.toml" in command
+    assert "--config /repo/.gitleaks.toml" in command
+
+
 def test_should_pin_every_guard_tool_image_by_digest() -> None:
     # Given
     images = (ACTIONLINT_IMAGE, GITLEAKS_IMAGE)
