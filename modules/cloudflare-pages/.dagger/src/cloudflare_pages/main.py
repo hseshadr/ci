@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import posixpath
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Final, Literal
 from uuid import uuid4
 
@@ -28,6 +30,7 @@ from .models import (
     GitHubEvidence,
     PagesTarget,
     ProviderDeploymentEvidence,
+    WranglerBuildMetadata,
     WranglerOutput,
 )
 
@@ -51,6 +54,7 @@ CURL_CONFIG_PATH: Final = "/work/cloudflare-curl.cfg"
 REQUEST_PATH: Final = "/work/cloudflare-request.json"
 CURL_DEADLINE_SECONDS: Final = 20
 WRANGLER_PREFLIGHT_SECONDS: Final = 60
+WRANGLER_FUNCTIONS_SECONDS: Final = 120
 WRANGLER_UPLOAD_SECONDS: Final = 300
 HTTP_STATUS_LENGTH: Final = 3
 API_RESPONSE_BYTES: Final = 262_144
@@ -64,6 +68,40 @@ WRANGLER_REQUIRED_FLAGS: Final = (
     "--no-bundle",
     "--skip-caching",
 )
+WRANGLER_FUNCTIONS_REQUIRED_FLAGS: Final = (
+    "--outfile",
+    "--output-routes-path",
+    "--project-directory",
+    "--build-output-directory",
+    "--metafile",
+)
+FUNCTIONS_METADATA_NAME: Final = "_build-metadata.json"
+FUNCTIONS_STAGED_ENTRIES: Final = frozenset({"_routes.json", "_worker.js"})
+FUNCTIONS_DERIVED_ENTRIES: Final = FUNCTIONS_STAGED_ENTRIES | {FUNCTIONS_METADATA_NAME}
+FUNCTIONS_METADATA_BYTES: Final = 1_048_576
+FUNCTIONS_AUTHENTICATED_ROOTS: Final = (
+    PurePosixPath("/project/dist"),
+    PurePosixPath("/project/functions"),
+)
+FUNCTIONS_GENERATED_ROOT: Final = PurePosixPath("/project/.wrangler/tmp")
+FUNCTIONS_TOOLCHAIN_INPUTS: Final = frozenset(
+    {
+        PurePosixPath(
+            "/usr/local/lib/node_modules/wrangler/node_modules/path-to-regexp/dist.es2015/index.js"
+        ),
+        PurePosixPath("/usr/local/lib/node_modules/wrangler/templates/pages-template-worker.ts"),
+    }
+)
+FUNCTIONS_SOURCE_EXCLUDES: Final = [
+    "**/node_modules",
+    "**/package.json",
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/wrangler.toml",
+    "**/wrangler.json",
+    "**/wrangler.jsonc",
+]
 
 
 @dataclass(frozen=True)
@@ -85,6 +123,7 @@ class TargetInputs:
     live_domain: str
     deploy_root: str
     domains: tuple[str, ...]
+    pages_functions: bool = False
 
 
 @object_type
@@ -125,12 +164,11 @@ class CurlPagesOperations:
         return await self._request("PATCH", self._project_suffix(), body)
 
     async def wrangler_preflight(self) -> None:
-        container = _wrangler_base().with_exec(["wrangler", "pages", "deploy", "--help"])
-        try:
-            output = await asyncio.wait_for(container.stdout(), WRANGLER_PREFLIGHT_SECONDS)
-        except (TimeoutError, dagger.QueryError):
-            raise CloudflarePolicyError("Pinned Wrangler preflight failed") from None
+        output = await _wrangler_help(["wrangler", "pages", "deploy", "--help"])
         _require_wrangler_help(output)
+        if self.target.pages_functions:
+            command = ["wrangler", "pages", "functions", "build", "--help"]
+            _require_functions_help(await _wrangler_help(command))
 
     async def upload(self, artifact: dagger.Directory, source_sha: str) -> CreatedDeployment:
         container = self._upload_container(artifact, source_sha)
@@ -189,187 +227,300 @@ class CurlPagesOperations:
 class CloudflarePages:
     """Deploy only foundation-verified artifacts to one bound Pages target."""
 
+    # fmt: off
     @function(cache="never")  # type: ignore[call-overload,untyped-decorator]  # SDK stub gap
     async def preflight(
-        self,
-        envelope: dagger.Directory,
-        github_token: dagger.Secret,
-        cloudflare_api_token: dagger.Secret,
-        cloudflare_account_id: dagger.Secret,
-        workflow_run_id: str,
-        run_attempt: int,
-        repository: str,
-        project: str,
-        production_branch: str,
-        live_domain: str,
-        deploy_root: str,
-        domains: list[str],
-        consumer_identity: str,
-        producing_identity: str,
-        allowed_roots: list[str],
+        self, envelope: dagger.Directory, github_token: dagger.Secret,
+        cloudflare_api_token: dagger.Secret, cloudflare_account_id: dagger.Secret,
+        workflow_run_id: str, run_attempt: int, repository: str, project: str,
+        production_branch: str, live_domain: str, deploy_root: str, domains: list[str],
+        consumer_identity: str, producing_identity: str, allowed_roots: list[str],
+        pages_functions: bool = False,
     ) -> str:
         """Verify the envelope and run read-only project, deployment, and CLI checks."""
-        inputs = TargetInputs(
-            repository, project, production_branch, live_domain, deploy_root, tuple(domains)
-        )
-        _, context = await _verified_context(
-            envelope,
-            github_token,
-            workflow_run_id,
-            run_attempt,
-            inputs,
-            consumer_identity,
-            producing_identity,
-            allowed_roots,
-        )
-        operations = CurlPagesOperations(
-            cloudflare_api_token, cloudflare_account_id, context.target
-        )
-        await preflight_provider(operations, context.target)
-        return "Cloudflare Pages preflight passed"
+        inputs = _target_inputs(repository, project, production_branch, live_domain,
+                                deploy_root, domains, pages_functions)
+        return await _preflight(envelope, github_token, cloudflare_api_token,
+                                cloudflare_account_id, workflow_run_id, run_attempt,
+                                inputs, consumer_identity, producing_identity, allowed_roots)
+    # fmt: on
 
+    # fmt: off
     @function(cache="never")  # type: ignore[call-overload,untyped-decorator]  # SDK stub gap
     async def deploy(
-        self,
-        envelope: dagger.Directory,
-        github_token: dagger.Secret,
-        cloudflare_api_token: dagger.Secret,
-        cloudflare_account_id: dagger.Secret,
-        workflow_run_id: str,
-        run_attempt: int,
-        repository: str,
-        project: str,
-        production_branch: str,
-        live_domain: str,
-        deploy_root: str,
-        domains: list[str],
-        consumer_identity: str,
-        producing_identity: str,
-        allowed_roots: list[str],
+        self, envelope: dagger.Directory, github_token: dagger.Secret,
+        cloudflare_api_token: dagger.Secret, cloudflare_account_id: dagger.Secret,
+        workflow_run_id: str, run_attempt: int, repository: str, project: str,
+        production_branch: str, live_domain: str, deploy_root: str, domains: list[str],
+        consumer_identity: str, producing_identity: str, allowed_roots: list[str],
+        pages_functions: bool = False,
     ) -> DeploymentEvidence:
         """Direct-upload one verified artifact and return exact deployment evidence."""
-        inputs = TargetInputs(
-            repository, project, production_branch, live_domain, deploy_root, tuple(domains)
-        )
-        artifact, context = await _verified_context(
-            envelope,
-            github_token,
-            workflow_run_id,
-            run_attempt,
-            inputs,
-            consumer_identity,
-            producing_identity,
-            allowed_roots,
-        )
-        operations = CurlPagesOperations(
-            cloudflare_api_token, cloudflare_account_id, context.target
-        )
-        evidence = await deploy_verified_artifact(
-            operations, artifact, context.target, context.github, context.attempt
-        )
-        return _public_evidence(evidence)
+        inputs = _target_inputs(repository, project, production_branch, live_domain,
+                                deploy_root, domains, pages_functions)
+        return await _deploy(envelope, github_token, cloudflare_api_token,
+                             cloudflare_account_id, workflow_run_id, run_attempt,
+                             inputs, consumer_identity, producing_identity, allowed_roots)
+    # fmt: on
 
+    # fmt: off
     @function(cache="never")  # type: ignore[call-overload,untyped-decorator]  # SDK stub gap
     async def verify(
-        self,
-        envelope: dagger.Directory,
-        github_token: dagger.Secret,
-        cloudflare_api_token: dagger.Secret,
-        cloudflare_account_id: dagger.Secret,
-        workflow_run_id: str,
-        run_attempt: int,
-        repository: str,
-        project: str,
-        production_branch: str,
-        live_domain: str,
-        deploy_root: str,
-        domains: list[str],
-        consumer_identity: str,
-        producing_identity: str,
-        allowed_roots: list[str],
+        self, envelope: dagger.Directory, github_token: dagger.Secret,
+        cloudflare_api_token: dagger.Secret, cloudflare_account_id: dagger.Secret,
+        workflow_run_id: str, run_attempt: int, repository: str, project: str,
+        production_branch: str, live_domain: str, deploy_root: str, domains: list[str],
+        consumer_identity: str, producing_identity: str, allowed_roots: list[str],
+        pages_functions: bool = False,
     ) -> DeploymentEvidence:
         """Converge read-only production evidence for an exact source attempt."""
-        inputs = TargetInputs(
-            repository, project, production_branch, live_domain, deploy_root, tuple(domains)
-        )
-        _, context = await _verified_context(
-            envelope,
-            github_token,
-            workflow_run_id,
-            run_attempt,
-            inputs,
-            consumer_identity,
-            producing_identity,
-            allowed_roots,
-        )
-        operations = CurlPagesOperations(
-            cloudflare_api_token, cloudflare_account_id, context.target
-        )
-        evidence = await verify_current_deployment(
-            operations, context.target, context.github, context.attempt
-        )
-        return _public_evidence(evidence)
+        inputs = _target_inputs(repository, project, production_branch, live_domain,
+                                deploy_root, domains, pages_functions)
+        return await _verify(envelope, github_token, cloudflare_api_token,
+                             cloudflare_account_id, workflow_run_id, run_attempt,
+                             inputs, consumer_identity, producing_identity, allowed_roots)
+    # fmt: on
+
+
+def _target_inputs(
+    repository: str,
+    project: str,
+    branch: str,
+    domain: str,
+    deploy_root: str,
+    domains: list[str],
+    pages_functions: bool,
+) -> TargetInputs:
+    return TargetInputs(
+        repository, project, branch, domain, deploy_root, tuple(domains), pages_functions
+    )
+
+
+# fmt: off
+async def _preflight(
+    envelope: dagger.Directory, github_token: dagger.Secret, api_token: dagger.Secret,
+    account_id: dagger.Secret, run_id: str, attempt: int, inputs: TargetInputs,
+    consumer: str, producer: str, roots: list[str],
+) -> str:
+    artifact, context = await _verified_context(
+        envelope, github_token, run_id, attempt, inputs, consumer, producer, roots)
+    operations = CurlPagesOperations(api_token, account_id, context.target)
+    await _prepare_deploy_artifact(artifact, context.target)
+    await preflight_provider(operations, context.target)
+    return "Cloudflare Pages preflight passed"
+# fmt: on
+
+
+# fmt: off
+async def _deploy(
+    envelope: dagger.Directory, github_token: dagger.Secret, api_token: dagger.Secret,
+    account_id: dagger.Secret, run_id: str, attempt: int, inputs: TargetInputs,
+    consumer: str, producer: str, roots: list[str],
+) -> DeploymentEvidence:
+    artifact, context = await _verified_context(
+        envelope, github_token, run_id, attempt, inputs, consumer, producer, roots)
+    operations = CurlPagesOperations(api_token, account_id, context.target)
+    artifact = await _prepare_deploy_artifact(artifact, context.target)
+    evidence = await deploy_verified_artifact(
+        operations, artifact, context.target, context.github, context.attempt)
+    return _public_evidence(evidence)
+# fmt: on
+
+
+# fmt: off
+async def _verify(
+    envelope: dagger.Directory, github_token: dagger.Secret, api_token: dagger.Secret,
+    account_id: dagger.Secret, run_id: str, attempt: int, inputs: TargetInputs,
+    consumer: str, producer: str, roots: list[str],
+) -> DeploymentEvidence:
+    _, context = await _verified_context(
+        envelope, github_token, run_id, attempt, inputs, consumer, producer, roots)
+    operations = CurlPagesOperations(api_token, account_id, context.target)
+    evidence = await verify_current_deployment(
+        operations, context.target, context.github, context.attempt)
+    return _public_evidence(evidence)
+# fmt: on
 
 
 async def _provider_context(
     github_token: dagger.Secret, workflow_run_id: str, run_attempt: int, inputs: TargetInputs
 ) -> ProviderContext:
-    target = PagesTarget(
-        inputs.repository,
-        inputs.project,
-        inputs.branch,
-        inputs.live_domain,
-        inputs.deploy_root,
-        inputs.domains,
-    )
+    target = _pages_target(inputs)
     attempt = AttemptIdentity(workflow_run_id, run_attempt)
-    value = (
-        await dag.foundation()
-        .green_main(github_token=github_token, repository=inputs.repository)
-        .serialization()
-    )
-    try:
-        github = GitHubEvidence.model_validate_json(value)
-    except ValidationError:
-        raise CloudflarePolicyError("Foundation GitHub evidence schema differs") from None
+    github = await _green_evidence(github_token, inputs.repository)
     require_evidence_binding(target, github, attempt)
     return ProviderContext(target, github, attempt)
 
 
-async def _verified_context(
-    envelope: dagger.Directory,
-    github_token: dagger.Secret,
-    workflow_run_id: str,
-    run_attempt: int,
-    inputs: TargetInputs,
-    consumer_identity: str,
-    producing_identity: str,
-    allowed_roots: list[str],
-) -> tuple[dagger.Directory, ProviderContext]:
-    target = PagesTarget(
+async def _green_evidence(token: dagger.Secret, repository: str) -> GitHubEvidence:
+    value = (
+        await dag.foundation().green_main(github_token=token, repository=repository).serialization()
+    )
+    try:
+        return GitHubEvidence.model_validate_json(value)
+    except ValidationError:
+        raise CloudflarePolicyError("Foundation GitHub evidence schema differs") from None
+
+
+def _pages_target(inputs: TargetInputs) -> PagesTarget:
+    return PagesTarget(
         inputs.repository,
         inputs.project,
         inputs.branch,
         inputs.live_domain,
         inputs.deploy_root,
         inputs.domains,
+        inputs.pages_functions,
     )
+
+
+# fmt: off
+async def _verified_context(
+    envelope: dagger.Directory, github_token: dagger.Secret, workflow_run_id: str,
+    run_attempt: int, inputs: TargetInputs, consumer_identity: str,
+    producing_identity: str, allowed_roots: list[str],
+) -> tuple[dagger.Directory, ProviderContext]:
+    target = _pages_target(inputs)
     _require_deploy_root(target, allowed_roots)
     verified = await _verify_envelope(
-        envelope, consumer_identity, producing_identity, allowed_roots
-    )
+        envelope, consumer_identity, producing_identity, allowed_roots)
+    await _require_pages_functions_source(verified, target)
     context = await _provider_context(github_token, workflow_run_id, run_attempt, inputs)
-    expected_consumer = f"{inputs.repository}@{context.github.commit_sha}"
-    if consumer_identity != expected_consumer:
-        raise CloudflarePolicyError("Envelope source identity differs from GitHub evidence")
-    artifact = verified.directory(target.deploy_root)
+    _require_consumer_binding(consumer_identity, inputs.repository, context.github)
+    artifact = verified if target.pages_functions else verified.directory(target.deploy_root)
     await artifact.digest()
     return artifact, context
+# fmt: on
+
+
+def _require_consumer_binding(consumer: str, repository: str, github: GitHubEvidence) -> None:
+    if consumer != f"{repository}@{github.commit_sha}":
+        raise CloudflarePolicyError("Envelope source identity differs from GitHub evidence")
 
 
 def _require_deploy_root(target: PagesTarget, allowed_roots: list[str]) -> None:
+    if target.pages_functions:
+        _require_functions_roots(target.deploy_root, allowed_roots)
+        return
     if allowed_roots != [target.deploy_root]:
         raise CloudflarePolicyError("Pages deploy root must be the only envelope root")
+
+
+def _require_functions_roots(deploy_root: str, allowed_roots: list[str]) -> None:
+    if deploy_root != "dist" or allowed_roots != ["dist", "functions"]:
+        raise CloudflarePolicyError("Pages Functions roots must be exactly dist then functions")
+
+
+async def _require_pages_functions_source(verified: dagger.Directory, target: PagesTarget) -> None:
+    if not target.pages_functions:
+        return
+    try:
+        static = await verified.directory(target.deploy_root).entries()
+        functions = await verified.directory("functions").entries()
+    except dagger.QueryError:
+        raise CloudflarePolicyError("Pages Functions roots could not be read") from None
+    conflicts = FUNCTIONS_STAGED_ENTRIES.intersection(static)
+    if conflicts:
+        name = sorted(conflicts)[0]
+        raise CloudflarePolicyError(f"{name} conflicts with Pages functions delivery")
+    if not functions:
+        raise CloudflarePolicyError("Pages functions root must not be empty")
+
+
+async def _prepare_deploy_artifact(
+    artifact: dagger.Directory, target: PagesTarget
+) -> dagger.Directory:
+    if not target.pages_functions:
+        return artifact
+    container = _functions_build_container(artifact)
+    return await _compiled_pages_artifact(artifact, container, target.deploy_root)
+
+
+async def _compiled_pages_artifact(
+    source: dagger.Directory, container: dagger.Container, deploy_root: str
+) -> dagger.Directory:
+    derived = container.directory("/derived")
+    try:
+        entries = await asyncio.wait_for(derived.entries(), WRANGLER_FUNCTIONS_SECONDS)
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions build failed") from None
+    if frozenset(entries) != FUNCTIONS_DERIVED_ENTRIES:
+        raise CloudflarePolicyError("Pages Functions derived outputs differ")
+    await _require_closed_functions_build(derived)
+    staged = source.directory(deploy_root).with_file("_worker.js", derived.file("_worker.js"))
+    staged = staged.with_file("_routes.json", derived.file("_routes.json"))
+    await staged.digest()
+    return staged
+
+
+def _functions_build_container(artifact: dagger.Directory) -> dagger.Container:
+    base = _wrangler_base().with_mounted_directory(
+        "/project", _functions_source(artifact), read_only=True
+    )
+    base = base.with_mounted_temp("/project/.wrangler/tmp")
+    base = base.with_directory("/derived", _empty_directory())
+    base = base.with_mounted_temp("/run/functions-cache")
+    base = base.with_mounted_temp("/run/functions-config")
+    base = base.with_env_variable("WRANGLER_CACHE_DIR", "/run/functions-cache")
+    base = base.with_env_variable("XDG_CONFIG_HOME", "/run/functions-config")
+    return base.with_workdir("/project").with_exec(functions_build_args())
+
+
+def _functions_source(artifact: dagger.Directory) -> dagger.Directory:
+    source = artifact.filter(exclude=FUNCTIONS_SOURCE_EXCLUDES)
+    return source.with_new_directory(".wrangler/tmp")
+
+
+def _empty_directory() -> dagger.Directory:
+    return dag.directory()
+
+
+async def _require_closed_functions_build(derived: dagger.Directory) -> None:
+    metadata = await _functions_build_metadata(derived)
+    inputs = tuple(_resolved_functions_input(value) for value in metadata.inputs)
+    _require_closed_functions_inputs(inputs)
+
+
+def _require_closed_functions_inputs(inputs: tuple[PurePosixPath, ...]) -> None:
+    _require_only_closed_functions_inputs(inputs)
+    _require_authenticated_function_input(inputs)
+
+
+def _require_only_closed_functions_inputs(inputs: tuple[PurePosixPath, ...]) -> None:
+    if not inputs or not all(_closed_functions_input(value) for value in inputs):
+        raise CloudflarePolicyError("Pages Functions inputs escaped authenticated roots")
+
+
+def _require_authenticated_function_input(inputs: tuple[PurePosixPath, ...]) -> None:
+    functions = FUNCTIONS_AUTHENTICATED_ROOTS[1]
+    if not any(value.is_relative_to(functions) for value in inputs):
+        raise CloudflarePolicyError("Pages Functions metadata omitted authenticated source")
+
+
+async def _functions_build_metadata(derived: dagger.Directory) -> WranglerBuildMetadata:
+    file = derived.file(FUNCTIONS_METADATA_NAME)
+    try:
+        size = await asyncio.wait_for(file.size(), WRANGLER_FUNCTIONS_SECONDS)
+    except (TimeoutError, ValidationError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions build metadata differs") from None
+    if size > FUNCTIONS_METADATA_BYTES:
+        raise CloudflarePolicyError("Pages Functions build metadata differs")
+    try:
+        value = await asyncio.wait_for(file.contents(), WRANGLER_FUNCTIONS_SECONDS)
+        return WranglerBuildMetadata.model_validate_json(value)
+    except (TimeoutError, ValidationError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions build metadata differs") from None
+
+
+def _resolved_functions_input(value: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    candidate = path if path.is_absolute() else PurePosixPath("/project/functions", path)
+    return PurePosixPath(posixpath.normpath(candidate.as_posix()))
+
+
+def _closed_functions_input(value: PurePosixPath) -> bool:
+    roots = (*FUNCTIONS_AUTHENTICATED_ROOTS, FUNCTIONS_GENERATED_ROOT)
+    return any(value.is_relative_to(root) for root in roots) or value in FUNCTIONS_TOOLCHAIN_INPUTS
 
 
 async def _verify_envelope(
@@ -401,6 +552,22 @@ def wrangler_deploy_args(target: PagesTarget, source_sha: str) -> list[str]:
         "--commit-dirty=false",
         "--no-bundle",
         "--skip-caching",
+    ]
+
+
+def functions_build_args() -> list[str]:
+    """Build Functions from only the authenticated closed project mount."""
+    return [
+        "wrangler",
+        "pages",
+        "functions",
+        "build",
+        "functions",
+        "--outfile=/derived/_worker.js",
+        "--output-routes-path=/derived/_routes.json",
+        "--project-directory=/project",
+        "--build-output-directory=/project/dist",
+        "--metafile=/derived/_build-metadata.json",
     ]
 
 
@@ -447,6 +614,19 @@ def _require_http_success(status: str, response: str) -> str:
 def _require_wrangler_help(output: str) -> None:
     if not all(flag in output for flag in WRANGLER_REQUIRED_FLAGS):
         raise CloudflarePolicyError("Pinned Wrangler Pages flags differ")
+
+
+def _require_functions_help(output: str) -> None:
+    if not all(flag in output for flag in WRANGLER_FUNCTIONS_REQUIRED_FLAGS):
+        raise CloudflarePolicyError("Pinned Wrangler Pages Functions flags differ")
+
+
+async def _wrangler_help(command: list[str]) -> str:
+    container = _wrangler_base().with_exec(command)
+    try:
+        return await asyncio.wait_for(container.stdout(), WRANGLER_PREFLIGHT_SECONDS)
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pinned Wrangler preflight failed") from None
 
 
 def _parse_wrangler_output(raw: str, target: PagesTarget) -> CreatedDeployment:

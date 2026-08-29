@@ -232,6 +232,42 @@ from JSON. The returned deployment ID forces evaluation of the typed provider re
 The provider resolves exact-current-`main` green Dagger evidence internally. A caller cannot
 authorize a deployment with stale or caller-authored evidence.
 
+### Opt in to Pages Functions
+
+Static consumers keep the call above unchanged. A Functions consumer authenticates exactly two
+ordered roots, sets the deploy root to `dist`, and opts in on the same deploy transaction:
+
+```python
+ALLOWED_ROOTS = ["dist", "functions"]
+
+evidence = dag.cloudflare_pages().deploy(
+    # The other required arguments are identical to the complete flow above.
+    envelope=envelope,
+    deploy_root="dist",
+    allowed_roots=ALLOWED_ROOTS,
+    pages_functions=True,
+)
+evidence_id = await evidence.id()
+reloaded = dag.load_cloudflare_pages_deployment_evidence_from_id(evidence_id)
+return await reloaded.deployment_id()
+```
+
+Materialize the typed evidence ID once and reload that object for downstream fields; do not add
+separate caller-side `preflight` or `verify` transactions. TypeScript uses the generated final
+option `{ pagesFunctions: true }` and reloads with
+`dag.loadCloudflarePagesDeploymentEvidenceFromID(evidenceId)`.
+
+The authenticated `functions` root must be self-contained. Before any Cloudflare API request or
+upload, the provider removes consumer package-manager inputs, `node_modules`, and Wrangler config;
+compiles with pinned Wrangler 4.103.0 from fixed `/project/functions`; and rejects missing imports,
+build failures, or a pre-existing `dist/_worker.js` or `dist/_routes.json`. Wrangler emits esbuild
+metadata into private scratch space; the provider rejects any resolved input outside authenticated
+`dist` and `functions`, its private generated-route scratch directory, and the one fixed Wrangler
+template plus its exact pinned router input. It stages only the derived `_worker.js` and
+`_routes.json` into authenticated `dist`, then performs the same single direct upload and
+deployment-ID convergence used for static sites. Static mode retains its exact arguments and
+ordering.
+
 ## Secrets and the production environment
 
 GitHub Actions injects credentials into Dagger as typed `Secret` arguments. After a repository
@@ -338,6 +374,8 @@ file alone is not release evidence.
 Shipped in this central change:
 
 - reusable foundation and Pages module implementations;
+- opt-in authenticated Pages Functions compilation within the existing one-upload Pages
+  transaction;
 - reusable Python package candidate implementation with source-free official PyPA boundary;
 - exact-SHA dependency and production-environment policy;
 - deterministic Python and TypeScript composition fixtures;

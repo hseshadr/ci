@@ -17,6 +17,7 @@ DOMAIN_PATTERN: Final = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
 )
 CLOSED_MODEL: Final = ConfigDict(extra="forbid", frozen=True, strict=True)
+BUILD_METADATA_MODEL: Final = ConfigDict(extra="ignore", frozen=True, strict=True)
 FULL_SHA_TEXT: Final = r"\A[0-9a-f]{40}\z"
 PAGES_COMMIT_SHA_TEXT: Final = r"\A(?:[0-9a-f]{40})?\z"
 NUMERIC_ID_TEXT: Final = r"\A[1-9][0-9]*\z"
@@ -28,6 +29,20 @@ class ClosedModel(BaseModel):  # type: ignore[explicit-any]  # Pydantic v2 base 
     """Reject unknown or coerced fields at every external response boundary."""
 
     model_config = CLOSED_MODEL
+
+
+class WranglerBuildInput(BaseModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """One esbuild-resolved input emitted by pinned Wrangler."""
+
+    model_config = BUILD_METADATA_MODEL
+    bytes: int = Field(ge=0)
+
+
+class WranglerBuildMetadata(BaseModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
+    """Typed subset of pinned Wrangler's esbuild metadata."""
+
+    model_config = BUILD_METADATA_MODEL
+    inputs: dict[str, WranglerBuildInput]
 
 
 class GitHubEvidence(ClosedModel):  # type: ignore[explicit-any]  # Pydantic v2 base stub
@@ -242,6 +257,7 @@ class PagesTarget:
     live_domain: str
     deploy_root: str
     domains: tuple[str, ...]
+    pages_functions: bool
 
     def __init__(
         self,
@@ -251,6 +267,7 @@ class PagesTarget:
         live_domain: str,
         deploy_root: str,
         domains: tuple[str, ...] = (),
+        pages_functions: bool = False,
     ) -> None:
         identity = RepositoryIdentity.parse(repository)
         required_domains = _canonical_domains(live_domain, domains)
@@ -263,6 +280,7 @@ class PagesTarget:
         object.__setattr__(self, "live_domain", live_domain)
         object.__setattr__(self, "deploy_root", deploy_root)
         object.__setattr__(self, "domains", required_domains)
+        object.__setattr__(self, "pages_functions", pages_functions)
 
 
 @dataclass(frozen=True)
