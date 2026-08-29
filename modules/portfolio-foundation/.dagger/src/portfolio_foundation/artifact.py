@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from functools import reduce
 from typing import Final, TypeGuard
 
 import dagger
@@ -25,8 +26,17 @@ from .source import (
 
 ENGINE_VERSION: Final = "v0.21.8"
 EPOCH: Final = 0
+EVIDENCE_IMAGE: Final = (
+    "python:3.13.15-alpine3.24"
+    "@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d"
+)
 IDENTITY_SEPARATOR_INDEX: Final = 40
 MANIFEST_PATH: Final = "evidence/artifact-manifest.json"
+MAX_ALLOWED_ROOT_BYTES: Final = 255
+MAX_ALLOWED_ROOT_COUNT: Final = 32
+MAX_ALLOWED_ROOTS_JSON_BYTES: Final = 4_096
+MAX_RUN_ID_DIGITS: Final = 20
+MAX_RUN_ID_VALUE: Final = (2**64) - 1
 MIN_PRODUCING_IDENTITY_LENGTH: Final = 42
 SCHEMA_VERSION: Final = 1
 SUMS_PATH: Final = "evidence/SHA256SUMS"
@@ -80,6 +90,89 @@ digest=$(sha256sum "$records")
 digest=${digest%% *}
 cat "$records"
 printf "%s\t%s\t%s\n" "$INVENTORY_TRAILER" "$count" "$digest"
+"""
+ARTIFACT_EVIDENCE_SCRIPT: Final = r"""import hashlib
+import json
+import os
+import shutil
+import stat
+from pathlib import Path
+
+SOURCE = Path("/input")
+ENVELOPE = Path("/envelope")
+ARTIFACT = ENVELOPE / "artifact"
+EVIDENCE = ENVELOPE / "evidence"
+
+
+def file_digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def relative_path(path):
+    return path.relative_to(ARTIFACT).as_posix()
+
+
+def artifact_files():
+    files = []
+    for path in sorted(ARTIFACT.rglob("*"), key=relative_path):
+        metadata = path.lstat()
+        if stat.S_ISREG(metadata.st_mode):
+            files.append({
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "path": relative_path(path),
+                "sha256": file_digest(path),
+            })
+    return files
+
+
+def manifest(files):
+    return {
+        "allowed_roots": json.loads(os.environ["ALLOWED_ROOTS"]),
+        "consumer_sha": os.environ["CONSUMER_SHA"],
+        "engine_version": os.environ["ENGINE_VERSION"],
+        "files": files,
+        "module_sha": os.environ["MODULE_SHA"],
+        "producing_run_id": os.environ["PRODUCING_RUN_ID"],
+        "repository": os.environ["REPOSITORY"],
+        "schema_version": int(os.environ["SCHEMA_VERSION"]),
+        "toolchain": json.loads(os.environ["TOOLCHAIN"]),
+    }
+
+
+def canonical_json(value):
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def checksum_record(path, digest):
+    return f"{digest}  {canonical_json(path)}\n"
+
+
+def write_evidence(files):
+    text = canonical_json(manifest(files))
+    records = [(f"artifact/{item['path']}", item["sha256"]) for item in files]
+    records.append(("evidence/artifact-manifest.json", hashlib.sha256(text.encode()).hexdigest()))
+    (EVIDENCE / "artifact-manifest.json").write_text(text, encoding="utf-8")
+    sums = "".join(checksum_record(path, digest) for path, digest in records)
+    (EVIDENCE / "SHA256SUMS").write_text(sums, encoding="utf-8")
+
+
+def normalize_evidence():
+    for name in ("artifact-manifest.json", "SHA256SUMS"):
+        os.chmod(EVIDENCE / name, 0o644)
+
+
+def set_epoch():
+    for path in sorted(ENVELOPE.rglob("*"), reverse=True):
+        os.utime(path, (0, 0), follow_symlinks=False)
+    os.utime(ENVELOPE, (0, 0), follow_symlinks=False)
+
+
+shutil.copytree(SOURCE, ARTIFACT)
+EVIDENCE.mkdir()
+write_evidence(artifact_files())
+normalize_evidence()
+set_epoch()
 """
 
 
@@ -224,6 +317,7 @@ def canonical_roots(roots: tuple[str, ...]) -> tuple[str, ...]:
     ordered = tuple(sorted(roots))
     _require_canonical_roots(roots, ordered)
     _require_safe_roots(ordered)
+    _require_bounded_roots(ordered)
     return ordered
 
 
@@ -245,6 +339,21 @@ def _require_safe_roots(roots: tuple[str, ...]) -> None:
     """Reject a root that cannot safely participate in a slash-separated path contract."""
     if any(not _safe_path(root) for root in roots):
         raise UnexpectedArtifactPathError("artifact roots must be safe relative paths")
+
+
+def _require_bounded_roots(roots: tuple[str, ...]) -> None:
+    """Keep caller-controlled root policy below every GraphQL scalar boundary."""
+    if len(roots) > MAX_ALLOWED_ROOT_COUNT:
+        raise UnexpectedArtifactPathError("artifact roots exceed count limit")
+    if any(len(root.encode()) > MAX_ALLOWED_ROOT_BYTES for root in roots):
+        raise UnexpectedArtifactPathError("artifact roots exceed per-root byte limit")
+    if len(_roots_json(roots).encode()) > MAX_ALLOWED_ROOTS_JSON_BYTES:
+        raise UnexpectedArtifactPathError("artifact roots exceed serialized byte limit")
+
+
+def _roots_json(roots: tuple[str, ...]) -> str:
+    """Serialize the exact bounded root policy passed to the evidence container."""
+    return json.dumps(roots, ensure_ascii=True, separators=(",", ":"))
 
 
 def _require_artifact_paths(paths: tuple[str, ...]) -> None:
@@ -325,6 +434,7 @@ async def collect_artifact_evidence(
     producing_run_id: str,
 ) -> ArtifactEvidence:
     """Observe all nodes, reject gaps, and normalize accepted artifact output."""
+    _require_context(identity, module_sha, allowed_roots, producing_run_id)
     inventory = await _artifact_inventory(artifact)
     _validate_nodes(inventory.nodes, allowed_roots)
     files = _normalized_files(inventory.nodes)
@@ -747,7 +857,8 @@ def _allowed_path(path: str, roots: tuple[str, ...]) -> bool:
 
 def _require_run_id(run_id: str) -> None:
     """Require nonempty numeric producing-run identity with no free-text serialization."""
-    if RUN_ID_PATTERN.fullmatch(run_id) is None:
+    matches = RUN_ID_PATTERN.fullmatch(run_id) is not None
+    if not matches or len(run_id) > MAX_RUN_ID_DIGITS or int(run_id) > MAX_RUN_ID_VALUE:
         raise ManifestParseError("producing run ID must be a nonempty positive decimal value")
 
 
@@ -757,11 +868,39 @@ def _checksum_record(path: str, digest: str) -> str:
 
 
 def _envelope_directory(evidence: ArtifactEvidence) -> dagger.Directory:
-    """Create normalized artifact and two evidence records at timestamp epoch zero."""
-    output = dag.directory().with_directory("artifact", evidence.directory)
-    output = output.with_new_file(MANIFEST_PATH, evidence.manifest.to_json(), permissions=0o644)
-    output = output.with_new_file(SUMS_PATH, sha256_sums(evidence.manifest), permissions=0o644)
-    return output.with_timestamps(EPOCH)
+    """Create the complete envelope in one pinned, fixed-size execution graph."""
+    container = _evidence_container(evidence.directory, evidence.manifest)
+    return container.directory("/envelope").with_timestamps(EPOCH)
+
+
+def _evidence_container(artifact: dagger.Directory, manifest: ArtifactManifest) -> dagger.Container:
+    """Generate scale-independent evidence without inline manifest graph arguments."""
+    container = dag.container().from_(EVIDENCE_IMAGE)
+    container = container.with_mounted_directory("/input", artifact, read_only=True)
+    container = reduce(_with_evidence_variable, _evidence_environment(manifest), container)
+    return container.with_exec(["python", "-c", ARTIFACT_EVIDENCE_SCRIPT])
+
+
+def _with_evidence_variable(
+    container: dagger.Container, variable: tuple[str, str]
+) -> dagger.Container:
+    """Add one non-secret, cacheable evidence input to the pinned builder."""
+    return container.with_env_variable(*variable)
+
+
+def _evidence_environment(manifest: ArtifactManifest) -> tuple[tuple[str, str], ...]:
+    """Return only fixed identity and policy inputs for in-container serialization."""
+    repository = manifest.identity.repository
+    return (
+        ("ALLOWED_ROOTS", _roots_json(manifest.allowed_roots)),
+        ("CONSUMER_SHA", manifest.identity.commit.value),
+        ("ENGINE_VERSION", manifest.engine_version),
+        ("MODULE_SHA", manifest.module_sha.value),
+        ("PRODUCING_RUN_ID", manifest.producing_run_id),
+        ("REPOSITORY", f"{repository.owner}/{repository.name}"),
+        ("SCHEMA_VERSION", str(manifest.schema_version)),
+        ("TOOLCHAIN", json.dumps(manifest.toolchain, separators=(",", ":"))),
+    )
 
 
 UnexpectedArtifactPath = UnexpectedArtifactPathError
