@@ -139,6 +139,36 @@ def test_should_bind_read_only_project_preflight() -> None:
     require_project_binding(project, _target())
 
 
+def test_should_bind_existing_direct_upload_project() -> None:
+    # Given
+    payload = json.loads(_project_payload())
+    payload["result"]["source"] = None
+    project = parse_project_response(json.dumps(payload))
+
+    # When / Then
+    require_project_binding(project, _target())
+
+
+def test_should_reject_missing_project_source() -> None:
+    # Given
+    payload = json.loads(_project_payload())
+    payload["result"].pop("source")
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="schema"):
+        parse_project_response(json.dumps(payload))
+
+
+def test_should_reject_wrong_project_source_type() -> None:
+    # Given
+    payload = json.loads(_project_payload())
+    payload["result"]["source"] = "github"
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="schema"):
+        parse_project_response(json.dumps(payload))
+
+
 def test_should_reject_malformed_project_schema() -> None:
     # Given
     payload = json.loads(_project_payload())
@@ -271,9 +301,9 @@ def test_should_reject_failed_deployment_stage(status: str) -> None:
 @pytest.mark.parametrize(
     ("mutation", "value"),
     (
-        ("source", None),
         ("domains", ["edge-reco.pages.dev"]),
         ("production_branch", "release"),
+        ("name", "almamesh"),
     ),
 )
 def test_should_reject_foreign_project_preflight(mutation: str, value: object) -> None:
@@ -291,6 +321,7 @@ def test_should_reject_foreign_project_preflight(mutation: str, value: object) -
     ("mutation", "value"),
     (
         ("owner", "foreign"),
+        ("repo_name", "foreign"),
         ("production_branch", "release"),
     ),
 )
@@ -298,6 +329,17 @@ def test_should_reject_foreign_git_source(mutation: str, value: str) -> None:
     # Given
     payload = json.loads(_project_payload())
     payload["result"]["source"]["config"][mutation] = value
+    project = parse_project_response(json.dumps(payload))
+
+    # When / Then
+    with pytest.raises(CloudflarePolicyError, match="target binding"):
+        require_project_binding(project, _target())
+
+
+def test_should_reject_foreign_git_source_type() -> None:
+    # Given
+    payload = json.loads(_project_payload())
+    payload["result"]["source"]["type"] = "gitlab"
     project = parse_project_response(json.dumps(payload))
 
     # When / Then

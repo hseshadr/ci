@@ -109,12 +109,12 @@ def parse_deployments_response(raw: str) -> DeploymentsResponse:
 def require_project_binding(project: PagesProject, target: PagesTarget) -> None:
     """Require repository, project, production branch, and domain coherence."""
     _require_project_identity(project, target)
+    _require_domains(project.domains, target)
     source = project.source
     if source is None:
-        raise CloudflarePolicyError("Cloudflare project target binding differs")
+        return
     _require_source_binding(source.config.owner, source.config.repo_name, target)
     _require_source_policy(source.type, source.config.production_branch, target)
-    _require_domains(project.domains, target)
 
 
 def _require_project_identity(project: PagesProject, target: PagesTarget) -> None:
@@ -180,8 +180,8 @@ async def deploy_verified_artifact[ArtifactT](
     require_evidence_binding(target, github, attempt)
     await operations.wrangler_preflight()
     project = await _read_preflight(operations, target)
-    await _disable_git(operations, target, project.id)
-    await _revalidate_disabled_project(operations, target, project.id)
+    await _disable_git(operations, target, project)
+    await _revalidate_disabled_project(operations, target, project)
     created = await operations.upload(artifact, github.commit_sha)
     deployment = await _converge(
         operations, target, github.commit_sha, project.id, created.deployment_id
@@ -224,28 +224,44 @@ async def _read_preflight[ArtifactT](
 
 
 async def _disable_git[ArtifactT](
-    operations: PagesOperations[ArtifactT], target: PagesTarget, expected_project_id: str
+    operations: PagesOperations[ArtifactT], target: PagesTarget, expected: PagesProject
 ) -> None:
+    if expected.source is None:
+        return
     project = parse_project_response(await operations.disable_git())
     require_project_binding(project, target)
-    if project.id != expected_project_id:
-        raise CloudflarePolicyError("Cloudflare project identity changed before upload")
-    source = project.source
-    if source is None or source.config.production_deployments_enabled:
-        raise CloudflarePolicyError("Cloudflare Git production deployment remains enabled")
-    if source.config.preview_deployment_setting != "none":
-        raise CloudflarePolicyError("Cloudflare Git preview deployment remains enabled")
+    _require_same_project_state(project, expected)
+    _require_same_delivery_mode(project, expected)
+    _require_git_disabled(project)
 
 
 async def _revalidate_disabled_project[ArtifactT](
-    operations: PagesOperations[ArtifactT], target: PagesTarget, project_id: str
+    operations: PagesOperations[ArtifactT], target: PagesTarget, expected: PagesProject
 ) -> None:
     project = parse_project_response(await operations.get_project())
     require_project_binding(project, target)
-    if project.id != project_id:
+    _require_same_project_state(project, expected)
+    _require_same_delivery_mode(project, expected)
+    _require_git_disabled(project)
+
+
+def _require_same_project_state(project: PagesProject, expected: PagesProject) -> None:
+    if project.id != expected.id:
         raise CloudflarePolicyError("Cloudflare project identity changed before upload")
+    if frozenset(project.domains) != frozenset(expected.domains):
+        raise CloudflarePolicyError("Cloudflare project domains changed before upload")
+
+
+def _require_same_delivery_mode(project: PagesProject, expected: PagesProject) -> None:
+    if (project.source is None) != (expected.source is None):
+        raise CloudflarePolicyError("Cloudflare project delivery mode changed before upload")
+
+
+def _require_git_disabled(project: PagesProject) -> None:
     source = project.source
-    if source is None or source.config.production_deployments_enabled:
+    if source is None:
+        return
+    if source.config.production_deployments_enabled:
         raise CloudflarePolicyError("Cloudflare Git production deployment remains enabled")
     if source.config.preview_deployment_setting != "none":
         raise CloudflarePolicyError("Cloudflare Git preview deployment remains enabled")
@@ -427,7 +443,7 @@ def _require_success(success: bool, errors: tuple[ApiProblem, ...]) -> None:
 def _project_result(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     project = _object(_required(payload, "result"))
     fields = _project(project, ("id", "name", "production_branch", "domains"))
-    source = project.get("source")
+    source = _required(project, "source")
     return fields | {"source": None if source is None else _source_result(source)}
 
 
