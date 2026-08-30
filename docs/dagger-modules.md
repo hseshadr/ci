@@ -263,8 +263,11 @@ compiles with pinned Wrangler 4.103.0 from fixed `/project/functions`; and rejec
 build failures, or a pre-existing `dist/_worker.js` or `dist/_routes.json`. Wrangler emits esbuild
 metadata into private scratch space; the provider rejects any resolved input outside authenticated
 `dist` and `functions`, its private generated-route scratch directory, and the one fixed Wrangler
-template plus its exact pinned router input. It stages only the derived `_worker.js` and
-`_routes.json` into authenticated `dist`, then performs the same single direct upload and
+template plus its exact pinned router input. Wrangler emits directory-mode module output; the
+provider requires a bounded `_worker.js/index.js`, rejects multipart upload serialization and any
+module path that escapes the generated tree, and requires every auxiliary module's content to match
+an authenticated `dist` or `functions` input. It stages only that `_worker.js` module directory plus
+`_routes.json` into authenticated `dist`. It then performs the same single direct upload and
 deployment-ID convergence used for static sites. Static mode retains its exact arguments and
 ordering.
 
