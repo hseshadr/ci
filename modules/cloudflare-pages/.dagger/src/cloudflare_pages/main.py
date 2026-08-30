@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import posixpath
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Final, Literal
@@ -69,16 +70,24 @@ WRANGLER_REQUIRED_FLAGS: Final = (
     "--skip-caching",
 )
 WRANGLER_FUNCTIONS_REQUIRED_FLAGS: Final = (
-    "--outfile",
+    "--outdir",
     "--output-routes-path",
     "--project-directory",
     "--build-output-directory",
     "--metafile",
 )
 FUNCTIONS_METADATA_NAME: Final = "_build-metadata.json"
-FUNCTIONS_STAGED_ENTRIES: Final = frozenset({"_routes.json", "_worker.js"})
-FUNCTIONS_DERIVED_ENTRIES: Final = FUNCTIONS_STAGED_ENTRIES | {FUNCTIONS_METADATA_NAME}
+FUNCTIONS_WORKER_NAME: Final = "_worker.js"
+FUNCTIONS_ENTRYPOINT_NAME: Final = "index.js"
+FUNCTIONS_CONFLICT_ENTRIES: Final = frozenset(
+    {"_routes.json", "_routes.json/", "_worker.js", "_worker.js/"}
+)
+FUNCTIONS_DERIVED_ENTRIES: Final = frozenset(
+    {FUNCTIONS_METADATA_NAME, "_routes.json", "_worker.js/"}
+)
 FUNCTIONS_METADATA_BYTES: Final = 1_048_576
+FUNCTIONS_ENTRYPOINT_BYTES: Final = 67_108_864
+FUNCTIONS_DIGEST_BATCH_SIZE: Final = 32
 FUNCTIONS_AUTHENTICATED_ROOTS: Final = (
     PurePosixPath("/project/dist"),
     PurePosixPath("/project/functions"),
@@ -419,7 +428,7 @@ async def _require_pages_functions_source(verified: dagger.Directory, target: Pa
         functions = await verified.directory("functions").entries()
     except dagger.QueryError:
         raise CloudflarePolicyError("Pages Functions roots could not be read") from None
-    conflicts = FUNCTIONS_STAGED_ENTRIES.intersection(static)
+    conflicts = FUNCTIONS_CONFLICT_ENTRIES.intersection(static)
     if conflicts:
         name = sorted(conflicts)[0]
         raise CloudflarePolicyError(f"{name} conflicts with Pages functions delivery")
@@ -446,8 +455,9 @@ async def _compiled_pages_artifact(
         raise CloudflarePolicyError("Pages Functions build failed") from None
     if frozenset(entries) != FUNCTIONS_DERIVED_ENTRIES:
         raise CloudflarePolicyError("Pages Functions derived outputs differ")
-    await _require_closed_functions_build(derived)
-    staged = source.directory(deploy_root).with_file("_worker.js", derived.file("_worker.js"))
+    await _require_closed_functions_build(source, derived)
+    worker = derived.directory(FUNCTIONS_WORKER_NAME)
+    staged = source.directory(deploy_root).with_directory(FUNCTIONS_WORKER_NAME, worker)
     staged = staged.with_file("_routes.json", derived.file("_routes.json"))
     await staged.digest()
     return staged
@@ -475,10 +485,130 @@ def _empty_directory() -> dagger.Directory:
     return dag.directory()
 
 
-async def _require_closed_functions_build(derived: dagger.Directory) -> None:
+async def _require_closed_functions_build(
+    source: dagger.Directory, derived: dagger.Directory
+) -> None:
     metadata = await _functions_build_metadata(derived)
     inputs = tuple(_resolved_functions_input(value) for value in metadata.inputs)
     _require_closed_functions_inputs(inputs)
+    await _require_worker_modules(source, derived)
+
+
+async def _require_worker_modules(source: dagger.Directory, derived: dagger.Directory) -> None:
+    worker = derived.directory(FUNCTIONS_WORKER_NAME)
+    try:
+        entries = await asyncio.wait_for(worker.entries(), WRANGLER_FUNCTIONS_SECONDS)
+        paths = await asyncio.wait_for(worker.glob("**"), WRANGLER_FUNCTIONS_SECONDS)
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions module output differs") from None
+    _require_worker_inventory(tuple(entries), tuple(paths))
+    await _require_worker_entrypoint(worker.file(FUNCTIONS_ENTRYPOINT_NAME))
+    await _require_worker_provenance(source, worker, tuple(paths))
+
+
+async def _require_worker_provenance(
+    source: dagger.Directory, worker: dagger.Directory, paths: tuple[str, ...]
+) -> None:
+    modules = _auxiliary_worker_paths(paths)
+    if not modules:
+        return
+    allowed = await _authenticated_source_digests(source)
+    emitted = await _file_digests(worker, modules)
+    if not set(emitted).issubset(allowed):
+        raise CloudflarePolicyError("Pages Functions module provenance differs")
+
+
+def _auxiliary_worker_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        path for path in paths if path != FUNCTIONS_ENTRYPOINT_NAME and not path.endswith("/")
+    )
+
+
+async def _authenticated_source_digests(source: dagger.Directory) -> frozenset[str]:
+    paths = await _authenticated_source_paths(source)
+    return frozenset(await _file_digests(source, paths))
+
+
+async def _authenticated_source_paths(source: dagger.Directory) -> tuple[str, ...]:
+    patterns = ("dist/**", "functions/**")
+    try:
+        groups = await asyncio.wait_for(
+            asyncio.gather(*(source.glob(pattern) for pattern in patterns)),
+            WRANGLER_FUNCTIONS_SECONDS,
+        )
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions module provenance differs") from None
+    return _regular_source_paths(groups)
+
+
+def _regular_source_paths(groups: Sequence[Sequence[str]]) -> tuple[str, ...]:
+    return tuple(path for group in groups for path in group if not path.endswith("/"))
+
+
+async def _file_digests(directory: dagger.Directory, paths: tuple[str, ...]) -> tuple[str, ...]:
+    try:
+        values = await asyncio.wait_for(
+            _batched_file_digests(directory, paths),
+            WRANGLER_FUNCTIONS_SECONDS,
+        )
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions module provenance differs") from None
+    return values
+
+
+async def _batched_file_digests(
+    directory: dagger.Directory, paths: tuple[str, ...]
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for start in range(0, len(paths), FUNCTIONS_DIGEST_BATCH_SIZE):
+        batch = paths[start : start + FUNCTIONS_DIGEST_BATCH_SIZE]
+        digests = await asyncio.gather(
+            *(directory.file(path).digest(exclude_metadata=True) for path in batch)
+        )
+        values.extend(digests)
+    return tuple(values)
+
+
+def _require_worker_inventory(entries: tuple[str, ...], paths: tuple[str, ...]) -> None:
+    _require_worker_entrypoint_path(entries, paths)
+    _require_closed_worker_paths(paths)
+
+
+def _require_worker_entrypoint_path(entries: tuple[str, ...], paths: tuple[str, ...]) -> None:
+    if FUNCTIONS_ENTRYPOINT_NAME not in entries or FUNCTIONS_ENTRYPOINT_NAME not in paths:
+        raise CloudflarePolicyError("Pages Functions module output differs")
+
+
+def _require_closed_worker_paths(paths: tuple[str, ...]) -> None:
+    if not paths or not all(_closed_worker_path(value) for value in paths):
+        raise CloudflarePolicyError("Pages Functions module output differs")
+
+
+def _closed_worker_path(value: str) -> bool:
+    path = PurePosixPath(value)
+    normalized = path.as_posix()
+    return bool(value) and not path.is_absolute() and ".." not in path.parts and normalized == value
+
+
+async def _require_worker_entrypoint(entrypoint: dagger.File) -> None:
+    try:
+        size = await asyncio.wait_for(entrypoint.size(), WRANGLER_FUNCTIONS_SECONDS)
+        if not 0 < size <= FUNCTIONS_ENTRYPOINT_BYTES:
+            raise CloudflarePolicyError("Pages Functions module output differs")
+        value = await asyncio.wait_for(entrypoint.contents(), WRANGLER_FUNCTIONS_SECONDS)
+    except (TimeoutError, dagger.QueryError):
+        raise CloudflarePolicyError("Pages Functions module output differs") from None
+    if _serialized_multipart(value):
+        raise CloudflarePolicyError("Pages Functions module output differs")
+
+
+def _serialized_multipart(value: str) -> bool:
+    lines = value.splitlines()
+    return (
+        len(lines) > 1
+        and lines[0].startswith("--")
+        and lines[1].casefold().startswith("content-disposition: form-data")
+    )
 
 
 def _require_closed_functions_inputs(inputs: tuple[PurePosixPath, ...]) -> None:
@@ -563,7 +693,7 @@ def functions_build_args() -> list[str]:
         "functions",
         "build",
         "functions",
-        "--outfile=/derived/_worker.js",
+        "--outdir=/derived/_worker.js",
         "--output-routes-path=/derived/_routes.json",
         "--project-directory=/project",
         "--build-output-directory=/project/dist",

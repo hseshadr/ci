@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -121,7 +122,7 @@ import json
 import dagger
 from dagger import dag, function, object_type
 from cloudflare_pages.api import CloudflarePolicyError, deploy_verified_artifact
-from cloudflare_pages.main import (CurlPagesOperations, WRANGLER_OUTPUT_PATH, _jq_binary,
+from cloudflare_pages.main import (CurlPagesOperations, NODE_IMAGE, WRANGLER_OUTPUT_PATH, _jq_binary,
   _prepare_deploy_artifact, _uncached, _verify_envelope, _wrangler_script,
   wrangler_deploy_args)
 from cloudflare_pages.models import AttemptIdentity, CreatedDeployment, GitHubEvidence, PagesTarget
@@ -135,11 +136,24 @@ FAKE_WRANGLER = r'''#!/bin/sh
 set -eu
 [ "$1 $2 $3" = "pages deploy /artifact" ]
 entries=$(find /artifact -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-if [ -f /artifact/_worker.js ]; then
+if [ -e /artifact/_worker.js ]; then
+  [ -d /artifact/_worker.js ]
   [ "$entries" = "_routes.json
 _worker.js
 index.html" ]
-  grep -q hello-from-functions /artifact/_worker.js
+  [ "$(find /artifact/_worker.js -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" = "index.js" ]
+  ! grep -q '^------formdata-' /artifact/_worker.js/index.js
+  ! grep -q 'Content-Disposition: form-data' /artifact/_worker.js/index.js
+  grep -q hello-from-functions /artifact/_worker.js/index.js
+  node --input-type=module --check < /artifact/_worker.js/index.js
+  node --input-type=module -e '
+    const fs = await import("node:fs");
+    const source = fs.readFileSync("/artifact/_worker.js/index.js").toString("base64");
+    const worker = (await import(`data:text/javascript;base64,${source}`)).default;
+    const response = await worker.fetch(new Request("https://example.com/api/hello"),
+      {ASSETS: {fetch: () => new Response("asset")}}, {waitUntil: () => undefined});
+    if (await response.text() !== "hello-from-functions") process.exit(1);
+  '
 else
   [ "$entries" = "index.html" ]
   [ "$(cat /artifact/index.html)" = "verified artifact" ]
@@ -158,7 +172,7 @@ class MockOperations(CurlPagesOperations):
         await self._request("GET", "/__mock/upload")
         return created
     def _upload_container(self, artifact: dagger.Directory, source_sha: str) -> dagger.Container:
-        base = dag.container(platform=dagger.Platform("linux/amd64")).from_(PYTHON_IMAGE)
+        base = dag.container(platform=dagger.Platform("linux/amd64")).from_(NODE_IMAGE)
         base = base.with_new_file("/usr/local/bin/wrangler", FAKE_WRANGLER, permissions=0o755)
         base = base.with_mounted_directory("/artifact", artifact, read_only=True)
         base = base.with_mounted_temp("/run/provider-output")
@@ -202,9 +216,25 @@ async def reject_functions_escape(source: dagger.Directory, target: PagesTarget,
     code = f'import pkg from "{specifier}"; export const onRequest=()=>new Response(pkg.name)'
     escaped = source.with_new_file("functions/api/hello.js", code)
     try: await _prepare_deploy_artifact(escaped, target)
-    except CloudflarePolicyError as error:
-        assert "escaped authenticated roots" in str(error); return
+    except CloudflarePolicyError: return
     raise ValueError("outside import reached provider transport")
+
+async def reject_external_wasm(source: dagger.Directory, target: PagesTarget) -> None:
+    specifier = "../../../usr/local/lib/node_modules/wrangler/node_modules/blake3-wasm/dist/wasm/nodejs/blake3_js_bg.wasm"
+    await reject_functions_escape(source, target, specifier)
+
+async def accept_executable_auxiliary(source: dagger.Directory, target: PagesTarget) -> None:
+    code = 'import value from "../data.txt"; export const onRequest=()=>new Response(value)'
+    value = source.with_new_file("functions/data.txt", "authenticated auxiliary", permissions=0o755)
+    value = value.with_new_file("functions/api/hello.js", code)
+    prepared = await _prepare_deploy_artifact(value, target)
+    worker = prepared.directory("_worker.js")
+    paths = await worker.glob("*.txt")
+    if len(paths) != 1: raise ValueError("authenticated auxiliary module was not staged")
+    emitted = worker.file(paths[0]); original = value.file("functions/data.txt")
+    if await emitted.digest() == await original.digest(): raise ValueError("mode fixture did not differ")
+    if await emitted.digest(exclude_metadata=True) != await original.digest(exclude_metadata=True):
+        raise ValueError("authenticated auxiliary content differed")
 
 async def functions_contract(token: dagger.Secret, account: dagger.Secret,
     mock: dagger.Service, cert: dagger.File) -> None:
@@ -217,6 +247,8 @@ async def functions_contract(token: dagger.Secret, account: dagger.Secret,
     else: raise ValueError("missing bare import reached provider transport")
     await reject_functions_escape(source, target, "/usr/local/lib/node_modules/wrangler/package.json")
     await reject_functions_escape(source, target, "../../../usr/local/lib/node_modules/wrangler/package.json")
+    await accept_executable_auxiliary(source, target)
+    await reject_external_wasm(source, target)
     operations = MockOperations(token, account, target, mock, cert)
     envelope = dag.foundation().envelope(source, "hseshadr/edge-reco@" + SHA,
       "b" * 40 + ":44", ["dist", "functions"])
@@ -247,7 +279,7 @@ class ProviderContract:
         await functions_contract(token, account, mock, fixture_files().file("ca.pem"))
         tampered = envelope.with_new_file("artifact/dist/index.html", "tampered")
         try: await _verify_envelope(tampered, "hseshadr/edge-reco@" + SHA, "b" * 40 + ":44", ["dist"])
-        except dagger.QueryError: return "provider order, functions route, missing import, and tamper rejection passed"
+        except dagger.QueryError: return "provider order, runnable module tree, multipart, escape, conflict, and tamper rejection passed"
         raise ValueError("tampered envelope was accepted")
 """
 
@@ -493,6 +525,39 @@ class FakeFile:
     async def size(self) -> int:
         return len(self.contents_value.encode())
 
+    async def digest(self, *, exclude_metadata: bool | None = False) -> str:
+        assert exclude_metadata is True
+        value = hashlib.sha256(self.contents_value.encode()).hexdigest()
+        return f"sha256:{value}"
+
+
+@dataclass
+class DigestConcurrency:
+    active: int = 0
+    maximum: int = 0
+
+
+@dataclass(frozen=True)
+class ConcurrentDigestFile:
+    state: DigestConcurrency
+
+    async def digest(self, *, exclude_metadata: bool | None = False) -> str:
+        assert exclude_metadata is True
+        self.state.active += 1
+        self.state.maximum = max(self.state.maximum, self.state.active)
+        await asyncio.sleep(0)
+        self.state.active -= 1
+        return "sha256:fixture"
+
+
+@dataclass(frozen=True)
+class ConcurrentDigestDirectory:
+    state: DigestConcurrency
+
+    def file(self, path: str) -> ConcurrentDigestFile:
+        assert path
+        return ConcurrentDigestFile(self.state)
+
 
 @dataclass
 class OversizedMetadataFile:
@@ -522,16 +587,20 @@ class FakeDirectory:
     contents_by_path: dict[str, str] = field(default_factory=dict)
     digested: bool = False
     added_files: list[tuple[str, object]] = field(default_factory=list)
+    added_directory_values: list[tuple[str, object]] = field(default_factory=list)
     filters: list[tuple[str, ...]] = field(default_factory=list)
     added_directories: list[str] = field(default_factory=list)
+    glob_by_path: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def directory(self, path: str) -> FakeDirectory:
         selected = f"{self.selected}/{path}".strip("/")
         return FakeDirectory(
-            selected,
-            self.entries_by_path,
-            self.contents_by_path,
+            selected=selected,
+            entries_by_path=self.entries_by_path,
+            contents_by_path=self.contents_by_path,
             added_files=self.added_files,
+            added_directory_values=self.added_directory_values,
+            glob_by_path=self.glob_by_path,
         )
 
     def file(self, path: str) -> object:
@@ -542,6 +611,10 @@ class FakeDirectory:
 
     def with_file(self, path: str, value: object) -> FakeDirectory:
         self.added_files.append((path, value))
+        return self
+
+    def with_directory(self, path: str, value: object) -> FakeDirectory:
+        self.added_directory_values.append((path, value))
         return self
 
     def filter(self, *, exclude: list[str]) -> FakeDirectory:
@@ -555,6 +628,10 @@ class FakeDirectory:
     async def entries(self) -> list[str]:
         return list(self.entries_by_path.get(self.selected, ()))
 
+    async def glob(self, pattern: str) -> list[str]:
+        key = self.selected if self.selected else pattern
+        return list(self.glob_by_path.get(key, ()))
+
     async def digest(self) -> str:
         self.digested = True
         return "sha256:fixture"
@@ -566,7 +643,7 @@ class FakeFunctionsContainer:
 
     events: list[tuple[str, object]] = field(default_factory=list)
     derived: FakeDirectory = field(
-        default_factory=lambda: FakeDirectory(entries_by_path={"": ("_routes.json", "_worker.js")})
+        default_factory=lambda: FakeDirectory(entries_by_path={"": ("_routes.json", "_worker.js/")})
     )
 
     def with_mounted_directory(self, path: str, value: object, *, read_only: bool = False) -> Self:
@@ -606,9 +683,31 @@ class FailingFunctionsDirectory(FakeDirectory):
 def _derived_with_metadata(*inputs: str) -> FakeDirectory:
     metadata = json.dumps({"inputs": {path: {"bytes": 1} for path in inputs}, "outputs": {}})
     return FakeDirectory(
-        entries_by_path={"": ("_build-metadata.json", "_routes.json", "_worker.js")},
-        contents_by_path={"_build-metadata.json": metadata},
+        entries_by_path={
+            "": ("_build-metadata.json", "_routes.json", "_worker.js/"),
+            "_worker.js": ("index.js",),
+        },
+        contents_by_path={
+            "_build-metadata.json": metadata,
+            "_worker.js/index.js": "export default {fetch() { return new Response('ok') }};",
+        },
+        glob_by_path={"_worker.js": ("index.js",)},
     )
+
+
+def _source_with_auxiliary(value: str) -> FakeDirectory:
+    return FakeDirectory(
+        contents_by_path={"functions/api/module.wasm": value},
+        glob_by_path={"functions/**": ("functions/api/module.wasm",)},
+    )
+
+
+def _derived_with_auxiliary(value: str) -> FakeDirectory:
+    derived = _derived_with_metadata("api/hello.js")
+    derived.entries_by_path["_worker.js"] = ("index.js", "module.wasm")
+    derived.glob_by_path["_worker.js"] = ("index.js", "module.wasm")
+    derived.contents_by_path["_worker.js/module.wasm"] = value
+    return derived
 
 
 @dataclass(frozen=True)
@@ -1535,14 +1634,14 @@ def test_should_remove_consumer_packages_and_configs_from_compiler_input() -> No
     assert source.added_directories == [".wrangler/tmp"]
 
 
-def test_should_use_fixed_pinned_functions_build_without_dependency_inputs() -> None:
+def test_should_request_module_directory_output_from_pinned_functions_compiler() -> None:
     assert main_module.functions_build_args() == [
         "wrangler",
         "pages",
         "functions",
         "build",
         "functions",
-        "--outfile=/derived/_worker.js",
+        "--outdir=/derived/_worker.js",
         "--output-routes-path=/derived/_routes.json",
         "--project-directory=/project",
         "--build-output-directory=/project/dist",
@@ -1566,10 +1665,49 @@ async def test_should_stage_only_compiled_worker_and_routes() -> None:
     )
 
     assert cast(FakeDirectory, staged).selected == "dist"
-    assert cast(FakeDirectory, staged).added_files == [
-        ("_worker.js", ("", "_worker.js")),
-        ("_routes.json", ("", "_routes.json")),
+    assert cast(FakeDirectory, staged).added_directory_values == [
+        ("_worker.js", derived.directory("_worker.js"))
     ]
+    assert cast(FakeDirectory, staged).added_files == [("_routes.json", ("", "_routes.json"))]
+
+
+@pytest.mark.asyncio
+async def test_should_reject_serialized_multipart_worker_before_staging() -> None:
+    derived = _derived_with_metadata("api/hello.js")
+    derived.contents_by_path["_worker.js/index.js"] = (
+        "------formdata-undici-fixed\r\nContent-Disposition: form-data; name=metadata"
+    )
+    container = FakeFunctionsContainer(derived=derived)
+
+    with pytest.raises(CloudflarePolicyError, match="module output differs"):
+        await main_module._compiled_pages_artifact(
+            cast(dagger.Directory, FakeDirectory()), cast(dagger.Container, container), "dist"
+        )
+
+
+@pytest.mark.asyncio
+async def test_should_reject_worker_module_path_escape_before_staging() -> None:
+    derived = _derived_with_metadata("api/hello.js")
+    derived.glob_by_path["_worker.js"] = ("index.js", "../outside.js")
+    container = FakeFunctionsContainer(derived=derived)
+
+    with pytest.raises(CloudflarePolicyError, match="module output differs"):
+        await main_module._compiled_pages_artifact(
+            cast(dagger.Directory, FakeDirectory()), cast(dagger.Container, container), "dist"
+        )
+
+
+@pytest.mark.asyncio
+async def test_should_reject_missing_worker_entrypoint_before_staging() -> None:
+    derived = _derived_with_metadata("api/hello.js")
+    derived.entries_by_path["_worker.js"] = ("foreign.js",)
+    derived.glob_by_path["_worker.js"] = ("foreign.js",)
+    container = FakeFunctionsContainer(derived=derived)
+
+    with pytest.raises(CloudflarePolicyError, match="module output differs"):
+        await main_module._compiled_pages_artifact(
+            cast(dagger.Directory, FakeDirectory()), cast(dagger.Container, container), "dist"
+        )
 
 
 @pytest.mark.asyncio
@@ -1590,7 +1728,9 @@ async def test_should_reject_resolved_inputs_outside_authenticated_roots(outside
     derived = _derived_with_metadata("api/hello.js", outside)
 
     with pytest.raises(CloudflarePolicyError, match="escaped authenticated roots"):
-        await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+        await main_module._require_closed_functions_build(
+            cast(dagger.Directory, FakeDirectory()), cast(dagger.Directory, derived)
+        )
 
 
 @pytest.mark.asyncio
@@ -1603,7 +1743,41 @@ async def test_should_accept_only_authenticated_and_fixed_compiler_inputs() -> N
         "../../usr/local/lib/node_modules/wrangler/templates/pages-template-worker.ts",
     )
 
-    await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+    await main_module._require_closed_functions_build(
+        cast(dagger.Directory, FakeDirectory()), cast(dagger.Directory, derived)
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_accept_auxiliary_worker_with_authenticated_content() -> None:
+    source = _source_with_auxiliary("authenticated wasm")
+    derived = _derived_with_auxiliary("authenticated wasm")
+
+    await main_module._require_closed_functions_build(
+        cast(dagger.Directory, source), cast(dagger.Directory, derived)
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_reject_auxiliary_worker_without_authenticated_content() -> None:
+    source = _source_with_auxiliary("authenticated wasm")
+    derived = _derived_with_auxiliary("toolchain wasm")
+
+    with pytest.raises(CloudflarePolicyError, match="module provenance differs"):
+        await main_module._require_closed_functions_build(
+            cast(dagger.Directory, source), cast(dagger.Directory, derived)
+        )
+
+
+@pytest.mark.asyncio
+async def test_should_bound_terminal_content_digest_queries() -> None:
+    state = DigestConcurrency()
+    directory = ConcurrentDigestDirectory(state)
+    paths = tuple(f"asset-{index}.wasm" for index in range(65))
+
+    await main_module._file_digests(cast(dagger.Directory, directory), paths)
+
+    assert 1 < state.maximum <= 32
 
 
 @pytest.mark.asyncio
@@ -1614,7 +1788,9 @@ async def test_should_reject_unlisted_pinned_image_input() -> None:
     )
 
     with pytest.raises(CloudflarePolicyError, match="escaped authenticated roots"):
-        await main_module._require_closed_functions_build(cast(dagger.Directory, derived))
+        await main_module._require_closed_functions_build(
+            cast(dagger.Directory, FakeDirectory()), cast(dagger.Directory, derived)
+        )
 
 
 @pytest.mark.asyncio
@@ -1746,7 +1922,7 @@ async def test_should_bind_verified_envelope_to_internal_green_evidence(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("conflict", ("_worker.js", "_routes.json"))
+@pytest.mark.parametrize("conflict", ("_worker.js", "_worker.js/", "_routes.json", "_routes.json/"))
 async def test_should_reject_derived_conflict_before_green_main(
     monkeypatch: pytest.MonkeyPatch,
     conflict: str,
@@ -1945,6 +2121,9 @@ def test_real_fixture_should_cover_closed_two_root_functions_transaction() -> No
         "artifact/dist/index.html",
         "artifact/functions/api/hello.js",
         "/usr/local/lib/node_modules/wrangler/package.json",
+        "[ -d /artifact/_worker.js ]",
+        "Content-Disposition: form-data",
+        "node --input-type=module --check",
         "deploy_verified_artifact(",
         'events.count("upload") == 2',
     )
@@ -2041,6 +2220,6 @@ def test_should_run_real_dagger_mock_provider_contract(tmp_path: Path) -> None:
     # Then
     _require_success(result)
     assert (
-        "provider order, functions route, missing import, and tamper rejection passed"
+        "provider order, runnable module tree, multipart, escape, conflict, and tamper rejection passed"
         in result.stdout
     )
