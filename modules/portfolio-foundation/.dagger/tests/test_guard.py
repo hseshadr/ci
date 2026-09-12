@@ -186,7 +186,10 @@ def test_should_delegate_public_guard_with_full_source_binding(
     binding = SourceBinding(source, history, identity, "0" * 64)
     expected = cast(dagger.Container, object())
 
-    async def bind(_: dagger.Directory, __: str, ___: str) -> object:
+    async def bind(
+        _: dagger.Directory, __: str, ___: str, http_auth_header: dagger.Secret | None
+    ) -> object:
+        assert http_auth_header is None
         return binding
 
     def guard(actual: object) -> dagger.Container:
@@ -203,3 +206,26 @@ def test_should_delegate_public_guard_with_full_source_binding(
 
     # Then
     assert result is expected
+
+
+def test_should_abort_guard_before_product_execution_when_private_history_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    header = cast(dagger.Secret, object())
+
+    async def bind(_: dagger.Directory, __: str, ___: str, ____: dagger.Secret | None) -> object:
+        raise RuntimeError("private history unavailable")
+
+    def guard(_: object) -> dagger.Container:
+        raise AssertionError("product execution must not follow history failure")
+
+    monkeypatch.setattr(main_module, "_source_binding", bind)
+    monkeypatch.setattr(main_module, "build_guard", guard)
+
+    # When / Then
+    with pytest.raises(RuntimeError, match="private history unavailable"):
+        asyncio.run(
+            main_module.PortfolioFoundation().guard(source, "owner/repository", "f" * 40, header)
+        )

@@ -405,7 +405,7 @@ def test_should_reject_invalid_inventory_entry_permissions() -> None:
         InventoryEntry("safe", "a" * 64, EntryType.REGULAR, 0o10000)
 
 
-def test_should_delegate_source_when_identity_is_valid(
+def test_should_delegate_public_source_without_git_header_when_identity_is_valid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
@@ -427,7 +427,7 @@ def test_should_delegate_source_when_identity_is_valid(
     async def bind(_: dagger.Directory, __: dagger.Directory, ___: CommitIdentity) -> object:
         return type("Binding", (), {"source": source})()
 
-    monkeypatch.setattr(main_module, "dag", FakeDag())
+    monkeypatch.setattr(source_module, "dag", FakeDag())
     monkeypatch.setattr(main_module, "bind_dagger_source", bind)
 
     # When
@@ -436,3 +436,46 @@ def test_should_delegate_source_when_identity_is_valid(
 
     # Then
     assert result is source
+
+
+def test_should_forward_opaque_header_to_private_git_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    history = cast(dagger.Directory, object())
+    header = cast(dagger.Secret, _OpaqueSecret())
+    calls: list[dagger.Secret | None] = []
+
+    class FakeGit:
+        def commit(self, _: str) -> "FakeGit":
+            return self
+
+        def tree(self, *, depth: int, include_tags: bool) -> dagger.Directory:
+            assert (depth, include_tags) == (0, True)
+            return history
+
+    class FakeDag:
+        def git(self, _: str, *, http_auth_header: dagger.Secret | None = None) -> FakeGit:
+            calls.append(http_auth_header)
+            return FakeGit()
+
+    async def bind(_: dagger.Directory, __: dagger.Directory, ___: CommitIdentity) -> object:
+        return type("Binding", (), {"source": source})()
+
+    monkeypatch.setattr(source_module, "dag", FakeDag())
+    monkeypatch.setattr(main_module, "bind_dagger_source", bind)
+
+    # When
+    result: dagger.Directory = asyncio.run(
+        main_module.PortfolioFoundation().source(source, "owner/repository", "b" * 40, header)
+    )
+
+    # Then
+    assert result is source
+    assert calls == [header]
+
+
+class _OpaqueSecret:
+    def __str__(self) -> str:
+        raise AssertionError("typed secrets must not be converted to plaintext")

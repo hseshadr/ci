@@ -111,6 +111,22 @@ class SourceBinding[SourceT, HistoryT]:
     manifest_sha256: str
 
 
+def dagger_history(
+    identity: CommitIdentity, http_auth_header: dagger.Secret | None
+) -> dagger.Directory:
+    """Load the exact Git tree, forwarding an optional typed header only to Git."""
+    repository = _history_repository(identity, http_auth_header)
+    return repository.commit(identity.commit.value).tree(depth=0, include_tags=True)
+
+
+def _history_repository(
+    identity: CommitIdentity, http_auth_header: dagger.Secret | None
+) -> dagger.GitRepository:
+    if http_auth_header is None:
+        return dag.git(identity.repository.github_url)
+    return dag.git(identity.repository.github_url, http_auth_header=http_auth_header)
+
+
 @dataclass(frozen=True)
 class DaggerSourceInventory:
     """Inventory adapter that hashes Dagger regular files without host access."""
