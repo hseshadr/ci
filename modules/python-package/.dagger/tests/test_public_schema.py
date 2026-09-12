@@ -12,7 +12,12 @@ type Signature = tuple[str, tuple[tuple[str, str], ...], str]
 EXPECTED: tuple[Signature, ...] = (
     (
         "dependency_audit",
-        (("source", "dagger.Directory"), ("repository", "str"), ("commit_sha", "str")),
+        (
+            ("source", "dagger.Directory"),
+            ("repository", "str"),
+            ("commit_sha", "str"),
+            ("http_auth_header", "dagger.Secret | None"),
+        ),
         "dagger.Container",
     ),
     (
@@ -64,6 +69,22 @@ def test_should_keep_exact_typed_public_schema() -> None:
 
     # Then consumers receive a closed stable API without generic execution controls
     assert actual == EXPECTED
+
+
+def test_should_default_only_dependency_audit_auth_header_to_none() -> None:
+    # Given every decorated public Dagger function
+    functions = _public_functions(_tree())
+
+    # When optional parameter defaults are inspected
+    defaults = tuple((item.name, tuple(map(ast.unparse, item.args.defaults))) for item in functions)
+
+    # Then only dependency audit accepts an optional credential
+    assert defaults == (
+        ("dependency_audit", ("None",)),
+        ("build", ()),
+        ("candidate", ()),
+        ("verify_candidate", ()),
+    )
 
 
 def test_should_disable_cache_for_live_candidate_evidence() -> None:

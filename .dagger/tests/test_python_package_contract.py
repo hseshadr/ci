@@ -105,7 +105,7 @@ def test_should_expose_only_closed_release_candidate_functions() -> None:
             "workflow_run_id",
             "run_attempt",
         ),
-        "dependency_audit": ("source", "repository", "commit_sha"),
+        "dependency_audit": ("source", "repository", "commit_sha", "http_auth_header"),
         "verify_candidate": (
             "envelope",
             "repository",
@@ -116,6 +116,20 @@ def test_should_expose_only_closed_release_candidate_functions() -> None:
             "run_attempt",
         ),
     }
+    package = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "PythonPackage"
+    )
+    dependency_audit = next(
+        node
+        for node in package.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "dependency_audit"
+    )
+    auth_header = dependency_audit.args.args[-1]
+    assert auth_header.annotation is not None
+    assert ast.unparse(auth_header.annotation) == "dagger.Secret | None"
+    assert tuple(map(ast.unparse, dependency_audit.args.defaults)) == ("None",)
 
 
 def test_should_reject_public_execution_and_publication_escape_hatches() -> None:

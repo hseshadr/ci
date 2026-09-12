@@ -88,13 +88,25 @@ class FakeFoundation:
         return FakeGreen(self.payload)
 
     def source(
-        self, *, source: dagger.Directory, repository: str, commit_sha: str
+        self,
+        source: dagger.Directory,
+        repository: str,
+        commit_sha: str,
+        *,
+        http_auth_header: dagger.Secret | None = None,
     ) -> dagger.Directory:
-        self.events.append(("source", source, repository, commit_sha))
+        self.events.append(("source", source, repository, commit_sha, http_auth_header))
         return source
 
-    def guard(self, *, source: dagger.Directory, repository: str, commit_sha: str) -> FakeContainer:
-        self.events.append(("guard", source, repository, commit_sha))
+    def guard(
+        self,
+        source: dagger.Directory,
+        repository: str,
+        commit_sha: str,
+        *,
+        http_auth_header: dagger.Secret | None = None,
+    ) -> FakeContainer:
+        self.events.append(("guard", source, repository, commit_sha, http_auth_header))
         return FakeContainer(self.events)
 
 
@@ -188,8 +200,51 @@ def test_should_compose_foundation_green_guard_and_exact_tag(
     # Then all checks bind the same repository and commit
     assert evidence.commit_sha == identity.commit.value
     assert bound is source
+    assert ("source", source, identity.repository.value, identity.commit.value, None) in fake.events
+    assert ("guard", source, identity.repository.value, identity.commit.value, None) in fake.events
     assert ("tag", "v0.4.2") in fake.events
     assert ("sync",) in fake.events
+
+
+def test_should_forward_auth_header_only_to_foundation_source_and_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an authenticated private-source binding
+    identity = _identity()
+    fake = FakeDag()
+    header = cast(dagger.Secret, object())
+    source = cast(dagger.Directory, object())
+    monkeypatch.setattr(runtime, "dag", cast(dagger.Client, fake))
+
+    # When the source is bound and guarded
+    asyncio.run(runtime.guarded_source(source, identity, header))
+
+    # Then the same typed secret reaches only both Foundation boundaries
+    expected = source, identity.repository.value, identity.commit.value, header
+    assert ("source", *expected) in fake.events
+    assert ("guard", *expected) in fake.events
+
+
+def test_should_keep_auth_material_out_of_audit_execution_traces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a secret whose plaintext access would be observable
+    secret = ObservableSecret()
+    fake = FakeDag()
+    source = cast(dagger.Directory, object())
+    monkeypatch.setattr(runtime, "dag", cast(dagger.Client, fake))
+
+    # When authenticated binding and audit graph construction run
+    bound = asyncio.run(runtime.guarded_source(source, _identity(), cast(dagger.Secret, secret)))
+    runtime.dependency_audit_container(bound)
+
+    # Then audit args, environment, and trace-like records contain no secret material
+    execution = tuple(event for event in fake.events if event[0] in {"exec", "env"})
+    assert SENTINEL_VALUE not in repr(execution)
+    assert SENTINEL_VALUE not in repr(fake.events)
+    assert not secret.accessed
+    secret_events = {"secret", "with-secret-variable", "with-mounted-secret"}
+    assert all(event[0] not in secret_events for event in fake.events)
 
 
 def test_should_probe_and_twine_check_observed_products(
@@ -253,6 +308,18 @@ def test_should_reject_foundation_green_attempt_drift(
 def _identity() -> CandidateIdentity:
     package = PackageIdentity.parse("hseshadr/edgeproc-core", "a" * 40, "edgeproc-core")
     return CandidateIdentity.from_package(package, "b" * 40, "6100", 2)
+
+
+SENTINEL_VALUE = "audit-auth-material-must-never-leak"
+
+
+class ObservableSecret:
+    def __init__(self) -> None:
+        self.accessed = False
+
+    async def plaintext(self) -> str:
+        self.accessed = True
+        return SENTINEL_VALUE
 
 
 def _green_payload(run_id: str = "6100", attempt: int = 2) -> str:

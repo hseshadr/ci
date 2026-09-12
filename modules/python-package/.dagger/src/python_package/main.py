@@ -8,12 +8,12 @@ from dagger import field, function, object_type
 from .identity import CandidateIdentity, PackageIdentity, SourceIdentity
 from .orchestration import (
     BuildResult,
-    audit_release_source,
     build_release,
     create_candidate,
     manifest_digest,
     verify_candidate_envelope,
 )
+from .runtime import dependency_audit_container, guarded_source
 
 
 @object_type
@@ -58,11 +58,16 @@ class PythonPackage:
 
     @function
     async def dependency_audit(
-        self, source: dagger.Directory, repository: str, commit_sha: str
+        self,
+        source: dagger.Directory,
+        repository: str,
+        commit_sha: str,
+        http_auth_header: dagger.Secret | None = None,
     ) -> dagger.Container:
         """Audit the locked dependency graph in a bound source tree."""
         identity = SourceIdentity.parse(repository, commit_sha)
-        return await audit_release_source(source, identity)
+        bound = await guarded_source(source, identity, http_auth_header)
+        return dependency_audit_container(bound)
 
     @function
     async def build(

@@ -141,19 +141,17 @@ async def green_evidence(
     return result
 
 
-async def guarded_source(source: dagger.Directory, identity: RepositoryCommit) -> dagger.Directory:
+async def guarded_source(
+    source: dagger.Directory,
+    identity: RepositoryCommit,
+    http_auth_header: dagger.Secret | None = None,
+) -> dagger.Directory:
     """Bind and guard source through the exact same-tree Foundation dependency."""
     foundation = dag.foundation()
-    bound = foundation.source(
-        source=source,
-        repository=identity.repository.value,
-        commit_sha=identity.commit.value,
-    )
-    guard = foundation.guard(
-        source=source,
-        repository=identity.repository.value,
-        commit_sha=identity.commit.value,
-    )
+    repository = identity.repository.value
+    commit_sha = identity.commit.value
+    bound = foundation.source(source, repository, commit_sha, http_auth_header=http_auth_header)
+    guard = foundation.guard(source, repository, commit_sha, http_auth_header=http_auth_header)
     await guard.sync()
     return bound
 

@@ -25,11 +25,14 @@ def test_should_return_lazy_guarded_dependency_audit(
     source = cast(dagger.Directory, object())
     expected = cast(dagger.Container, object())
 
-    async def audit(value: dagger.Directory, identity: object) -> dagger.Container:
-        assert value is source and identity is not None
-        return expected
+    async def guard(
+        value: dagger.Directory, identity: object, auth: dagger.Secret | None
+    ) -> dagger.Directory:
+        assert value is source and identity is not None and auth is None
+        return source
 
-    monkeypatch.setattr(main, "audit_release_source", audit)
+    monkeypatch.setattr(main, "guarded_source", guard)
+    monkeypatch.setattr(main, "dependency_audit_container", lambda value: expected)
 
     # When the closed audit function is called
     actual: dagger.Container = asyncio.run(
@@ -38,6 +41,59 @@ def test_should_return_lazy_guarded_dependency_audit(
 
     # Then the guarded typed graph crosses the public boundary unchanged
     assert actual is expected
+
+
+def test_should_forward_dependency_audit_auth_to_guarded_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an authenticated public audit request and observable adapters
+    package = PythonPackage.__new__(PythonPackage)
+    source = cast(dagger.Directory, object())
+    header = cast(dagger.Secret, object())
+    expected = cast(dagger.Container, object())
+
+    async def guard(
+        value: dagger.Directory, identity: object, auth: dagger.Secret | None
+    ) -> dagger.Directory:
+        assert value is source and identity is not None and auth is header
+        return source
+
+    monkeypatch.setattr(main, "guarded_source", guard, raising=False)
+    monkeypatch.setattr(main, "dependency_audit_container", lambda value: expected, raising=False)
+
+    # When the public audit function is called
+    actual: dagger.Container = asyncio.run(
+        package.dependency_audit(source, "hseshadr/example", "a" * 40, header)
+    )
+
+    # Then the guarded audit graph crosses the boundary unchanged
+    assert actual is expected
+
+
+def test_should_not_construct_audit_when_foundation_guard_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a Foundation guard failure and an observable audit adapter
+    package = PythonPackage.__new__(PythonPackage)
+    audited = False
+
+    async def guard(*_: object) -> dagger.Directory:
+        raise ValueError("Foundation rejected source")
+
+    def audit(_: dagger.Directory) -> dagger.Container:
+        nonlocal audited
+        audited = True
+        return cast(dagger.Container, object())
+
+    monkeypatch.setattr(main, "guarded_source", guard, raising=False)
+    monkeypatch.setattr(main, "dependency_audit_container", audit, raising=False)
+
+    # When / Then the public boundary fails closed before audit construction
+    with pytest.raises(ValueError, match="Foundation rejected source"):
+        asyncio.run(
+            package.dependency_audit(cast(dagger.Directory, object()), "hseshadr/example", "a" * 40)
+        )
+    assert not audited
 
 
 def test_should_project_validated_build_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
