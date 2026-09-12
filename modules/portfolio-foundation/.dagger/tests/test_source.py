@@ -405,7 +405,7 @@ def test_should_reject_invalid_inventory_entry_permissions() -> None:
         InventoryEntry("safe", "a" * 64, EntryType.REGULAR, 0o10000)
 
 
-def test_should_delegate_source_when_identity_is_valid(
+def test_should_delegate_public_source_without_git_header_when_identity_is_valid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
@@ -427,7 +427,7 @@ def test_should_delegate_source_when_identity_is_valid(
     async def bind(_: dagger.Directory, __: dagger.Directory, ___: CommitIdentity) -> object:
         return type("Binding", (), {"source": source})()
 
-    monkeypatch.setattr(main_module, "dag", FakeDag())
+    monkeypatch.setattr(source_module, "dag", FakeDag())
     monkeypatch.setattr(main_module, "bind_dagger_source", bind)
 
     # When
@@ -436,3 +436,100 @@ def test_should_delegate_source_when_identity_is_valid(
 
     # Then
     assert result is source
+
+
+def test_should_forward_opaque_header_to_private_git_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    history = cast(dagger.Directory, object())
+    header = cast(dagger.Secret, _OpaqueSecret())
+    git_calls: list[tuple[str, dagger.Secret]] = []
+    binding_calls: list[tuple[dagger.Directory, dagger.Directory, CommitIdentity]] = []
+
+    class FakeGit:
+        def commit(self, _: str) -> "FakeGit":
+            return self
+
+        def tree(self, *, depth: int, include_tags: bool) -> dagger.Directory:
+            assert (depth, include_tags) == (0, True)
+            return history
+
+    class FakeDag:
+        def git(self, url: str, *, http_auth_header: dagger.Secret | None = None) -> FakeGit:
+            assert http_auth_header is not None
+            git_calls.append((url, http_auth_header))
+            return FakeGit()
+
+    async def bind(
+        actual_source: dagger.Directory, actual_history: dagger.Directory, identity: CommitIdentity
+    ) -> object:
+        binding_calls.append((actual_source, actual_history, identity))
+        return type("Binding", (), {"source": source})()
+
+    monkeypatch.setattr(source_module, "dag", FakeDag())
+    monkeypatch.setattr(main_module, "bind_dagger_source", bind)
+
+    # When
+    result: dagger.Directory = asyncio.run(
+        main_module.PortfolioFoundation().source(source, "owner/repository", "b" * 40, header)
+    )
+
+    # Then
+    assert result is source
+    assert git_calls == [("https://github.com/owner/repository.git", header)]
+    assert binding_calls == [
+        (source, history, CommitIdentity(RepositoryRef("owner", "repository"), FullSha("b" * 40)))
+    ]
+
+
+def test_should_abort_private_history_without_disclosing_or_binding_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    source = cast(dagger.Directory, object())
+    header = cast(dagger.Secret, _OpaqueSecret())
+    git_calls: list[tuple[str, dagger.Secret]] = []
+    binding_calls: list[tuple[dagger.Directory, dagger.Directory, CommitIdentity]] = []
+
+    class FakeGit:
+        def commit(self, _: str) -> "FakeGit":
+            raise _HistoryUnavailableError("private history unavailable")
+
+    class FakeDag:
+        def git(self, url: str, *, http_auth_header: dagger.Secret | None = None) -> FakeGit:
+            assert http_auth_header is not None
+            git_calls.append((url, http_auth_header))
+            return FakeGit()
+
+    async def bind(
+        actual_source: dagger.Directory, actual_history: dagger.Directory, identity: CommitIdentity
+    ) -> object:
+        binding_calls.append((actual_source, actual_history, identity))
+        raise AssertionError("history failure must prevent source binding")
+
+    monkeypatch.setattr(source_module, "dag", FakeDag())
+    monkeypatch.setattr(main_module, "bind_dagger_source", bind)
+
+    # When / Then
+    with pytest.raises(_HistoryUnavailableError) as error:
+        asyncio.run(
+            main_module.PortfolioFoundation().source(source, "owner/repository", "c" * 40, header)
+        )
+
+    assert str(error.value) == "private history unavailable"
+    assert git_calls == [("https://github.com/owner/repository.git", header)]
+    assert binding_calls == []
+
+
+class _OpaqueSecret:
+    def __str__(self) -> str:
+        raise AssertionError("typed secrets must not be converted to plaintext")
+
+    def __repr__(self) -> str:
+        raise AssertionError("typed secrets must not be rendered")
+
+
+class _HistoryUnavailableError(RuntimeError):
+    """A Git adapter failure that carries no secret value."""

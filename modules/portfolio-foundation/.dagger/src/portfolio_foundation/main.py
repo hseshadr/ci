@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dagger
-from dagger import dag, function, object_type
+from dagger import function, object_type
 
 from .artifact import (
     envelope_directory,
@@ -14,7 +14,7 @@ from .artifact import (
 from .github import CheckEvidence, resolve_green_main
 from .guard import build_guard
 from .identity import CommitIdentity, FullSha, RepositoryRef
-from .source import SourceBinding, bind_dagger_source
+from .source import SourceBinding, bind_dagger_source, dagger_history
 
 
 @object_type
@@ -23,17 +23,26 @@ class PortfolioFoundation:
 
     @function
     async def source(
-        self, source: dagger.Directory, repository: str, commit_sha: str
+        self,
+        source: dagger.Directory,
+        repository: str,
+        commit_sha: str,
+        http_auth_header: dagger.Secret | None = None,
     ) -> dagger.Directory:
         """Bind a supplied workspace to a repository identity."""
-        return (await _source_binding(source, repository, commit_sha)).source
+        binding = await _source_binding(source, repository, commit_sha, http_auth_header)
+        return binding.source
 
     @function
     async def guard(
-        self, source: dagger.Directory, repository: str, commit_sha: str
+        self,
+        source: dagger.Directory,
+        repository: str,
+        commit_sha: str,
+        http_auth_header: dagger.Secret | None = None,
     ) -> dagger.Container:
         """Apply repository security checks to a bound source."""
-        binding = await _source_binding(source, repository, commit_sha)
+        binding = await _source_binding(source, repository, commit_sha, http_auth_header)
         return build_guard(binding)
 
     @function
@@ -73,16 +82,11 @@ class PortfolioFoundation:
 
 
 async def _source_binding(
-    source: dagger.Directory, repository: str, commit_sha: str
+    source: dagger.Directory,
+    repository: str,
+    commit_sha: str,
+    http_auth_header: dagger.Secret | None,
 ) -> SourceBinding[dagger.Directory, dagger.Directory]:
     identity = CommitIdentity(RepositoryRef.parse(repository), FullSha(commit_sha))
-    history = _history(identity)
+    history = dagger_history(identity, http_auth_header)
     return await bind_dagger_source(source, history, identity)
-
-
-def _history(identity: CommitIdentity) -> dagger.Directory:
-    return (
-        dag.git(identity.repository.github_url)
-        .commit(identity.commit.value)
-        .tree(depth=0, include_tags=True)
-    )

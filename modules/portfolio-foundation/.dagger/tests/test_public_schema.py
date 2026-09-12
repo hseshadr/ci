@@ -12,12 +12,22 @@ type PublicFunction = ast.FunctionDef | ast.AsyncFunctionDef
 EXPECTED_PUBLIC_SCHEMA: tuple[PublicSignature, ...] = (
     (
         "source",
-        (("source", "dagger.Directory"), ("repository", "str"), ("commit_sha", "str")),
+        (
+            ("source", "dagger.Directory"),
+            ("repository", "str"),
+            ("commit_sha", "str"),
+            ("http_auth_header", "dagger.Secret | None"),
+        ),
         "dagger.Directory",
     ),
     (
         "guard",
-        (("source", "dagger.Directory"), ("repository", "str"), ("commit_sha", "str")),
+        (
+            ("source", "dagger.Directory"),
+            ("repository", "str"),
+            ("commit_sha", "str"),
+            ("http_auth_header", "dagger.Secret | None"),
+        ),
         "dagger.Container",
     ),
     (
@@ -97,6 +107,21 @@ def test_should_expose_stable_public_functions() -> None:
 def test_should_keep_exact_typed_dagger_public_schema() -> None:
     actual = tuple(_signature(node) for node in _public_methods(_main_tree()))
     assert actual == EXPECTED_PUBLIC_SCHEMA
+
+
+@pytest.mark.parametrize("name", ("source", "guard"))
+def test_should_expose_optional_typed_history_header_without_plaintext_input(name: str) -> None:
+    # Given
+    method = next(node for node in _public_methods(_main_tree()) if node.name == name)
+    header = method.args.args[-1]
+
+    # When
+    default = method.args.defaults[-1]
+
+    # Then
+    assert header.arg == "http_auth_header"
+    assert _annotation(header.annotation) == "dagger.Secret | None"
+    assert isinstance(default, ast.Constant) and default.value is None
 
 
 @pytest.mark.parametrize("escape_hatch", ("command", "script", "cmd", "shell"))
