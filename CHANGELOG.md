@@ -21,6 +21,8 @@
 - Regression coverage for explicit Workspace source, generated SDK separation, typed
   Secrets, app-bound protection, stale checks, privileged publishers, and incomplete API
   evidence.
+- Optional typed Git authorization for exact private-repository history in
+  `portfolio-foundation`, kept inside Dagger's secret boundary.
 
 ### Changed
 
@@ -28,6 +30,8 @@
   inside Dagger.
 - Scheduled dependency/security work and full-history secret scanning run in Dagger.
 - Branch protection converges on strict, app-bound, sole `Dagger`.
+- `python-package` dependency audits forward private-history authorization to Foundation
+  instead of refetching protected source anonymously.
 
 ### Removed
 
