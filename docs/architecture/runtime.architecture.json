@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "hseshadr/ci Runtime Architecture",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/hseshadr/ci",
+      "revision": "ece5b3c10cb9a6a762c50c413fc331951990491f"
+    },
+    "views": [
+      {
+        "id": "central_gate",
+        "label": "Central gate",
+        "focus": ["repo_events", "actions_ingress", "dagger_graph", "canonical_gate", "dagger_verdict"],
+        "note": "GitHub supplies the event; the typed Dagger graph owns the checks and verdict."
+      },
+      {
+        "id": "fleet_scan",
+        "label": "Fleet scan",
+        "focus": ["dagger_graph", "github_evidence", "fleet_policy", "dagger_verdict"],
+        "note": "Authoritative exact-main evidence is evaluated against the reviewed fleet contract."
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [44, 54],
+    "cols": 5,
+    "gapX": 68,
+    "gapY": 90,
+    "cellW": 132,
+    "cellH": 72
+  },
+  "components": [
+    {
+      "id": "repo_events",
+      "type": "external",
+      "label": "Repository Events",
+      "sublabel": "PR / push / schedule",
+      "row": 1,
+      "col": 0,
+      "sources": [
+        {"path": ".github/workflows/dagger.yml", "line": 3, "end_line": 7, "label": "event ingress"}
+      ]
+    },
+    {
+      "id": "actions_ingress",
+      "type": "cloud",
+      "label": "GitHub Actions",
+      "sublabel": "two pinned actions",
+      "row": 1,
+      "col": 1,
+      "sources": [
+        {"path": ".github/workflows/dagger.yml", "line": 16, "end_line": 50, "label": "thin ingress"}
+      ]
+    },
+    {
+      "id": "dagger_graph",
+      "type": "backend",
+      "label": "Dagger Graph",
+      "sublabel": "typed Workspace + Secret",
+      "row": 1,
+      "col": 2,
+      "sources": [
+        {"path": ".dagger/src/ci/main.py", "line": 43, "end_line": 84, "label": "public functions"}
+      ]
+    },
+    {
+      "id": "canonical_gate",
+      "type": "security",
+      "label": "Canonical Gate",
+      "sublabel": "quality + security",
+      "row": 1,
+      "col": 3,
+      "sources": [
+        {"path": ".dagger/src/ci/main.py", "line": 97, "end_line": 150, "label": "locked gate"}
+      ]
+    },
+    {
+      "id": "dagger_verdict",
+      "type": "cloud",
+      "label": "Dagger Verdict",
+      "sublabel": "required check / fail closed",
+      "row": 1,
+      "col": 4,
+      "sources": [
+        {"path": ".dagger/src/ci/main.py", "line": 56, "end_line": 79, "label": "gate results"},
+        {"path": ".github/workflows/dagger.yml", "line": 34, "end_line": 50, "label": "fleet job"}
+      ]
+    },
+    {
+      "id": "github_evidence",
+      "type": "cloud",
+      "label": "GitHub Evidence",
+      "sublabel": "exact current main",
+      "row": 0,
+      "col": 3,
+      "sources": [
+        {"path": ".dagger/src/ci/fleet.py", "line": 58, "end_line": 71, "label": "authoritative read"},
+        {"path": ".dagger/src/ci/github_fleet.py", "line": 99, "end_line": 120, "label": "HTTPS transport"}
+      ]
+    },
+    {
+      "id": "fleet_policy",
+      "type": "security",
+      "label": "Fleet Policy",
+      "sublabel": "reviewed contract",
+      "row": 0,
+      "col": 4,
+      "sources": [
+        {"path": ".dagger/src/ci/fleet.py", "line": 21, "end_line": 47, "label": "fleet expectations"},
+        {"path": ".dagger/src/ci/fleet_policy.py", "line": 23, "end_line": 52, "label": "policy constants"}
+      ]
+    },
+    {
+      "id": "portfolio_foundation",
+      "type": "security",
+      "label": "Foundation",
+      "sublabel": "identity / guard / envelope",
+      "row": 2,
+      "col": 3,
+      "sources": [
+        {"path": "modules/portfolio-foundation/.dagger/src/portfolio_foundation/main.py", "line": 20, "end_line": 81, "label": "trust API"}
+      ]
+    }
+  ],
+  "connections": [
+    {"id": "events_to_actions", "from": "repo_events", "to": "actions_ingress"},
+    {"id": "actions_to_graph", "from": "actions_ingress", "to": "dagger_graph", "label": "pinned", "variant": "emphasis"},
+    {"id": "graph_to_gate", "from": "dagger_graph", "to": "canonical_gate", "variant": "emphasis"},
+    {"id": "gate_to_verdict", "from": "canonical_gate", "to": "dagger_verdict", "label": "result", "variant": "emphasis"},
+    {"id": "graph_to_evidence", "from": "dagger_graph", "to": "github_evidence", "label": "fleet scan"},
+    {"id": "evidence_to_policy", "from": "github_evidence", "to": "fleet_policy", "label": "snapshot", "variant": "security"},
+    {"id": "policy_to_verdict", "from": "fleet_policy", "to": "dagger_verdict", "label": "enforce", "variant": "security", "labelAt": [1128, 128]},
+    {"id": "graph_to_foundation", "from": "dagger_graph", "to": "portfolio_foundation", "label": "typed module call", "variant": "security"},
+    {"id": "foundation_to_gate", "from": "portfolio_foundation", "to": "canonical_gate", "label": "guard source", "variant": "security"}
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Execution boundary",
+      "items": ["GitHub delivers events", "Dagger owns computation and the verdict"]
+    },
+    {
+      "dot": "rose",
+      "title": "Evidence boundary",
+      "items": ["Fleet reads exact current-main state", "Missing or incomplete evidence fails closed"]
+    }
+  ]
+}
