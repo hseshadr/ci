@@ -58,6 +58,10 @@ The guarded central merge establishes the remotely installable SHA. EdgeReco ado
 production canary are separate pending rollout steps; this change does not claim a production
 deployment or fleet-wide module adoption.
 
+## Architecture
+
+Explore the [interactive runtime map](docs/architecture/index.html).
+
 ## Execution model
 
 Only four workflows remain:
