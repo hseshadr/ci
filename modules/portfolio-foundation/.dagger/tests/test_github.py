@@ -22,6 +22,7 @@ from portfolio_foundation import github as github_module
 from portfolio_foundation.github import (
     APP_ID,
     CHECK_NAME,
+    MAX_RUN_START_SKEW_SECONDS,
     WORKFLOW_NAME,
     WORKFLOW_PATH,
     ApiTarget,
@@ -665,6 +666,62 @@ def test_should_reject_completed_attempt_with_reversed_timestamps() -> None:
 
     # When / Then
     with pytest.raises(GitHubPolicyError, match="timestamps"):
+        asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+
+# Real payload: GET repos/hseshadr/aml-filter/actions/runs/36033566429/attempts/2.
+# GitHub stamps a rerun attempt's created_at one second after its run_started_at.
+RERUN_CREATED_AT = "2026-09-24T17:22:33Z"
+RERUN_STARTED_AT = "2026-09-24T17:22:32Z"
+RERUN_UPDATED_AT = "2026-09-24T17:43:06Z"
+RERUN_CHECK_STARTED_AT = "2026-09-24T17:22:40Z"
+
+
+def _rerun_timestamp_api(created_at: str, started_at: str, updated_at: str) -> FakeApi:
+    workflow = _workflow_payload(
+        created_at=created_at, run_started_at=started_at, updated_at=updated_at
+    )
+    check = _check_payload(
+        started_at=RERUN_CHECK_STARTED_AT,
+        completed_at=_one_second_after(RERUN_CHECK_STARTED_AT),
+    )
+    job = _job_payload(started_at=RERUN_CHECK_STARTED_AT)
+    return _api(ApiOverrides(checks=_checks_payload(check), job=job, workflow=workflow))
+
+
+def test_should_pin_run_start_skew_bound_to_five_seconds() -> None:
+    # Given / When / Then
+    assert MAX_RUN_START_SKEW_SECONDS == 5
+
+
+def test_should_accept_rerun_attempt_created_one_second_after_it_started() -> None:
+    # Given
+    api = _rerun_timestamp_api(RERUN_CREATED_AT, RERUN_STARTED_AT, RERUN_UPDATED_AT)
+
+    # When
+    evidence = asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+    # Then
+    assert evidence.commit_sha == SHA
+
+
+def test_should_reject_run_created_beyond_skew_bound_after_start() -> None:
+    # Given
+    created_six_seconds_after_start = "2026-09-24T17:22:38Z"
+    api = _rerun_timestamp_api(created_six_seconds_after_start, RERUN_STARTED_AT, RERUN_UPDATED_AT)
+
+    # When / Then
+    with pytest.raises(GitHubPolicyError, match="workflow timestamps are inconsistent"):
+        asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
+
+
+def test_should_reject_run_started_after_it_was_updated() -> None:
+    # Given
+    updated_before_start = "2026-09-24T17:22:31Z"
+    api = _rerun_timestamp_api(RERUN_CREATED_AT, RERUN_STARTED_AT, updated_before_start)
+
+    # When / Then
+    with pytest.raises(GitHubPolicyError, match="workflow timestamps are inconsistent"):
         asyncio.run(resolve_green_main_from_api(api, REPOSITORY))
 
 

@@ -8,7 +8,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final, Protocol
 from urllib.parse import parse_qs, urlsplit
 
@@ -26,6 +26,10 @@ CHECK_NAME: Final = "Dagger"
 DEFAULT_BRANCH: Final = "main"
 MAX_PAGES: Final = 10
 MAX_RETRIES: Final = 3
+# GitHub stamps a rerun attempt's created_at up to a second after its run_started_at
+# (observed: hseshadr/aml-filter run 36033566429 attempt 2). Tolerate only that clock
+# skew; run_started_at still bounds every check and job time.
+MAX_RUN_START_SKEW_SECONDS: Final = 5
 MAX_CONTEXTS: Final = 20
 MAX_RATE_LIMIT_HINT_SECONDS: Final = 1.0
 MAX_TOTAL_WAIT_SECONDS: Final = 2.0
@@ -840,7 +844,8 @@ def _workflow_times(workflow: WorkflowRunPayload) -> tuple[datetime, datetime]:
     created = _timestamp(workflow.created_at)
     started = _timestamp(workflow.run_started_at)
     updated = _timestamp(workflow.updated_at)
-    if not created <= started <= updated:
+    skew = timedelta(seconds=MAX_RUN_START_SKEW_SECONDS)
+    if not created - skew <= started <= updated:
         raise GitHubPolicyError("GitHub workflow timestamps are inconsistent")
     return started, updated
 
