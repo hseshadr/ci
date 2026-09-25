@@ -182,27 +182,24 @@ async def verify_release_lineage_from_api(
     await _require_contained(api, request, request.head_sha.value, main_sha)
     branch_sha = await _main_sha(api, request.repository)
     await _require_contained(api, request, main_sha, branch_sha)
-    return LineageEvidence(
-        request.full_name,
-        request.candidate_run_id,
-        request.publish_run_id,
-        request.head_sha.value,
-        main_sha,
-        branch_sha,
-        publisher,
-    )
+    return _evidence(request, branch_sha, publisher)
+
+
+def _evidence(
+    request: LineageRequest, branch_sha: str, publisher: LineageRunPayload
+) -> LineageEvidence:
+    runs = (request.candidate_run_id, request.publish_run_id)
+    shas = (request.head_sha.value, publisher.head_sha, branch_sha)
+    return LineageEvidence(request.full_name, *runs, *shas, publisher)
 
 
 def provenance_context(evidence: LineageEvidence) -> str:
     """Render the GitHub Actions context npm writes into its SLSA provenance."""
     run = evidence.publisher
     ref = f"refs/heads/{run.head_branch}"
-    context = {
+    context = _repository_context(run) | {
         "GITHUB_EVENT_NAME": run.event,
         "GITHUB_REF": ref,
-        "GITHUB_REPOSITORY": run.repository.full_name,
-        "GITHUB_REPOSITORY_ID": str(run.repository.id),
-        "GITHUB_REPOSITORY_OWNER_ID": str(run.repository.owner.id),
         "GITHUB_RUN_ATTEMPT": str(run.run_attempt),
         "GITHUB_RUN_ID": str(run.id),
         "GITHUB_SERVER_URL": SERVER_URL,
@@ -211,7 +208,15 @@ def provenance_context(evidence: LineageEvidence) -> str:
         "GITHUB_WORKFLOW_REF": f"{run.repository.full_name}/{PUBLISH_WORKFLOW}@{ref}",
         "RUNNER_ENVIRONMENT": "github-hosted",
     }
-    return json.dumps(context, indent=2) + "\n"
+    return json.dumps(dict(sorted(context.items())), indent=2) + "\n"
+
+
+def _repository_context(run: LineageRunPayload) -> dict[str, str]:
+    return {
+        "GITHUB_REPOSITORY": run.repository.full_name,
+        "GITHUB_REPOSITORY_ID": str(run.repository.id),
+        "GITHUB_REPOSITORY_OWNER_ID": str(run.repository.owner.id),
+    }
 
 
 async def _run(api: GitHubApi, request: LineageRequest, run_id: int) -> LineageRunPayload:
