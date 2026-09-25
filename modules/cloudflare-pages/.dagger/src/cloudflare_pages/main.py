@@ -966,24 +966,30 @@ printf '%s\n' '{{"errors":[],"messages":[],"success":false}}'
 
 def _jq_projection() -> str:
     problem = r'{code:.code,message:"Provider error",documentation_url:null,source:null}'
+    deployment = _jq_deployment()
+    result = r'if (.result|type)=="array" then [.result[]|' + deployment + r"] "
+    result += r'elif (.result|type)=="object" and (.result|has("latest_stage")) then (.result|'
+    result += deployment + r") else (.result|" + _jq_project() + r") end"
+    info = r"result_info:(.result_info|{count,page,per_page,total_count,total_pages})"
+    prefix = r"{errors:[.errors[]|" + problem + r"],messages:[.messages[]|" + problem
+    return prefix + r"],success,result:(" + result + r")," + info + r"}"
+
+
+def _jq_project() -> str:
     source = (
         r"{type:.type,config:(.config|{owner,repo_name,production_branch,"
         r"production_deployments_enabled,preview_deployment_setting})}"
     )
     project = r"{id,name,production_branch,domains,source:(.source|if .==null then null else "
     project += source + r" end),canonical_deployment:(.canonical_deployment|"
-    project += r"if .==null then null else {id} end)}"
-    metadata = r"{branch,commit_hash,commit_dirty}"
-    trigger = r"{type,metadata:(.metadata|" + metadata + r")}"
+    return project + r"if .==null then null else {id} end)}"
+
+
+def _jq_deployment() -> str:
+    trigger = r"{type,metadata:(.metadata|{branch,commit_hash,commit_dirty})}"
     deployment = r"{id,short_id,url,project_id,project_name,environment,latest_stage:"
     deployment += r"(.latest_stage|{name,status}),deployment_trigger:(.deployment_trigger|"
-    deployment += trigger + r")}"
-    result = r'if (.result|type)=="array" then [.result[]|' + deployment + r"] "
-    result += r'elif (.result|type)=="object" and (.result|has("latest_stage")) then (.result|'
-    result += deployment + r") else (.result|" + project + r") end"
-    info = r"result_info:(.result_info|{count,page,per_page,total_count,total_pages})"
-    prefix = r"{errors:[.errors[]|" + problem + r"],messages:[.messages[]|" + problem
-    return prefix + r"],success,result:(" + result + r")," + info + r"}"
+    return deployment + trigger + r")}"
 
 
 def _wrangler_script() -> str:
