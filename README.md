@@ -133,6 +133,7 @@ uv run --directory .dagger poe gate
 ```
 
 The full check, the same one CI runs, is `dagger call ci --github-token=env:GITHUB_TOKEN`.
+On a branch, push first and add `--commit-sha=$(git rev-parse HEAD)`.
 Each module under `modules/` has its own `poe gate` too. See
 [Getting started](docs/GETTING_STARTED.md) for versions, the code map, and a worked first
 change.

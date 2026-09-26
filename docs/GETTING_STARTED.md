@@ -21,9 +21,12 @@ Traps we hit:
   `dagger develop` once in the repo root (and once in each module you work on) first.
 - **Dagger prints "A new release of dagger is available".** Ignore it. Do not upgrade past
   0.21.8 unless you are upgrading every pin on purpose. `export DAGGER_NO_NAG=1` hides it.
-- **`dagger call ci` fails locally but the plain `poe gate` passed.** `ci` runs on the
-  committed and uncommitted files in your working tree, including new test files. That is
-  expected; read the failing test.
+- **`dagger call ci` on a branch fails with `SourceMismatchError: workspace does not match
+  exact commit`.** Without `--commit-sha`, the history scan checks your files against
+  GitHub's `main`, so any change fails. Commit, push your branch, then pass
+  `--commit-sha=$(git rev-parse HEAD)`. The working tree must be clean and match that commit.
+- **`ci` also runs files you have not committed yet**, including new tests. A test that
+  fails there but not in your editor is usually a new file you forgot about.
 
 ## 2. Clone, set up, run the tests
 
@@ -44,6 +47,9 @@ first time).
 export GITHUB_TOKEN="$(gh auth token)"
 dagger call ci --github-token=env:GITHUB_TOKEN
 ```
+
+On a clean clone of `main` that is all you need. On a branch, commit and push first, then
+add `--commit-sha=$(git rev-parse HEAD)` (see the traps above).
 
 This is the same call the `Dagger` job in `.github/workflows/dagger.yml` makes. It runs the
 root `poe gate`, the dependency audit, the foundation module's repository checks (actionlint,
@@ -107,8 +113,14 @@ The steps:
    Each module has a 90% line and branch coverage floor and Radon grade A complexity, like
    the root.
 
-5. Run the root check, which also builds the Python and TypeScript consumer fixtures against
-   your changed module: `dagger call ci --github-token=env:GITHUB_TOKEN`.
+5. Commit, push the branch, and run the root check. It also builds the Python and
+   TypeScript consumer fixtures against your changed module (about 4 minutes with a warm
+   cache):
+
+   ```bash
+   git push -u origin HEAD
+   dagger call ci --github-token=env:GITHUB_TOKEN --commit-sha=$(git rev-parse HEAD)
+   ```
 
 6. After your PR merges, consumers do **not** pick it up automatically. In each consumer repo
    that needs the change, reinstall the module at the new `main` commit so both `source` and
