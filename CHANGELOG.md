@@ -4,6 +4,22 @@
 
 ### Added
 
+- Publisher lineage as a module function (hseshadr/ci#49): `portfolio-foundation` gains
+  `release-lineage` and `release-provenance`. They fail unless the candidate run is a
+  successful `release-candidate.yml` dispatch for exactly the expected SHA and `main`
+  contains that SHA. This blocks a dispatch on a tag named `main` from publishing its own
+  bytes. `release-provenance` also returns npm's GitHub Actions provenance context, built from
+  the publish run record. The fleet policy accepts this as a leading publisher step
+  (`publisher-lineage` for anything weaker), and accepts a consumer publisher loaded at
+  `@${{ github.sha }}`. Publishers no longer need a `run:` step for lineage.
+- `dagger-args-expression`: the fleet policy rejects `${{ inputs.* }}`,
+  `${{ github.event.* }}` and `${{ github.head_ref }}` in any `dagger-for-github` input the
+  action pastes into bash. Pass the value through `env:` and quote it. Test fixtures that
+  pasted `${{ github.event.workflow_run.head_sha }}` into args as "compliant" now use
+  `--expected-sha="$HEAD_SHA"`.
+- Per-module required-minimum pin floors: the fleet scan reports
+  `pin-below-required-minimum` for any consumer whose central module pin is not on `main` at
+  or after the reviewed floor (`portfolio-foundation` ≥ `dd19871`, hseshadr/ci#46).
 - Reusable `portfolio-foundation` and `cloudflare-pages` Dagger modules for exact source
   identity, repository safety, deterministic artifact evidence, exact-green authorization,
   and fail-closed Pages delivery.
@@ -23,6 +39,10 @@
   evidence.
 - Optional typed Git authorization for exact private-repository history in
   `portfolio-foundation`, kept inside Dagger's secret boundary.
+- Fleet coverage: `agentic-saga` and `agentic-context-service` join the fleet scan, and every
+  scan now discovers `hseshadr/ci` consumers from default-branch `dagger.json` and fails with
+  `uncovered-consumer` for any that are not listed. Unreadable repositories become an
+  `evidence-unreadable` finding, so they no longer stop the scan.
 
 ### Changed
 

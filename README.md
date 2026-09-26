@@ -23,6 +23,8 @@ dagger call fleet --github-token=env:GITHUB_TOKEN --include-central
 The first command runs central quality and security checks. The second reads exact
 `main` state from GitHub for:
 
+- `agentic-context-service`
+- `agentic-saga`
 - `almamesh`
 - `aml-filter`
 - `assay`
@@ -32,7 +34,8 @@ The first command runs central quality and security checks. The second reads exa
 - `privacy-core`
 - `ci`
 
-Any inaccessible or incomplete evidence is an error. A scan that inspected nothing
+It also fails if any other `hseshadr` repository pins a `github.com/hseshadr/ci` module but
+is missing from that list. Any inaccessible or incomplete evidence is an error. A scan that inspected nothing
 cannot report success.
 
 ## Reuse the Dagger legos
@@ -112,6 +115,8 @@ For every exact consumer `main`, the scanner requires:
 - managed CodeQL default setup is disabled;
 - no independent execution app controls the build or deploy path;
 - no live workflow executes a retired `hseshadr/ci` reusable control.
+- every pinned central module is on `hseshadr/ci` `main` and at or after its reviewed
+  required-minimum floor ([details](docs/dagger-modules.md#required-minimum-pins)).
 
 GitGuardian is allowed only as a non-required advisory observer.
 
