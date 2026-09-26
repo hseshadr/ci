@@ -13,7 +13,9 @@ installs at an exact commit.
 
 It also watches the other repos. Once a day it reads the `main` branch of each repo on its
 list from GitHub, and fails if a workflow runs anything outside Dagger, branch protection
-has drifted, or the latest `main` commit is not green.
+has drifted, a repo pins a module older than the minimum version allowed, or the latest
+`main` commit is not green. It also fails if a repo installs one of these modules but is
+missing from that list.
 
 **Technical docs:** [Architecture](docs/ARCHITECTURE.md) · [Getting started](docs/GETTING_STARTED.md) · [Using the modules](docs/dagger-modules.md)
 

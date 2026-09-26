@@ -49,6 +49,31 @@ shape (the example SHA is illustrative):
 plus `main`, `latest`, version tags, shortened SHAs, uppercase hexadecimal, and every other
 mutable or non-canonical dependency reference.
 
+### Required minimum pins
+
+An exact pin is not enough on its own: a consumer can stay pinned below a fix it must have, and
+nothing breaks until a release gate trips on the old bug. Fleet policy therefore keeps a
+reviewed floor per central module in `REQUIRED_MINIMUM` (`.dagger/src/ci/fleet_policy.py`):
+
+| Module | Floor | Why |
+| --- | --- | --- |
+| `portfolio-foundation` | `dd19871486588b1582e432b7bc1f2cfffb296340` | `greenMain` tolerates GitHub rerun `created_at` skew (#46); older pins can block a release. |
+
+`cloudflare-pages` and `python-package` load `portfolio-foundation` from their own revision, so
+the foundation floor also applies to pins of those modules.
+
+For every floored module revision in a consumer's resolved Dagger graph, the scanner asks
+GitHub `compare/<floor>...<pin>` and `compare/<pin>...main` on `hseshadr/ci`. Both must answer
+`ahead` or `identical`: the pin is at or after the floor **and** on central `main`. Anything
+else (`behind`, `diverged`, no common history, or missing evidence) is a
+`pin-below-required-minimum` finding that fails the check.
+
+**When you ship a fix every consumer must run, raise the floor in the same PR.** Set the
+module's `REQUIRED_MINIMUM` entry to the fix commit, update the literal pinned in
+`.dagger/tests/test_fleet_minimum_pin.py`, and add a row above. Non-mandatory changes do not
+move the floor. After merge, the fleet scan names every consumer still below it, and each one
+needs a bump PR.
+
 This remote-pin rule applies to consumers. Central CI intentionally keeps its foundation as a
 local same-tree dependency so it validates the module bytes in the current commit; a remote
 self-pin would instead validate an older published copy.
@@ -149,6 +174,17 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Required first step: prove the candidate run came from main (see Publisher lineage).
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          version: "0.21.8"
+          verb: call
+          module: github.com/hseshadr/ci/modules/portfolio-foundation@3de1c4bef2558fd6610b6dda1504b657de7a954d
+          args: release-lineage --github-token=env:GH_TOKEN --repository="$GITHUB_REPOSITORY" --run-id="$RUN_ID" --head-sha="$HEAD_SHA" --publish-run-id="$GITHUB_RUN_ID"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: python-candidate-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
@@ -437,6 +473,77 @@ The hosted release additionally requires exact-head root CI, module fixtures, se
 authoritative fleet evidence before merge, followed by exact-main evidence after merge. Revalidate
 the merged SHA against `^[0-9a-f]{40}$` and record it in the durable release ledger; a temporary
 file alone is not release evidence.
+
+## Fleet coverage
+
+The fleet scan checks only the repositories named in `repository_expectations`
+(`.dagger/src/ci/fleet.py`). That list is written by hand, so a new consumer would otherwise
+escape every fleet check. To close that gap, each hosted scan first lists every public
+`hseshadr` repository, reads its default-branch `dagger.json`, and reports
+`uncovered-consumer` for any active repository that pins a `github.com/hseshadr/ci` module but is
+missing from the list. The scan then fails.
+
+- **When you onboard a consumer, add it to `repository_expectations` in the same PR.** Also add
+  it to `KNOWN_CONSUMERS` in `.dagger/tests/test_fleet_coverage.py`.
+- Archived repositories are skipped. Private repositories are not listed, so they are not
+  discovered.
+- A repository whose evidence cannot be read (for example, `main` has no branch protection)
+  gets an `evidence-unreadable` finding. The scan keeps going and still fails.
+
+## Publisher lineage
+
+**TL;DR:** before a `workflow_run` publisher trusts a candidate artifact, it calls
+`portfolio-foundation`'s `release-lineage` (PyPI) or `release-provenance` (npm) at a literal
+`hseshadr/ci` SHA. The call fails unless GitHub's own run records show the candidate came
+from `main`.
+
+**Why:** the publisher's `head_branch == default_branch` gate also passes for a
+`workflow_dispatch` on a *tag* named `main`. That tag's commit, and the
+`release-candidate.yml` it runs, are whatever the tagger wrote. Without a lineage check,
+the `main` publisher would publish those bytes over OIDC (hseshadr/ci#49).
+
+The function reads the triggering run and the running publish run, then requires all of:
+
+- the candidate run is a successful `workflow_dispatch` of `release-candidate.yml` in this
+  repository, for exactly `HEAD_SHA`;
+- the publish run is this repository's in-progress `publish.yml` `workflow_run` on `main`;
+- `compare/HEAD_SHA...publish_sha` and `compare/publish_sha...branches/main` are `ahead` or
+  `identical`. The branch SHA comes from the `branches/main` endpoint, so a tag named `main`
+  cannot stand in for the branch.
+
+`release-provenance` then returns `github-context.json`, the GitHub Actions context npm writes
+into its SLSA provenance. It is built from the publish run record, not from caller text.
+
+The fleet policy accepts exactly this leading step and nothing weaker (`publisher-lineage`):
+
+```yaml
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          version: "0.21.8"
+          verb: call
+          module: github.com/hseshadr/ci/modules/portfolio-foundation@<40-hex ci SHA>
+          args: release-lineage --github-token=env:GH_TOKEN --repository="$GITHUB_REPOSITORY" --run-id="$RUN_ID" --head-sha="$HEAD_SHA" --publish-run-id="$GITHUB_RUN_ID"
+```
+
+For npm, use `release-provenance` with the same arguments plus
+`export --path=github-context.json`, then load the repository's own publisher at
+`github.com/hseshadr/<repo>@${{ github.sha }}` (the `main` commit the workflow runs on, never
+the candidate's SHA). The steps are then lineage → download → publish, with no `run:` step.
+
+**Expressions in Dagger inputs.** `dagger-for-github` pastes `args`, `call`, `shell`,
+`dagger-flags`, `workdir`, and `cloud-token` into bash. The policy reports
+`dagger-args-expression` for any `${{ inputs.* }}`, `${{ github.event.* }}` or
+`${{ github.head_ref }}` there. Pass the value through `env:` and quote it: `--tag="$TAG"`.
+`module` is exempt because the action passes it as the `INPUT_MODULE` environment variable.
+
+**Required.** Every publisher job (one that downloads a candidate or mints an OIDC token) must
+open with this step. A publisher without it, or with it anywhere but first, is a
+`publisher-lineage` finding (`central lineage step required first`). Lineage has to run
+before the candidate bytes are downloaded, so nothing is trusted before the proof.
 
 ## Release status
 

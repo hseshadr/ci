@@ -20,7 +20,8 @@ For an interactive picture, open the [runtime map](architecture/index.html) (its
 | `.dagger/src/ci/fleet_policy.py` | The rules every consumer repo must follow (pure Python, no network). |
 | `.dagger/src/ci/github_fleet.py` | Reads the real state of each repo from the GitHub API and feeds it to the rules. |
 | `.dagger/src/ci/fleet.py` | The list of consumer repos and what each must have (branch protection, deadlines). |
-| `modules/portfolio-foundation/` | Shared module: exact source identity, repo safety checks, artifact envelopes, "is `main` green at this SHA" evidence. |
+| `.dagger/src/ci/fleet_coverage.py` | Finds every repo that pins a module from here, so none is left unchecked. |
+| `modules/portfolio-foundation/` | Shared module: exact source identity, repo safety checks, artifact envelopes, "is `main` green at this SHA" evidence, and release lineage checks for publisher jobs. |
 | `modules/cloudflare-pages/` | Shared module: checks and deploys a Cloudflare Pages site, then confirms the live site serves that deployment. |
 | `modules/python-package/` | Shared module: audits, builds and checks a Python wheel and sdist. It never uploads to PyPI. |
 | `tests/dagger/python_consumer/`, `tests/dagger/typescript_consumer/` | Tiny consumer modules that prove the shared modules work from Python and TypeScript code. |
@@ -80,8 +81,25 @@ The same graph runs locally and in GitHub. Hosted calls bind full-history scanni
 ## What `dagger call fleet` checks
 
 `fleet` reads the exact current `main` of every consumer repo from GitHub (plus this repo
-with `--include-central`). Any unreadable or incomplete evidence is an error: a scan that
-inspected nothing cannot report success. For every consumer it requires:
+with `--include-central`). The consumers are:
+
+- `agentic-context-service`
+- `agentic-saga`
+- `almamesh`
+- `aml-filter`
+- `assay`
+- `edge-proc`
+- `edge-reco`
+- `edgeproc-core`
+- `privacy-core`
+
+It also fails if any other `hseshadr` repository pins a `github.com/hseshadr/ci` module but
+is missing from that list (`uncovered-consumer`; see
+[Fleet coverage](dagger-modules.md#fleet-coverage)). Any inaccessible or incomplete evidence
+is an error: an unreadable repository becomes an `evidence-unreadable` finding rather than
+stopping the scan, and a scan that inspected nothing cannot report success.
+
+For every consumer it requires:
 
 - every repository-authored workflow job is thin pinned Dagger ingress;
 - source is an explicit typed `Directory` or `Workspace`;
@@ -91,7 +109,11 @@ inspected nothing cannot report success. For every consumer it requires:
 - the required `Dagger` check succeeded on the exact current `main` SHA;
 - managed CodeQL default setup is disabled;
 - no independent execution app controls the build or deploy path;
-- no live workflow executes a retired `hseshadr/ci` reusable control.
+- no live workflow executes a retired `hseshadr/ci` reusable control;
+- every pinned central module is on `hseshadr/ci` `main` and at or after its reviewed
+  required-minimum floor ([details](dagger-modules.md#required-minimum-pins));
+- no `dagger-for-github` input pastes `${{ inputs.* }}`, `${{ github.event.* }}` or
+  `${{ github.head_ref }}` into the shell (`dagger-args-expression`); pass it through `env:`.
 
 GitGuardian is allowed only as a non-required advisory observer.
 
@@ -106,7 +128,9 @@ The policy recognizes only two non-Dagger transports around a release candidate:
   the official PyPI OIDC action with attestations or an exact-SHA remote Dagger npm publisher
   with typed GitHub OIDC URL and token inputs.
 
-Publisher bridges reject checkout, setup, install, build, test, free-form shell, mutable
+Every publisher job must open with the central `release-lineage` / `release-provenance`
+step from `portfolio-foundation` (`publisher-lineage` finding otherwise; see
+[Publisher lineage](dagger-modules.md#publisher-lineage)). Publisher bridges reject checkout, setup, install, build, test, free-form shell, mutable
 references, excess permissions, wrong artifact identity, and missing provenance.
 
 This repository does not publish packages and its CI never dispatches a registry mutation.

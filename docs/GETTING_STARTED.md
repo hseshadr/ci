@@ -68,6 +68,7 @@ token that can read the admin settings of every consumer repo (see
 | `.dagger/src/ci/fleet_policy.py` | The rules consumer repos must follow. Pure Python, easy to test. |
 | `.dagger/src/ci/github_fleet.py` | Reads each repo's real state from the GitHub API. |
 | `.dagger/src/ci/fleet.py` | The list of consumer repos and their expected branch protection. |
+| `.dagger/src/ci/fleet_coverage.py` | Finds every repo that pins a module from here, so none is left off that list. |
 | `.dagger/tests/` | Tests for all of the above, plus contract tests for docs and workflows. |
 | `modules/portfolio-foundation/` | Shared module: exact-commit identity, repo checks, artifact envelopes, green-main evidence. |
 | `modules/cloudflare-pages/` | Shared module: Cloudflare Pages deploy, live check and rollback. |
