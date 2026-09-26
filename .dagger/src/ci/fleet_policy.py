@@ -103,7 +103,44 @@ SECRET_REFERENCE: Final = re.compile(
     re.IGNORECASE,
 )
 DYNAMIC_SECRET_REFERENCE: Final = re.compile(r"secrets\s*\[\s*(?!['\"])")
+# Oldest hseshadr/ci commit each central module may be pinned at. Raise a floor in the same PR
+# that ships a fix every consumer must run. cloudflare-pages and python-package embed
+# portfolio-foundation at their own revision, so the foundation floor covers them too.
+REQUIRED_MINIMUM: Final[Mapping[str, str]] = MappingProxyType(
+    {"portfolio-foundation": "dd19871486588b1582e432b7bc1f2cfffb296340"}
+)
+DESCENDANT_STATUSES: Final = frozenset(("ahead", "identical"))
 APPROVED_PUBLISHER_MODULES: Final = frozenset(("github.com/hseshadr/ci/modules/npm-publisher",))
+# dagger-for-github pastes every `with:` input except `module` (passed as INPUT_MODULE env)
+# into bash, so a caller-controlled expression there is script injection (#49).
+ATTACKER_EXPRESSION: Final = re.compile(
+    r"\$\{\{(?:(?!\}\}).)*?(?<![\w.])"
+    r"(?:inputs\b|github\s*(?:\.\s*|\[\s*['\"])(?:event|head_ref)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+# The central, literal-SHA-pinned lineage proof a publisher runs before it trusts a
+# candidate (#49). Exact text: a hard-coded run id or SHA would prove a different run.
+LINEAGE_MODULE: Final = re.compile(
+    r"^github\.com/hseshadr/ci/modules/portfolio-foundation@[0-9a-f]{40}$"
+)
+LINEAGE_MODULE_PREFIX: Final = "github.com/hseshadr/ci/modules/portfolio-foundation@"
+LINEAGE_ARGUMENTS: Final = (
+    '--github-token=env:GH_TOKEN --repository="$GITHUB_REPOSITORY" --run-id="$RUN_ID" '
+    '--head-sha="$HEAD_SHA" --publish-run-id="$GITHUB_RUN_ID"'
+)
+LINEAGE_CALLS: Final = frozenset(
+    (
+        f"release-lineage {LINEAGE_ARGUMENTS}",
+        f"release-provenance {LINEAGE_ARGUMENTS} export --path=github-context.json",
+    )
+)
+LINEAGE_ENV: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "GH_TOKEN": "${{ github.token }}",
+        "RUN_ID": "${{ github.event.workflow_run.id }}",
+        "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
+    }
+)
 type Scalar = str | bool | int
 type RemoteIdentity = tuple[str, str, str, str]
 type ByteRange = tuple[int, int]
@@ -285,6 +322,20 @@ class RepositoryExpectation:
 
 
 @validated_dataclass(config=BOUNDARY_CONFIG)
+class PinAncestry:
+    """GitHub compare evidence for one central module pin.
+
+    ``floor_status`` is ``compare/<floor>...<pin>`` and ``main_status`` is
+    ``compare/<pin>...main``; ``unrelated`` records a compare without a common ancestor.
+    """
+
+    floor: str
+    pin: str
+    floor_status: str
+    main_status: str
+
+
+@validated_dataclass(config=BOUNDARY_CONFIG)
 class RepositorySnapshot:
     """All authoritative source, protection, and integration evidence."""
 
@@ -301,6 +352,7 @@ class RepositorySnapshot:
     missing_dagger_configs: tuple[str, ...] = Field(default_factory=tuple)
     environments: tuple[DeploymentEnvironment, ...] = Field(default_factory=tuple)
     repository_secret_names: tuple[str, ...] = Field(default_factory=tuple)
+    pin_ancestry: tuple[PinAncestry, ...] = Field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -431,6 +483,7 @@ def validate_dagger_graph(
     if graph_has_cycle(snapshot.dagger_configs):
         findings.append(finding("dagger-dependency-cycle", "dagger.json", "dependency cycle"))
     findings.extend(validate_shared_requirement(snapshot.dagger_configs, expectation))
+    findings.extend(validate_minimum_pins(snapshot.dagger_configs, snapshot.pin_ancestry))
     return tuple(findings)
 
 
@@ -969,8 +1022,10 @@ def validate_job(
     path: str, job: WorkflowJob, engine_version: str | None = None, repository: str = ""
 ) -> tuple[PolicyFinding, ...]:
     """Dispatch a job to its only accepted execution shape."""
-    common = validate_steps(path, job.steps) + validate_action_steps(
-        path, job.steps, engine_version
+    common = (
+        validate_steps(path, job.steps)
+        + validate_action_steps(path, job.steps, engine_version)
+        + validate_dagger_expressions(path, job.steps)
     )
     names = tuple(map(action_name, job.steps))
     if UPLOAD_ACTION in names:
@@ -1001,6 +1056,27 @@ def validate_steps(path: str, steps: tuple[WorkflowStep, ...]) -> tuple[PolicyFi
         if step.run is not None:
             findings.append(finding("shell-step", path, "run steps are forbidden"))
     return tuple(findings)
+
+
+def validate_dagger_expressions(
+    path: str, steps: tuple[WorkflowStep, ...]
+) -> tuple[PolicyFinding, ...]:
+    """Reject caller-controlled expressions in any Dagger input pasted into bash."""
+    return tuple(
+        finding("dagger-args-expression", path, f"{key} carries a caller-controlled expression")
+        for step in steps
+        if action_name(step) == DAGGER_ACTION
+        for key in script_inputs_with_expressions(step)
+    )
+
+
+def script_inputs_with_expressions(step: WorkflowStep) -> tuple[str, ...]:
+    """Return every script-pasted input that carries a caller-controlled expression."""
+    return tuple(
+        key
+        for key, value in sorted(step.with_.items())
+        if key != "module" and ATTACKER_EXPRESSION.search(scalar_text(value))
+    )
 
 
 def validate_ingress(
@@ -1128,16 +1204,57 @@ def candidate_identity_is_weak(step: WorkflowStep) -> bool:
 
 def validate_publisher(path: str, job: WorkflowJob, repository: str) -> tuple[PolicyFinding, ...]:
     """Accept only source-free artifact transport into one OIDC publisher."""
+    lineage, steps = split_lineage(job.steps)
     findings: list[PolicyFinding] = []
     findings.extend(validate_publisher_permissions(path, job))
     findings.extend(validate_publisher_source(path, job.steps))
-    findings.extend(validate_download(path, job.steps))
-    names = tuple(map(action_name, job.steps))
+    findings.extend(validate_required_lineage(path, lineage))
+    findings.extend(validate_download(path, steps))
+    names = tuple(map(action_name, steps))
     if PYPI_ACTION in names:
-        findings.extend(validate_pypi(path, job.steps, repository))
+        findings.extend(validate_pypi(path, steps, repository))
     else:
-        findings.extend(validate_npm(path, job.steps, repository))
+        findings.extend(validate_npm(path, steps, repository))
     return tuple(findings)
+
+
+def split_lineage(
+    steps: tuple[WorkflowStep, ...],
+) -> tuple[WorkflowStep | None, tuple[WorkflowStep, ...]]:
+    """Separate a leading central lineage proof from the publisher transport."""
+    if steps and is_lineage_step(steps[0]):
+        return steps[0], steps[1:]
+    return None, steps
+
+
+def is_lineage_step(step: WorkflowStep) -> bool:
+    """Return whether a step loads the central lineage module."""
+    module = scalar_text(step.with_.get("module"))
+    return action_name(step) == DAGGER_ACTION and module.startswith(LINEAGE_MODULE_PREFIX)
+
+
+def validate_required_lineage(path: str, step: WorkflowStep | None) -> tuple[PolicyFinding, ...]:
+    """Require every publisher to open with the exact central lineage proof."""
+    if step is None:
+        return (finding("publisher-lineage", path, "central lineage step required first"),)
+    return validate_lineage(path, step)
+
+
+def validate_lineage(path: str, step: WorkflowStep) -> tuple[PolicyFinding, ...]:
+    """Require the exact literal-pinned lineage call bound to the triggering run."""
+    environment = {key: scalar_text(value) for key, value in step.env.items()}
+    if lineage_call_is_exact(step) and environment == LINEAGE_ENV:
+        return ()
+    return (finding("publisher-lineage", path, "exact central lineage call required"),)
+
+
+def lineage_call_is_exact(step: WorkflowStep) -> bool:
+    """Return whether the step is the literal-pinned central lineage call."""
+    values = {key: scalar_text(value) for key, value in step.with_.items()}
+    if set(values) != {"version", "verb", "module", "args"}:
+        return False
+    module = LINEAGE_MODULE.fullmatch(values["module"]) is not None
+    return (values["verb"], module, values["args"] in LINEAGE_CALLS) == ("call", True, True)
 
 
 def validate_publisher_permissions(path: str, job: WorkflowJob) -> tuple[PolicyFinding, ...]:
@@ -1259,11 +1376,14 @@ def remote_dagger_module(steps: tuple[WorkflowStep, ...]) -> str:
 
 
 def publisher_module_is_authorized(module: str, repository: str) -> bool:
-    """Accept exact consumer candidates or an approved literal central publisher."""
-    candidate = f"github.com/hseshadr/{repository}@${{{{ github.event.workflow_run.head_sha }}}}"
+    """Accept the consumer at the candidate or main SHA, or an approved central publisher."""
+    own = (
+        f"github.com/hseshadr/{repository}@${{{{ github.event.workflow_run.head_sha }}}}",
+        f"github.com/hseshadr/{repository}@${{{{ github.sha }}}}",
+    )
     base, separator, revision = module.rpartition("@")
     literal = separator == "@" and base in APPROVED_PUBLISHER_MODULES
-    return module == candidate or (literal and re.fullmatch(r"[0-9a-f]{40}", revision) is not None)
+    return module in own or (literal and re.fullmatch(r"[0-9a-f]{40}", revision) is not None)
 
 
 def oidc_arguments_are_typed(step: WorkflowStep) -> bool:
@@ -1820,3 +1940,53 @@ def validate_control_plane(snapshot: RepositorySnapshot) -> tuple[PolicyFinding,
 def allowed_check_apps() -> frozenset[str]:
     """Return execution ownership plus the reviewed advisory-only integration."""
     return frozenset(("github-actions", "gitguardian"))
+
+
+def required_minimum_pins(configs: tuple[DaggerConfig, ...]) -> tuple[tuple[str, str], ...]:
+    """Return each distinct (floor, pin) pair that needs ancestry evidence."""
+    pairs = (floored_pin(config) for config in configs)
+    return tuple(dict.fromkeys(pair for pair in pairs if pair is not None))
+
+
+def floored_pin(config: DaggerConfig) -> tuple[str, str] | None:
+    """Return (floor, pin) for one exact hseshadr/ci module config with a floor."""
+    remote = parse_pinned_remote(config.identity)
+    if remote is None or remote[:2] != ("hseshadr", "ci"):
+        return None
+    floor = REQUIRED_MINIMUM.get(remote[2].removeprefix("modules/"))
+    return None if floor is None else (floor, remote[3])
+
+
+def validate_minimum_pins(
+    configs: tuple[DaggerConfig, ...], ancestry: tuple[PinAncestry, ...]
+) -> tuple[PolicyFinding, ...]:
+    """Require every floored central pin to be on main and descend from its floor."""
+    evidence = {(item.floor, item.pin): item for item in ancestry}
+    pairs = required_minimum_pins(configs)
+    return tuple(
+        minimum_finding(floor, pin, evidence.get((floor, pin)))
+        for floor, pin in pairs
+        if not pin_meets_floor(evidence.get((floor, pin)))
+    )
+
+
+def minimum_finding(floor: str, pin: str, item: PinAncestry | None) -> PolicyFinding:
+    """Name the stale central pin and the ancestry fact that failed."""
+    return finding("pin-below-required-minimum", pin, minimum_message(floor, item))
+
+
+def pin_meets_floor(item: PinAncestry | None) -> bool:
+    """Accept only a pin at or after its floor that main also contains."""
+    if item is None:
+        return False
+    return {item.floor_status, item.main_status} <= DESCENDANT_STATUSES
+
+
+def minimum_message(floor: str, item: PinAncestry | None) -> str:
+    """Explain which ancestry fact failed without guessing missing evidence."""
+    if item is None:
+        return f"no ancestry evidence against required minimum {floor}"
+    return (
+        f"must descend from required minimum {floor} on main "
+        f"(floor...pin={item.floor_status}, pin...main={item.main_status})"
+    )
